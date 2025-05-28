@@ -1,0 +1,170 @@
+Python Workflow Engine 프로젝트 구조
+디렉토리 구조
+workflow-engine/
+├── frontend/
+│   ├── src/
+│   │   ├── components/
+│   │   │   ├── nodes/
+│   │   │   │   ├── WorkerNode.tsx
+│   │   │   │   ├── SupervisorNode.tsx
+│   │   │   │   ├── PlannerNode.tsx
+│   │   │   │   ├── WatcherNode.tsx
+│   │   │   │   ├── SchedulerNode.tsx
+│   │   │   │   ├── FlowNode.tsx
+│   │   │   │   └── StorageNode.tsx
+│   │   │   ├── tabs/
+│   │   │   │   ├── TabContainer.tsx
+│   │   │   │   ├── PreProduction.tsx
+│   │   │   │   ├── PostProduction.tsx
+│   │   │   │   └── Director.tsx
+│   │   │   └── ui/
+│   │   │       ├── NodeNote.tsx
+│   │   │       ├── ProgressBar.tsx
+│   │   │       └── NodeProperties.tsx
+│   │   ├── stores/
+│   │   │   ├── workflowStore.ts
+│   │   │   └── nodeStore.ts
+│   │   ├── types/
+│   │   │   └── nodes.ts
+│   │   ├── utils/
+│   │   │   └── api.ts
+│   │   ├── App.tsx
+│   │   └── main.tsx
+│   ├── package.json
+│   └── tailwind.config.js
+│
+├── backend/
+│   ├── main.py
+│   ├── nodes/
+│   │   ├── __init__.py
+│   │   ├── worker.py
+│   │   ├── supervisor.py
+│   │   ├── planner.py
+│   │   ├── watcher.py
+│   │   ├── scheduler.py
+│   │   ├── flow.py
+│   │   └── storage.py
+│   ├── utils/
+│   │   ├── file_manager.py
+│   │   ├── executor.py
+│   │   └── websocket_manager.py
+│   └── requirements.txt
+│
+├── config/
+│   ├── nodes/
+│   │   └── *.json (노드별 설정 파일)
+│   └── workflows/
+│       └── *.json (워크플로우 저장 파일)
+│
+├── data/
+│   ├── projects/
+│   ├── references/
+│   ├── samples/
+│   └── cache/
+│
+└── README.md
+
+
+bash# 1. 프로젝트 클론 또는 스크립트 실행
+chmod +x setup.sh
+./setup.sh
+
+# 2. Frontend 설치
+cd frontend
+npm install
+
+# 3. Backend 설치  
+cd ../backend
+pip install -r requirements.txt
+3. 실행 방법
+터미널 1 (Backend):
+bashcd backend
+python main.py
+터미널 2 (Frontend):
+bashcd frontend
+npm run dev
+브라우저에서 http://localhost:5173 접속
+주요 기능
+노드 타입
+
+Worker Node (파란색)
+
+Python 코드 실행
+작업 목록 관리
+진행률 표시
+
+
+Supervisor Node (보라색)
+
+다른 노드들의 코드 수정
+AI 기반 최적화
+
+
+Planner Node (초록색)
+
+전체 워크플로우 계획
+노드 평가 및 목표 설정
+
+
+Watcher Node (노란색)
+
+외부 데이터 수집
+LoRA 학습 데이터 관리
+
+
+Scheduler Node (분홍색)
+
+작업 스케줄링
+시간 관리
+
+
+Flow Node (빨간색)
+
+노드 실행 순서 관리
+일괄 실행
+
+
+Storage Node (회색)
+
+파일 시스템 관리
+데이터 정리
+
+
+
+탭 구조
+
+PreProduction: story, layout, artwork, concept
+PostProduction: modeling, animation, texture, lighting, vfx, composition, rigging, editing
+Director: direction, feedback, reference
+
+API 엔드포인트
+
+WebSocket: ws://localhost:8000/ws
+Node Config: POST/GET /api/nodes/{node_id}/config
+Storage Stats: GET /api/storage/stats
+
+확장 가이드
+새로운 노드 추가
+
+Frontend에 노드 컴포넌트 생성
+Backend에 실행 로직 추가
+nodeTypes에 등록
+
+외부 애플리케이션 연동
+
+Backend에 플러그인 인터페이스 추가
+애플리케이션별 어댑터 구현
+WebSocket으로 실시간 통신
+
+트러블슈팅
+WebSocket 연결 실패
+
+Backend가 실행 중인지 확인
+포트 8000이 사용 가능한지 확인
+CORS 설정 확인
+
+노드 실행 오류
+
+Python 환경 확인
+로그 디렉토리 권한 확인
+config 파일 존재 여부 확인
