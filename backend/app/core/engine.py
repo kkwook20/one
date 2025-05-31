@@ -25,7 +25,13 @@ class WorkflowEngine:
             'watcher': 'app.nodes.watcher',
             'flow': 'app.nodes.flow',
             'memory': 'app.nodes.memory',
-            'trigger': 'app.nodes.trigger'
+            'trigger': 'app.nodes.trigger',
+            # 누락된 노드들 추가:
+            'worker_writer': 'app.nodes.worker_writer',
+            'worker_painter': 'app.nodes.worker_painter',
+            'scheduler': 'app.nodes.scheduler',
+            'storage': 'app.nodes.storage',
+            'qa': 'app.nodes.qa'
         }
         self.execution_cache = {}
         self.running_nodes: Set[str] = set()
