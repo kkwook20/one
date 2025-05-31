@@ -48,3 +48,8 @@ MAX_MEMORY_PER_TASK=1073741824  # 1GB
 # Development
 HOT_RELOAD=True
 CORS_ORIGINS=http://localhost:5173,http://localhost:3000
+
+# Limits
+MAX_EXECUTION_TIME=300
+MAX_MEMORY_MB=1024
+

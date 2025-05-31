@@ -32,13 +32,13 @@ class AIProvider(ABC):
 class OpenAIProvider(AIProvider):
     """OpenAI API 프로바이더"""
     
-    def __init__(self, api_key: str):
+    async def complete(self, prompt: str):
         self.api_key = api_key
         self.base_url = "https://api.openai.com/v1"
-        self.client = httpx.AsyncClient(
+        async with httpx.AsyncClient() as client:
             headers={"Authorization": f"Bearer {api_key}"},
             timeout=30.0
-        )
+        response = await client.post(...)
     
     async def complete(self, prompt: str, model: str = "gpt-4", **kwargs) -> str:
         """텍스트 완성"""
