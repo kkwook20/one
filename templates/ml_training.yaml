@@ -1,0 +1,263 @@
+# templates/ml_training.yaml
+
+id: "ml-training-template"
+name: "Machine Learning Training Pipeline"
+description: "Complete ML pipeline from data prep to model deployment"
+category: "ml"
+tags: ["machine-learning", "training", "ai", "model"]
+
+nodes:
+  - id: "data-loader"
+    type: "worker"
+    position: {x: 100, y: 200}
+    data:
+      label: "Data Loader"
+      nodeType: "worker"
+      code: |
+        # Load training data
+        import pandas as pd
+        import numpy as np
+        from sklearn.model_selection import train_test_split
+        
+        # Load data
+        data = pd.read_csv(input_data.get('data_path', 'data/train.csv'))
+        
+        # Split features and target
+        target_column = input_data.get('target_column', 'target')
+        X = data.drop(columns=[target_column])
+        y = data[target_column]
+        
+        # Train-test split
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=0.2, random_state=42
+        )
+        
+        output_data['X_train'] = X_train
+        output_data['X_test'] = X_test
+        output_data['y_train'] = y_train
+        output_data['y_test'] = y_test
+        output_data['feature_names'] = list(X.columns)
+
+  - id: "feature-engineer"
+    type: "worker"
+    position: {x: 300, y: 200}
+    data:
+      label: "Feature Engineering"
+      nodeType: "worker"
+      code: |
+        # Feature engineering
+        import pandas as pd
+        import numpy as np
+        from sklearn.preprocessing import PolynomialFeatures
+        from sklearn.feature_selection import SelectKBest, f_classif
+        
+        X_train = input_data['X_train']
+        X_test = input_data['X_test']
+        
+        # Polynomial features
+        if input_data.get('polynomial_features', False):
+            poly = PolynomialFeatures(degree=2, include_bias=False)
+            X_train = poly.fit_transform(X_train)
+            X_test = poly.transform(X_test)
+        
+        # Feature selection
+        if input_data.get('feature_selection', True):
+            selector = SelectKBest(f_classif, k=min(20, X_train.shape[1]))
+            X_train = selector.fit_transform(X_train, input_data['y_train'])
+            X_test = selector.transform(X_test)
+            output_data['feature_selector'] = selector
+        
+        output_data['X_train'] = X_train
+        output_data['X_test'] = X_test
+        output_data['y_train'] = input_data['y_train']
+        output_data['y_test'] = input_data['y_test']
+
+  - id: "model-trainer"
+    type: "worker"
+    position: {x: 500, y: 200}
+    data:
+      label: "Model Training"
+      nodeType: "worker"
+      code: |
+        # Train multiple models
+        from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
+        from sklearn.linear_model import LogisticRegression
+        from sklearn.svm import SVC
+        from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+        import joblib
+        
+        X_train = input_data['X_train']
+        X_test = input_data['X_test']
+        y_train = input_data['y_train']
+        y_test = input_data['y_test']
+        
+        # Define models
+        models = {
+            'random_forest': RandomForestClassifier(n_estimators=100, random_state=42),
+            'gradient_boosting': GradientBoostingClassifier(n_estimators=100, random_state=42),
+            'logistic_regression': LogisticRegression(random_state=42),
+            'svm': SVC(kernel='rbf', random_state=42)
+        }
+        
+        # Train and evaluate models
+        results = {}
+        best_model = None
+        best_score = 0
+        
+        for name, model in models.items():
+            # Train
+            model.fit(X_train, y_train)
+            
+            # Predict
+            y_pred = model.predict(X_test)
+            
+            # Evaluate
+            accuracy = accuracy_score(y_test, y_pred)
+            
+            results[name] = {
+                'accuracy': accuracy,
+                'precision': precision_score(y_test, y_pred, average='weighted'),
+                'recall': recall_score(y_test, y_pred, average='weighted'),
+                'f1': f1_score(y_test, y_pred, average='weighted')
+            }
+            
+            # Track best model
+            if accuracy > best_score:
+                best_score = accuracy
+                best_model = model
+        
+        # Save best model
+        joblib.dump(best_model, 'models/best_model.pkl')
+        
+        output_data['results'] = results
+        output_data['best_model'] = best_model
+        output_data['best_score'] = best_score
+
+  - id: "hyperparameter-tuner"
+    type: "worker"
+    position: {x: 700, y: 200}
+    data:
+      label: "Hyperparameter Tuning"
+      nodeType: "worker"
+      code: |
+        # Hyperparameter optimization
+        from sklearn.model_selection import GridSearchCV
+        from sklearn.ensemble import RandomForestClassifier
+        import joblib
+        
+        X_train = input_data['X_train']
+        y_train = input_data['y_train']
+        
+        # Define parameter grid
+        param_grid = {
+            'n_estimators': [50, 100, 200],
+            'max_depth': [None, 10, 20, 30],
+            'min_samples_split': [2, 5, 10],
+            'min_samples_leaf': [1, 2, 4]
+        }
+        
+        # Grid search
+        rf = RandomForestClassifier(random_state=42)
+        grid_search = GridSearchCV(
+            rf, param_grid, cv=5, 
+            scoring='accuracy', n_jobs=-1
+        )
+        
+        grid_search.fit(X_train, y_train)
+        
+        # Save tuned model
+        joblib.dump(grid_search.best_estimator_, 'models/tuned_model.pkl')
+        
+        output_data['best_params'] = grid_search.best_params_
+        output_data['best_score'] = grid_search.best_score_
+        output_data['tuned_model'] = grid_search.best_estimator_
+
+  - id: "model-evaluator"
+    type: "worker"
+    position: {x: 900, y: 200}
+    data:
+      label: "Model Evaluation"
+      nodeType: "worker"
+      code: |
+        # Comprehensive model evaluation
+        import matplotlib.pyplot as plt
+        from sklearn.metrics import confusion_matrix, classification_report
+        import seaborn as sns
+        import numpy as np
+        
+        X_test = input_data['X_test']
+        y_test = input_data['y_test']
+        model = input_data.get('tuned_model', input_data.get('best_model'))
+        
+        # Predictions
+        y_pred = model.predict(X_test)
+        
+        # Classification report
+        report = classification_report(y_test, y_pred, output_dict=True)
+        
+        # Confusion matrix
+        cm = confusion_matrix(y_test, y_pred)
+        
+        # Plot confusion matrix
+        plt.figure(figsize=(10, 8))
+        sns.heatmap(cm, annot=True, fmt='d', cmap='Blues')
+        plt.title('Confusion Matrix')
+        plt.ylabel('True Label')
+        plt.xlabel('Predicted Label')
+        plt.savefig('output/confusion_matrix.png')
+        plt.close()
+        
+        # Feature importance (if available)
+        if hasattr(model, 'feature_importances_'):
+            importance = model.feature_importances_
+            feature_names = input_data.get('feature_names', [f'Feature {i}' for i in range(len(importance))])
+            
+            # Plot feature importance
+            plt.figure(figsize=(10, 6))
+            indices = np.argsort(importance)[::-1][:20]  # Top 20 features
+            plt.bar(range(len(indices)), importance[indices])
+            plt.xticks(range(len(indices)), [feature_names[i] for i in indices], rotation=90)
+            plt.title('Feature Importance')
+            plt.tight_layout()
+            plt.savefig('output/feature_importance.png')
+            plt.close()
+        
+        output_data['classification_report'] = report
+        output_data['confusion_matrix'] = cm.tolist()
+        output_data['evaluation_complete'] = True
+
+  - id: "watcher-1"
+    type: "watcher"
+    position: {x: 500, y: 400}
+    data:
+      label: "ML Research Watcher"
+      nodeType: "watcher"
+      searchQueries: ["latest ML techniques", "model optimization", "feature engineering"]
+
+  - id: "flow-1"
+    type: "flow"
+    position: {x: 300, y: 400}
+    data:
+      label: "Training Flow Controller"
+      nodeType: "flow"
+      executionList: ["data-loader", "feature-engineer", "model-trainer", "hyperparameter-tuner", "model-evaluator"]
+
+edges:
+  - source: "data-loader"
+    target: "feature-engineer"
+  - source: "feature-engineer"
+    target: "model-trainer"
+  - source: "model-trainer"
+    target: "hyperparameter-tuner"
+  - source: "hyperparameter-tuner"
+    target: "model-evaluator"
+
+variables:
+  data_path: "data/train.csv"
+  target_column: "target"
+  model_type: "classification"
+  
+settings:
+  executionMode: "sequential"
+  maxExecutionTime: 7200
+  retryOnFailure: true

@@ -17,6 +17,19 @@ import ReactFlow, {
   MarkerType,
 } from 'reactflow';
 import 'reactflow/dist/style.css';
+import { BrowserRouter as Router, Routes, Route, Link } from 'react-router-dom';
+
+// Import node components
+import WorkerNode from './components/nodes/WorkerNode';
+import SupervisorNode from './components/nodes/SupervisorNode';
+import PlannerNode from './components/nodes/PlannerNode';
+import WatcherNode from './components/nodes/WatcherNode';
+import SchedulerNode from './components/nodes/SchedulerNode';
+import FlowNode from './components/nodes/FlowNode';
+import StorageNode from './components/nodes/StorageNode';
+import MemoryNode from './components/nodes/MemoryNode';
+import TriggerNode from './components/nodes/TriggerNode';
+import Dashboard from './components/monitoring/Dashboard';
 
 // Manager node types
 type ManagerType = 'supervisor' | 'planner' | 'watcher' | 'scheduler' | 'flow' | 'storage';
@@ -118,6 +131,20 @@ const NodeIcons = {
       <line x1="6" y1="13.5" x2="8" y2="13.5" stroke="currentColor" strokeWidth="2"/>
     </svg>
   ),
+  memory: () => (
+    <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
+      <rect x="4" y="8" width="16" height="8" rx="1" stroke="currentColor" strokeWidth="2" fill="currentColor" fillOpacity="0.1"/>
+      <path d="M8 8V5M12 8V5M16 8V5M8 16V19M12 16V19M16 16V19" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+      <circle cx="8" cy="12" r="1" fill="currentColor"/>
+      <circle cx="12" cy="12" r="1" fill="currentColor"/>
+      <circle cx="16" cy="12" r="1" fill="currentColor"/>
+    </svg>
+  ),
+  trigger: () => (
+    <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
+      <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" stroke="currentColor" strokeWidth="2" fill="currentColor" fillOpacity="0.1"/>
+    </svg>
+  ),
 };
 
 const tabs: Record<string, TabItem[]> = {
@@ -139,13 +166,15 @@ const tabs: Record<string, TabItem[]> = {
 };
 
 const nodeTypes = {
-  worker: { label: 'Worker', color: '#34495e' },
-  supervisor: { label: 'Supervisor', color: '#2c3e50' },
-  planner: { label: 'Planner', color: '#7f8c8d' },
-  watcher: { label: 'Watcher', color: '#95a5a6' },
-  scheduler: { label: 'Scheduler', color: '#34495e' },
-  flow: { label: 'Flow', color: '#2c3e50' },
-  storage: { label: 'Storage', color: '#7f8c8d' },
+  worker: { label: 'Worker', color: '#3b82f6' },
+  supervisor: { label: 'Supervisor', color: '#9333ea' },
+  planner: { label: 'Planner', color: '#10b981' },
+  watcher: { label: 'Watcher', color: '#f59e0b' },
+  scheduler: { label: 'Scheduler', color: '#ec4899' },
+  flow: { label: 'Flow', color: '#ef4444' },
+  storage: { label: 'Storage', color: '#6b7280' },
+  memory: { label: 'Memory', color: '#8b5cf6' },
+  trigger: { label: 'Trigger', color: '#f97316' },
 };
 
 // Modern node component with color theme
@@ -366,7 +395,7 @@ const Sidebar: React.FC<{
               return (
                 <button
                   key={type}
-                  onClick={() => onAddNode(type)}
+                  onClick={() => !isDisabled && onAddNode(type)}
                   onDragStart={(e) => !isDisabled && onDragStart(e, type)}
                   draggable={!isDisabled}
                   className={`p-3 text-xs font-bold transition-all flex flex-col items-center gap-2 uppercase ${
@@ -416,8 +445,18 @@ const Sidebar: React.FC<{
   );
 };
 
+// Register custom node types - FIXED: Added 'modern' type
 const nodeTypesComponents = {
-  modern: ModernNode,
+  modern: ModernNode,  // This was missing!
+  worker: WorkerNode,
+  supervisor: SupervisorNode,
+  planner: PlannerNode,
+  watcher: WatcherNode,
+  scheduler: SchedulerNode,
+  flow: FlowNode,
+  storage: StorageNode,
+  memory: MemoryNode,
+  trigger: TriggerNode,
 };
 
 function FlowApp() {
@@ -529,7 +568,7 @@ function FlowApp() {
   // Calculate disabled manager nodes
   const disabledManagerNodes = useMemo(() => {
     return new Set(nodes.filter(n => 
-      ['supervisor', 'planner', 'watcher', 'scheduler', 'flow', 'storage'].includes(n.data.nodeType)
+      ['supervisor', 'planner', 'watcher', 'scheduler', 'flow', 'storage', 'memory', 'trigger'].includes(n.data.nodeType)
     ).map(n => n.data.nodeType));
   }, [nodes]);
 
@@ -796,10 +835,32 @@ function FlowApp() {
   );
 }
 
-export default function App() {
+// App component with ReactFlowProvider wrapper
+function App() {
   return (
-    <ReactFlowProvider>
-      <FlowApp />
-    </ReactFlowProvider>
+    <Router>
+      <div className="h-screen flex flex-col">
+        <nav className="bg-gray-900 border-b border-gray-800 px-4 py-2">
+          <div className="flex items-center gap-6">
+            <Link to="/" className="text-white font-bold">Workflow Engine</Link>
+            <Link to="/monitoring" className="text-gray-400 hover:text-white">Monitoring</Link>
+          </div>
+        </nav>
+        
+        <Routes>
+          <Route 
+            path="/" 
+            element={
+              <ReactFlowProvider>
+                <FlowApp />
+              </ReactFlowProvider>
+            } 
+          />
+          <Route path="/monitoring" element={<Dashboard />} />
+        </Routes>
+      </div>
+    </Router>
   );
 }
+
+export default App;

@@ -1,0 +1,197 @@
+# templates/data_pipeline.yaml
+
+id: "data-pipeline-template"
+name: "Data Processing Pipeline"
+description: "Complete data processing pipeline with ETL capabilities"
+category: "data"
+tags: ["etl", "data", "pipeline", "analytics"]
+
+nodes:
+  - id: "input-1"
+    type: "worker"
+    position: {x: 100, y: 100}
+    data:
+      label: "Data Ingestion"
+      nodeType: "worker"
+      code: |
+        # Data ingestion from multiple sources
+        import pandas as pd
+        import requests
+        
+        # Load from CSV
+        if 'csv_path' in input_data:
+            df = pd.read_csv(input_data['csv_path'])
+        
+        # Load from API
+        elif 'api_url' in input_data:
+            response = requests.get(input_data['api_url'])
+            df = pd.DataFrame(response.json())
+        
+        # Load from database
+        elif 'db_connection' in input_data:
+            import sqlalchemy
+            conn = sqlalchemy.create_engine(input_data['db_connection'])
+            df = pd.read_sql(input_data['query'], conn)
+        
+        output_data['dataframe'] = df
+        output_data['row_count'] = len(df)
+        output_data['columns'] = list(df.columns)
+
+  - id: "cleaner-1"
+    type: "worker"
+    position: {x: 300, y: 100}
+    data:
+      label: "Data Cleaning"
+      nodeType: "worker"
+      code: |
+        # Data cleaning and validation
+        import pandas as pd
+        
+        df = input_data['dataframe']
+        
+        # Remove duplicates
+        df = df.drop_duplicates()
+        
+        # Handle missing values
+        numeric_columns = df.select_dtypes(include=['number']).columns
+        df[numeric_columns] = df[numeric_columns].fillna(df[numeric_columns].mean())
+        
+        # Remove outliers (IQR method)
+        for col in numeric_columns:
+            Q1 = df[col].quantile(0.25)
+            Q3 = df[col].quantile(0.75)
+            IQR = Q3 - Q1
+            df = df[~((df[col] < (Q1 - 1.5 * IQR)) | (df[col] > (Q3 + 1.5 * IQR)))]
+        
+        output_data['dataframe'] = df
+        output_data['cleaned_rows'] = len(df)
+
+  - id: "transformer-1"
+    type: "worker"
+    position: {x: 500, y: 100}
+    data:
+      label: "Data Transformation"
+      nodeType: "worker"
+      code: |
+        # Data transformation
+        import pandas as pd
+        from sklearn.preprocessing import StandardScaler, LabelEncoder
+        
+        df = input_data['dataframe']
+        
+        # Feature engineering
+        # Add any custom transformations here
+        
+        # Scaling numeric features
+        scaler = StandardScaler()
+        numeric_columns = df.select_dtypes(include=['number']).columns
+        df[numeric_columns] = scaler.fit_transform(df[numeric_columns])
+        
+        # Encoding categorical variables
+        categorical_columns = df.select_dtypes(include=['object']).columns
+        label_encoders = {}
+        
+        for col in categorical_columns:
+            le = LabelEncoder()
+            df[col] = le.fit_transform(df[col].astype(str))
+            label_encoders[col] = le
+        
+        output_data['dataframe'] = df
+        output_data['transformations'] = {
+            'scaler': scaler,
+            'label_encoders': label_encoders
+        }
+
+  - id: "analyzer-1"
+    type: "worker"
+    position: {x: 700, y: 100}
+    data:
+      label: "Data Analysis"
+      nodeType: "worker"
+      code: |
+        # Statistical analysis
+        import pandas as pd
+        import numpy as np
+        
+        df = input_data['dataframe']
+        
+        # Basic statistics
+        stats = {
+            'summary': df.describe().to_dict(),
+            'correlation': df.corr().to_dict(),
+            'data_types': df.dtypes.to_dict()
+        }
+        
+        # Advanced analysis
+        # Add custom analysis here
+        
+        output_data['analysis'] = stats
+        output_data['dataframe'] = df
+
+  - id: "output-1"
+    type: "worker"
+    position: {x: 900, y: 100}
+    data:
+      label: "Data Output"
+      nodeType: "worker"
+      code: |
+        # Save processed data
+        import pandas as pd
+        import json
+        
+        df = input_data['dataframe']
+        analysis = input_data.get('analysis', {})
+        
+        # Save to different formats
+        if 'output_format' in input_data:
+            format = input_data['output_format']
+            
+            if format == 'csv':
+                df.to_csv('output/processed_data.csv', index=False)
+            elif format == 'json':
+                df.to_json('output/processed_data.json', orient='records')
+            elif format == 'parquet':
+                df.to_parquet('output/processed_data.parquet')
+        
+        # Save analysis report
+        with open('output/analysis_report.json', 'w') as f:
+            json.dump(analysis, f, indent=2)
+        
+        output_data['status'] = 'completed'
+        output_data['output_path'] = 'output/'
+
+  - id: "supervisor-1"
+    type: "supervisor"
+    position: {x: 500, y: 300}
+    data:
+      label: "Pipeline Supervisor"
+      nodeType: "supervisor"
+      targetNodes: ["input-1", "cleaner-1", "transformer-1", "analyzer-1", "output-1"]
+
+  - id: "planner-1"
+    type: "planner"
+    position: {x: 300, y: 300}
+    data:
+      label: "Pipeline Planner"
+      nodeType: "planner"
+      goals: "Optimize data processing pipeline for performance and accuracy"
+
+edges:
+  - source: "input-1"
+    target: "cleaner-1"
+  - source: "cleaner-1"
+    target: "transformer-1"
+  - source: "transformer-1"
+    target: "analyzer-1"
+  - source: "analyzer-1"
+    target: "output-1"
+
+variables:
+  input_source: "csv"
+  csv_path: "data/input.csv"
+  output_format: "parquet"
+  
+settings:
+  executionMode: "sequential"
+  errorHandling: "stop"
+  maxExecutionTime: 3600

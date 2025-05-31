@@ -1,8 +1,8 @@
 import axios, { AxiosInstance, AxiosError, AxiosRequestConfig } from 'axios';
 
 // API 기본 URL
-const API_BASE_URL = process.env.VITE_API_URL || 'http://localhost:8000';
-const WS_BASE_URL = process.env.VITE_WS_URL || 'ws://localhost:8000';
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+const WS_BASE_URL = import.meta.env.VITE_WS_URL || 'ws://localhost:8000';
 
 // Axios 인스턴스 생성
 const apiClient: AxiosInstance = axios.create({
@@ -69,6 +69,28 @@ export const api = {
       const response = await apiClient.get(`/api/nodes/${nodeId}/history`);
       return response.data;
     },
+
+    async getFiles(nodeId: string) {
+      const response = await apiClient.get(`/api/nodes/${nodeId}/files`);
+      return response.data;
+    },
+
+    async uploadFile(nodeId: string, file: File) {
+      const formData = new FormData();
+      formData.append('file', file);
+      
+      const response = await apiClient.post(`/api/nodes/${nodeId}/files`, formData, {
+        headers: {
+          'Content-Type': 'multipart/form-data',
+        },
+      });
+      return response.data;
+    },
+
+    async deleteFile(nodeId: string, filename: string) {
+      const response = await apiClient.delete(`/api/nodes/${nodeId}/files/${filename}`);
+      return response.data;
+    },
   },
 
   // 워크플로우 관련
@@ -109,6 +131,55 @@ export const api = {
           'Content-Type': 'multipart/form-data',
         },
       });
+      return response.data;
+    },
+
+    async execute(workflowId: string) {
+      const response = await apiClient.post(`/api/workflows/${workflowId}/execute`);
+      return response.data;
+    },
+
+    async getExecutions(workflowId: string) {
+      const response = await apiClient.get(`/api/workflows/${workflowId}/executions`);
+      return response.data;
+    },
+  },
+
+  // 변수 관련
+  variables: {
+    async list() {
+      const response = await apiClient.get('/api/variables');
+      return response.data;
+    },
+
+    async get(name: string) {
+      const response = await apiClient.get(`/api/variables/${name}`);
+      return response.data;
+    },
+
+    async set(name: string, value: any, persist: boolean = false) {
+      const response = await apiClient.post('/api/variables', {
+        name,
+        value,
+        persist
+      });
+      return response.data;
+    },
+
+    async delete(name: string) {
+      const response = await apiClient.delete(`/api/variables/${name}`);
+      return response.data;
+    },
+
+    async search(query: string) {
+      const response = await apiClient.get('/api/variables/search', {
+        params: { q: query }
+      });
+      return response.data;
+    },
+
+    async bulkSet(variables: Array<{ name: string; value: any }>) {
+      const response = await apiClient.post('/api/variables/bulk', { variables });
       return response.data;
     },
   },
@@ -165,6 +236,11 @@ export const api = {
       const response = await apiClient.post('/api/storage/folder', { path });
       return response.data;
     },
+
+    async cleanupOldFiles(daysOld: number) {
+      const response = await apiClient.post('/api/storage/cleanup', { daysOld });
+      return response.data;
+    },
   },
 
   // 시스템 관련
@@ -185,6 +261,44 @@ export const api = {
       });
       return response.data;
     },
+
+    async getMetrics() {
+      const response = await apiClient.get('/api/system/metrics');
+      return response.data;
+    },
+  },
+
+  // 웹훅 관련
+  webhooks: {
+    async list() {
+      const response = await apiClient.get('/api/webhooks');
+      return response.data;
+    },
+
+    async create(data: { name: string; events: string[]; active: boolean }) {
+      const response = await apiClient.post('/api/webhooks', data);
+      return response.data;
+    },
+
+    async get(webhookId: string) {
+      const response = await apiClient.get(`/api/webhooks/${webhookId}`);
+      return response.data;
+    },
+
+    async update(webhookId: string, data: Partial<{ name: string; events: string[]; active: boolean }>) {
+      const response = await apiClient.patch(`/api/webhooks/${webhookId}`, data);
+      return response.data;
+    },
+
+    async delete(webhookId: string) {
+      const response = await apiClient.delete(`/api/webhooks/${webhookId}`);
+      return response.data;
+    },
+
+    async getLogs(webhookId: string) {
+      const response = await apiClient.get(`/api/webhooks/${webhookId}/logs`);
+      return response.data;
+    },
   },
 };
 
@@ -195,17 +309,20 @@ export class WorkflowWebSocket {
   private reconnectAttempts = 0;
   private maxReconnectAttempts = 5;
   private reconnectDelay = 1000;
+  private clientId: string;
   
   private messageHandlers: Map<string, ((data: any) => void)[]> = new Map();
   private connectionHandlers: (() => void)[] = [];
   private disconnectionHandlers: (() => void)[] = [];
 
-  constructor(private url: string = `${WS_BASE_URL}/ws`) {}
+  constructor(clientId?: string) {
+    this.clientId = clientId || `client-${Date.now()}`;
+  }
 
   connect(): Promise<void> {
     return new Promise((resolve, reject) => {
       try {
-        this.ws = new WebSocket(this.url);
+        this.ws = new WebSocket(`${WS_BASE_URL}/ws/${this.clientId}`);
 
         this.ws.onopen = () => {
           console.log('WebSocket connected');
@@ -313,6 +430,10 @@ export class WorkflowWebSocket {
 
   isConnected(): boolean {
     return this.ws !== null && this.ws.readyState === WebSocket.OPEN;
+  }
+
+  getClientId(): string {
+    return this.clientId;
   }
 }
 

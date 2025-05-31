@@ -189,3 +189,36 @@ export interface WorkflowState {
     aiModel: string;
   };
 }
+// Memory Node 타입
+export interface MemoryNodeData {
+  label: string;
+  memories: Record<string, any>;
+  currentContext: Record<string, any>;
+  lastAccess?: Date;
+  status: NodeStatus;
+}
+
+// Trigger Node 타입
+export interface TriggerNodeData {
+  label: string;
+  webhookId: string;
+  events: TriggerEvent[];
+  conditions: TriggerCondition[];
+  lastTriggered?: Date;
+  status: NodeStatus;
+}
+
+export interface TriggerEvent {
+  id: string;
+  name: string;
+  type: 'webhook' | 'schedule' | 'watch';
+  active: boolean;
+  config?: any;
+}
+
+export interface TriggerCondition {
+  id: string;
+  field: string;
+  operator: 'equals' | 'contains' | 'greater' | 'less';
+  value: any;
+}

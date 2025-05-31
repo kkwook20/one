@@ -1,0 +1,303 @@
+# templates/3d_production.yaml
+
+id: "3d-production-template"
+name: "3D Production Pipeline"
+description: "Complete 3D production workflow from concept to final render"
+category: "3d"
+tags: ["3d", "maya", "houdini", "rendering", "animation"]
+
+nodes:
+  - id: "concept-1"
+    type: "worker"
+    position: {x: 100, y: 100}
+    data:
+      label: "Concept Development"
+      nodeType: "worker"
+      code: |
+        # Concept and reference gathering
+        import requests
+        import json
+        
+        # Gather references from various sources
+        project_brief = input_data.get('project_brief', {})
+        
+        # AI-assisted concept generation
+        concepts = []
+        
+        # Save concept data
+        output_data['concepts'] = concepts
+        output_data['references'] = []
+        output_data['style_guide'] = project_brief.get('style', 'realistic')
+
+  - id: "modeling-1"
+    type: "worker"
+    position: {x: 300, y: 100}
+    data:
+      label: "3D Modeling"
+      nodeType: "worker"
+      externalTool: "maya"
+      code: |
+        # Maya modeling automation
+        maya_script = '''
+        import maya.cmds as cmds
+        
+        # Create base geometry
+        # This would be customized based on concept
+        
+        # Example: Create a character base mesh
+        cmds.polyCube(name='character_base', w=2, h=4, d=1)
+        cmds.polySmooth('character_base', divisions=2)
+        
+        # Export for next stage
+        cmds.file(rename='models/character_base.mb')
+        cmds.file(save=True, type='mayaBinary')
+        '''
+        
+        output_data['maya_script'] = maya_script
+        output_data['model_path'] = 'models/character_base.mb'
+
+  - id: "texturing-1"
+    type: "worker"
+    position: {x: 500, y: 100}
+    data:
+      label: "Texturing"
+      nodeType: "worker"
+      code: |
+        # Texturing workflow
+        # This would integrate with Substance Painter or similar
+        
+        texture_maps = {
+            'diffuse': 'textures/character_diffuse.png',
+            'normal': 'textures/character_normal.png',
+            'roughness': 'textures/character_roughness.png',
+            'metallic': 'textures/character_metallic.png'
+        }
+        
+        output_data['texture_maps'] = texture_maps
+
+  - id: "rigging-1"
+    type: "worker"
+    position: {x: 300, y: 250}
+    data:
+      label: "Rigging"
+      nodeType: "worker"
+      externalTool: "maya"
+      code: |
+        # Auto-rigging script
+        maya_script = '''
+        import maya.cmds as cmds
+        
+        # Create skeleton
+        # This would be a sophisticated auto-rigging system
+        
+        # Create basic joint chain
+        cmds.select(clear=True)
+        root = cmds.joint(name='root', p=(0, 0, 0))
+        spine = cmds.joint(name='spine', p=(0, 5, 0))
+        chest = cmds.joint(name='chest', p=(0, 10, 0))
+        
+        # Create IK handles
+        cmds.ikHandle(sj=root, ee=chest, solver='ikRPsolver')
+        
+        # Bind skin
+        cmds.skinCluster('character_base', root, tsb=True)
+        '''
+        
+        output_data['rig_script'] = maya_script
+        output_data['rig_path'] = 'rigs/character_rig.mb'
+
+  - id: "animation-1"
+    type: "worker"
+    position: {x: 500, y: 250}
+    data:
+      label: "Animation"
+      nodeType: "worker"
+      externalTool: "maya"
+      code: |
+        # Animation automation
+        maya_script = '''
+        import maya.cmds as cmds
+        
+        # Set animation keys
+        # This would be driven by motion capture or procedural animation
+        
+        # Example: Simple walk cycle
+        cmds.currentTime(1)
+        cmds.setKeyframe('root', attribute='translateZ', value=0)
+        
+        cmds.currentTime(24)
+        cmds.setKeyframe('root', attribute='translateZ', value=10)
+        
+        # Set interpolation
+        cmds.keyTangent('root', edit=True, inTangentType='linear', outTangentType='linear')
+        '''
+        
+        output_data['animation_script'] = maya_script
+        output_data['animation_path'] = 'animations/walk_cycle.mb'
+
+  - id: "simulation-1"
+    type: "worker"
+    position: {x: 700, y: 250}
+    data:
+      label: "FX Simulation"
+      nodeType: "worker"
+      externalTool: "houdini"
+      code: |
+        # Houdini simulation
+        houdini_script = '''
+        import hou
+        
+        # Create simulation network
+        geo = hou.node('/obj').createNode('geo', 'fx_sim')
+        
+        # Add smoke simulation
+        smoke = geo.createNode('smokesolver')
+        
+        # Configure parameters
+        smoke.parm('divsize').set(0.1)
+        smoke.parm('substeps').set(2)
+        
+        # Cache simulation
+        cache = geo.createNode('filecache')
+        cache.setInput(0, smoke)
+        cache.parm('file').set('$HIP/cache/smoke.$F4.bgeo')
+        '''
+        
+        output_data['houdini_script'] = houdini_script
+        output_data['cache_path'] = 'cache/smoke.####.bgeo'
+
+  - id: "lighting-1"
+    type: "worker"
+    position: {x: 500, y: 400}
+    data:
+      label: "Lighting Setup"
+      nodeType: "worker"
+      externalTool: "maya"
+      code: |
+        # Lighting setup
+        maya_script = '''
+        import maya.cmds as cmds
+        
+        # Create lighting rig
+        # Key light
+        key_light = cmds.directionalLight(intensity=1.0, rgb=(1, 0.9, 0.8))
+        cmds.rotate(-45, 45, 0, key_light)
+        
+        # Fill light
+        fill_light = cmds.directionalLight(intensity=0.5, rgb=(0.8, 0.8, 1))
+        cmds.rotate(-20, -60, 0, fill_light)
+        
+        # Rim light
+        rim_light = cmds.directionalLight(intensity=0.8, rgb=(1, 1, 1))
+        cmds.rotate(-135, 180, 0, rim_light)
+        
+        # Create render settings
+        cmds.setAttr('defaultRenderGlobals.currentRenderer', 'arnold', type='string')
+        '''
+        
+        output_data['lighting_script'] = maya_script
+        output_data['lighting_setup'] = 'three_point'
+
+  - id: "rendering-1"
+    type: "worker"
+    position: {x: 700, y: 400}
+    data:
+      label: "Rendering"
+      nodeType: "worker"
+      externalTool: "maya"
+      code: |
+        # Render automation
+        maya_script = '''
+        import maya.cmds as cmds
+        
+        # Configure Arnold render settings
+        cmds.setAttr('defaultArnoldRenderOptions.AASamples', 5)
+        cmds.setAttr('defaultArnoldRenderOptions.GIDiffuseSamples', 3)
+        cmds.setAttr('defaultArnoldRenderOptions.GISpecularSamples', 3)
+        
+        # Set resolution
+        cmds.setAttr('defaultResolution.width', 1920)
+        cmds.setAttr('defaultResolution.height', 1080)
+        
+        # Render sequence
+        cmds.setAttr('defaultRenderGlobals.startFrame', 1)
+        cmds.setAttr('defaultRenderGlobals.endFrame', 100)
+        
+        # Start batch render
+        cmds.batchRender()
+        '''
+        
+        output_data['render_script'] = maya_script
+        output_data['output_path'] = 'renders/final/####.exr'
+
+  - id: "compositing-1"
+    type: "worker"
+    position: {x: 900, y: 400}
+    data:
+      label: "Compositing"
+      nodeType: "worker"
+      code: |
+        # Compositing with OpenCV/Python
+        import cv2
+        import numpy as np
+        from pathlib import Path
+        
+        # Load rendered frames
+        render_dir = Path('renders/final')
+        frames = sorted(render_dir.glob('*.exr'))
+        
+        # Basic composite
+        for frame in frames:
+            # Load EXR (would need OpenEXR library)
+            img = cv2.imread(str(frame), cv2.IMREAD_UNCHANGED)
+            
+            # Color grading
+            # Add any post-processing effects
+            
+            # Save final output
+            output_path = f'output/final/{frame.stem}.png'
+            cv2.imwrite(output_path, img)
+        
+        output_data['final_output'] = 'output/final/'
+        output_data['frame_count'] = len(frames)
+
+  - id: "supervisor-3d"
+    type: "supervisor"
+    position: {x: 500, y: 550}
+    data:
+      label: "Production Supervisor"
+      nodeType: "supervisor"
+      targetNodes: ["modeling-1", "texturing-1", "rigging-1", "animation-1", "lighting-1", "rendering-1"]
+
+  - id: "scheduler-3d"
+    type: "scheduler"
+    position: {x: 300, y: 550}
+    data:
+      label: "Render Scheduler"
+      nodeType: "scheduler"
+
+edges:
+  - source: "concept-1"
+    target: "modeling-1"
+  - source: "modeling-1"
+    target: "texturing-1"
+  - source: "modeling-1"
+    target: "rigging-1"
+  - source: "rigging-1"
+    target: "animation-1"
+  - source: "animation-1"
+    target: "simulation-1"
+  - source: "texturing-1"
+    target: "lighting-1"
+  - source: "simulation-1"
+    target: "lighting-1"
+  - source: "lighting-1"
+    target: "rendering-1"
+  - source: "rendering-1"
+    target: "compositing-1"
+
+variables:
+  project_name: "Character Animation"
+  frame_range: [1, 100]
+  render_quality: "production"
+  output_format: "exr"

@@ -25,12 +25,17 @@ interface WorkflowState {
   
   // 실행 상태
   executions: Record<string, NodeExecution>;
+  executionLogs: Record<string, string[]>; // 노드별 실행 로그
   isConnected: boolean;
   ws: WebSocket | null;
+  clientId: string | null;
   
   // 노드 관리
   selectedNodeId: string | null;
   nodeConfigs: Record<string, any>;
+  
+  // 글로벌 변수
+  globalVariables: Record<string, any>;
   
   // Actions
   setNodes: (nodes: Node[]) => void;
@@ -55,6 +60,11 @@ interface WorkflowState {
   executeNode: (nodeId: string, nodeType: string) => void;
   executeFlow: (flowNodeId: string, nodeList: string[]) => void;
   stopExecution: (nodeId: string) => void;
+  clearExecutionLogs: (nodeId: string) => void;
+  
+  // 글로벌 변수
+  setGlobalVariable: (name: string, value: any) => void;
+  getGlobalVariable: (name: string) => any;
   
   // 스토리지
   saveWorkflow: () => Promise<void>;
@@ -68,10 +78,13 @@ const useWorkflowStore = create<WorkflowState>((set, get) => ({
   activeTab: 'story',
   tabNodes: {},
   executions: {},
+  executionLogs: {},
   isConnected: false,
   ws: null,
+  clientId: null,
   selectedNodeId: null,
   nodeConfigs: {},
+  globalVariables: {},
   
   // React Flow 핸들러
   setNodes: (nodes) => set({ nodes }),
@@ -91,7 +104,11 @@ const useWorkflowStore = create<WorkflowState>((set, get) => ({
   
   onConnect: (connection) => {
     set({
-      edges: addEdge(connection, get().edges),
+      edges: addEdge({
+        ...connection,
+        style: { stroke: '#64748b', strokeWidth: 2 },
+        animated: true,
+      }, get().edges),
     });
   },
   
@@ -105,7 +122,17 @@ const useWorkflowStore = create<WorkflowState>((set, get) => ({
       data: { 
         label: `${type.charAt(0).toUpperCase() + type.slice(1)} Node`,
         status: 'idle',
-        logs: []
+        logs: [],
+        // 노드 타입별 초기 데이터
+        ...(type === 'worker' ? { tasks: [], code: '', inputs: {}, outputs: {} } : {}),
+        ...(type === 'supervisor' ? { targetNodes: [], modificationHistory: [] } : {}),
+        ...(type === 'planner' ? { goals: '', evaluations: {}, nextSteps: [] } : {}),
+        ...(type === 'watcher' ? { searchQueries: [], collectedData: [], loraTrainingData: [] } : {}),
+        ...(type === 'scheduler' ? { scheduledTasks: [], timeline: [], batchOperations: [] } : {}),
+        ...(type === 'flow' ? { executionList: [], managerNodes: [] } : {}),
+        ...(type === 'storage' ? { storagePath: './storage', storageCategories: [] } : {}),
+        ...(type === 'memory' ? { memories: {}, currentContext: {} } : {}),
+        ...(type === 'trigger' ? { webhookId: '', events: [], conditions: [] } : {}),
       },
     };
     
@@ -173,7 +200,10 @@ const useWorkflowStore = create<WorkflowState>((set, get) => ({
   
   // WebSocket 연결
   connectWebSocket: () => {
-    const ws = new WebSocket('ws://localhost:8000/ws');
+    const clientId = `client-${Date.now()}`;
+    const ws = new WebSocket(`ws://localhost:8000/ws/${clientId}`);
+    
+    set({ clientId });
     
     ws.onopen = () => {
       console.log('WebSocket connected');
@@ -202,6 +232,27 @@ const useWorkflowStore = create<WorkflowState>((set, get) => ({
           });
           break;
           
+        case 'execution_log':
+          // 실행 로그 처리
+          const { nodeId, log } = data;
+          set(state => ({
+            executionLogs: {
+              ...state.executionLogs,
+              [nodeId]: [...(state.executionLogs[nodeId] || []), log]
+            }
+          }));
+          break;
+          
+        case 'variable_update':
+          // 글로벌 변수 업데이트
+          set(state => ({
+            globalVariables: {
+              ...state.globalVariables,
+              [data.name]: data.value
+            }
+          }));
+          break;
+          
         case 'execution_start':
           // 실행 시작
           set({
@@ -215,6 +266,19 @@ const useWorkflowStore = create<WorkflowState>((set, get) => ({
               }
             }
           });
+          break;
+          
+        case 'execution_progress':
+          // 실행 진행률 업데이트
+          set(state => ({
+            executions: {
+              ...state.executions,
+              [data.nodeId]: {
+                ...state.executions[data.nodeId],
+                progress: data.progress
+              }
+            }
+          }));
           break;
           
         case 'execution_complete':
@@ -232,11 +296,23 @@ const useWorkflowStore = create<WorkflowState>((set, get) => ({
               }
             }
           });
+          
+          // 노드 데이터 업데이트 (outputs 등)
+          if (data.result.status === 'success' && data.result.outputs) {
+            get().updateNodeData(data.nodeId, { outputs: data.result.outputs });
+          }
           break;
           
         case 'execution_result':
           // 실행 결과
           console.log('Execution result:', data);
+          break;
+          
+        case 'node_update':
+          // 노드 업데이트 (다른 클라이언트에서의 변경사항)
+          if (data.nodeId && data.data) {
+            get().updateNodeData(data.nodeId, data.data);
+          }
           break;
       }
     };
@@ -278,6 +354,14 @@ const useWorkflowStore = create<WorkflowState>((set, get) => ({
     const node = get().nodes.find(n => n.id === nodeId);
     if (!node) return;
     
+    // 실행 로그 초기화
+    set(state => ({
+      executionLogs: {
+        ...state.executionLogs,
+        [nodeId]: []
+      }
+    }));
+    
     get().sendMessage({
       action: 'execute',
       nodeId,
@@ -306,13 +390,44 @@ const useWorkflowStore = create<WorkflowState>((set, get) => ({
     });
   },
   
+  clearExecutionLogs: (nodeId) => {
+    set(state => ({
+      executionLogs: {
+        ...state.executionLogs,
+        [nodeId]: []
+      }
+    }));
+  },
+  
+  // 글로벌 변수
+  setGlobalVariable: (name, value) => {
+    set(state => ({
+      globalVariables: {
+        ...state.globalVariables,
+        [name]: value
+      }
+    }));
+    
+    // 서버에도 전송
+    get().sendMessage({
+      action: 'set_variable',
+      name,
+      value
+    });
+  },
+  
+  getGlobalVariable: (name) => {
+    return get().globalVariables[name];
+  },
+  
   // 워크플로우 저장/로드
   saveWorkflow: async () => {
-    const { nodes, edges, tabNodes } = get();
+    const { nodes, edges, tabNodes, globalVariables } = get();
     const workflow = {
       nodes,
       edges,
       tabNodes,
+      globalVariables,
       timestamp: new Date().toISOString()
     };
     
@@ -334,7 +449,8 @@ const useWorkflowStore = create<WorkflowState>((set, get) => ({
         set({
           nodes: workflow.nodes,
           edges: workflow.edges,
-          tabNodes: workflow.tabNodes || {}
+          tabNodes: workflow.tabNodes || {},
+          globalVariables: workflow.globalVariables || {}
         });
         console.log('Workflow loaded');
       }

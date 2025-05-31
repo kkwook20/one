@@ -1,0 +1,172 @@
+노드 기반 AI 프로덕션 파이프라인 구현 계획
+1. 아키텍처 개선 사항
+1.1 백엔드 구조
+backend/
+├── app/
+│   ├── core/
+│   │   ├── engine.py (워크플로우 엔진 강화)
+│   │   ├── executor.py (노드 실행기 개선)
+│   │   ├── version_manager.py (버전 관리 시스템)
+│   │   ├── variable_resolver.py (글로벌 변수 참조)
+│   │   └── ai_integration.py (LM Studio 연동)
+│   ├── models/
+│   │   ├── node.py (노드 모델 확장)
+│   │   ├── task.py (작업 항목 모델)
+│   │   └── history.py (히스토리 모델)
+│   ├── nodes/
+│   │   ├── worker.py (기본 Worker)
+│   │   ├── worker_writer.py (텍스트 생성)
+│   │   ├── worker_painter.py (이미지 생성)
+│   │   ├── supervisor.py (코드 리뷰/수정)
+│   │   ├── planner.py (평가 및 기획)
+│   │   ├── watcher.py (데이터 수집)
+│   │   ├── scheduler.py (일정 관리)
+│   │   ├── flow.py (실행 제어)
+│   │   ├── storage.py (파일 관리)
+│   │   └── qa.py (품질 검증)
+│   └── storage/
+│       └── node_storage.py (노드별 파일 저장)
+1.2 프론트엔드 구조
+frontend/src/
+├── components/
+│   ├── nodes/
+│   │   ├── common/
+│   │   │   ├── NodeHeader.tsx (상단 3버튼)
+│   │   │   ├── TaskList.tsx (작업 항목)
+│   │   │   ├── ProgressBar.tsx (진행률)
+│   │   │   └── NodeEditor.tsx (3패널 편집기)
+│   │   └── [각 노드 타입별 컴포넌트]
+│   ├── panels/
+│   │   ├── InputPanel.tsx
+│   │   ├── CodeEditor.tsx
+│   │   └── OutputPanel.tsx
+│   └── variables/
+│       └── VariableExplorer.tsx
+├── stores/
+│   ├── workflowStore.ts
+│   ├── versionStore.ts
+│   └── variableStore.ts
+└── utils/
+    ├── variableResolver.ts
+    └── aiIntegration.ts
+2. 주요 기능 구현 계획
+2.1 노드 공통 기능
+
+상단 버튼: 실행/중지, 삭제, 드롭다운 메뉴
+작업 항목 리스트: 드래그&드롭, 상태 아이콘 (○/×/△)
+진행률 표시: 실시간 업데이트
+버전 관리: 최대 5개 히스토리 자동 저장
+
+2.2 Worker Node 계열
+
+Worker Node: 3패널 구조, AI 자동 개선
+Worker Writer Node: 텍스트 생성, 마크다운/JSON 출력
+Worker Painter Node: 이미지 생성, SVG/픽셀 지원
+
+2.3 매니저 노드 강화
+
+Supervisor: 코드 리뷰, 수정 이력, 자동 백업
+Planner: 평가 패널, Accept/Cancel 버튼
+Watcher: 요청 처리, 데이터 수집, 출처 추적
+Scheduler: 간트차트, 시간 추적, AI 예측
+Flow: 실행 팝업, 매니저 우선 실행
+Storage: 폴더뷰, 데이터 흐름 그래프
+
+2.4 글로벌 변수 시스템
+
+네이밍: {섹션}.{노드타입}.{노드ID}.{데이터타입}.{항목}
+자동 완성 지원
+타입 체크 및 검증
+실시간 참조 업데이트
+
+2.5 파일 저장 구조
+node-storage/
+├── {node-id}/
+│   ├── code/
+│   │   ├── current.py
+│   │   └── history/
+│   │       ├── v1.py
+│   │       ├── v2.py
+│   │       └── ... (최대 5개)
+│   ├── data/
+│   │   ├── input.json
+│   │   ├── output.json
+│   │   └── tasks.json
+│   ├── files/
+│   │   └── [생성된 파일들]
+│   └── metadata.json
+3. UI/UX 개선
+3.1 노드 디자인
+
+현재의 모던한 다크 테마 유지
+상태별 색상 코딩 강화
+애니메이션 효과 개선
+
+3.2 편집창
+
+Visual Studio Code 스타일 에디터
+실시간 구문 강조
+자동 완성 기능
+
+3.3 인터랙션
+
+드래그&드롭 강화
+단축키 시스템
+컨텍스트 메뉴
+
+4. 구현 우선순위
+Phase 1: 핵심 기능 (즉시)
+
+노드 공통 UI 컴포넌트
+버전 관리 시스템
+글로벌 변수 참조
+Worker Node 3패널 구조
+
+Phase 2: 노드 타입 확장 (1주)
+
+Worker Writer/Painter Node
+매니저 노드 기능 강화
+QA Node 추가
+
+Phase 3: 고급 기능 (2주)
+
+AI 자동 개선
+실행 흐름 최적화
+협업 기능
+
+5. 기술 스택
+백엔드
+
+FastAPI (현재 유지)
+SQLite → PostgreSQL (선택적)
+LM Studio API 연동
+Vector DB (Docker)
+
+프론트엔드
+
+React + TypeScript (현재 유지)
+Monaco Editor (VS Code 스타일)
+React Flow (노드 기반 UI)
+Framer Motion (애니메이션)
+
+인프라
+
+Docker Compose
+Google Drive API
+WebSocket (실시간 업데이트)
+
+6. 성능 최적화
+
+노드 실행 병렬화
+캐싱 시스템
+증분 저장
+리소스 모니터링
+
+7. 보안 및 권한
+
+노드별 접근 제어
+민감 정보 암호화
+감사 로그
+역할 기반 권한
+
+이제 이 계획에 따라 코드를 구현하겠습니다.

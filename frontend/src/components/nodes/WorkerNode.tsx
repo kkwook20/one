@@ -1,190 +1,168 @@
 import React, { useState, memo, useCallback } from 'react';
-import { Handle, Position, NodeProps } from 'reactflow';
-import { Play, Square, Code, ChevronDown, ChevronUp, Zap, CheckCircle, XCircle, Clock } from 'lucide-react';
+import { NodeProps } from 'reactflow';
+import { Code, FileText, Settings } from 'lucide-react';
+import { BaseNode } from './BaseNode';
 import useWorkflowStore from '../../stores/workflowStore';
-import { Task, TaskStatus } from '../../types/nodes';
 
 const WorkerNode = memo(({ data, id, selected }: NodeProps) => {
-  const [tasks, setTasks] = useState<Task[]>(data.tasks || [
-    { id: '1', text: '데이터 전처리 작업', status: 'todo', progress: 0 },
-    { id: '2', text: '모델 학습 실행', status: 'todo', progress: 0 },
-  ]);
-  const [isExpanded, setIsExpanded] = useState(false);
-  const [noteContent, setNoteContent] = useState('');
-  const [isRunning, setIsRunning] = useState(false);
+  const [showEditor, setShowEditor] = useState(false);
+  const { updateNodeData } = useWorkflowStore();
+
+  const taskItems = data.tasks?.map(task => ({
+    id: task.id,
+    text: task.text,
+    status: task.status === 'todo' ? 'active' : task.status
+  })) || [];
+
+  const handleEdit = useCallback(() => {
+    setShowEditor(true);
+  }, []);
+
+  return (
+    <>
+      <BaseNode
+        id={id}
+        data={data}
+        selected={selected}
+        nodeType="worker"
+        nodeColor="#3b82f6"
+        taskItems={taskItems}
+        onEdit={handleEdit}
+      >
+        <div className="p-3">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-white font-semibold">Worker Node</span>
+            <span className="text-xs text-gray-400">{data.label}</span>
+          </div>
+          
+          {/* 간단한 상태 표시 */}
+          <div className="text-xs text-gray-400">
+            {data.code ? 'Code configured' : 'No code'}
+          </div>
+        </div>
+      </BaseNode>
+
+      {/* 3패널 에디터 모달 */}
+      {showEditor && (
+        <WorkerEditor
+          nodeId={id}
+          onClose={() => setShowEditor(false)}
+        />
+      )}
+    </>
+  );
+});
+
+// 3패널 에디터 컴포넌트
+const WorkerEditor: React.FC<{ nodeId: string; onClose: () => void }> = ({ 
+  nodeId, 
+  onClose 
+}) => {
+  const { nodes, updateNodeData } = useWorkflowStore();
+  const node = nodes.find(n => n.id === nodeId);
   
-  const { executeNode, updateNodeData } = useWorkflowStore();
+  const [activePanel, setActivePanel] = useState<'input' | 'code' | 'output'>('code');
+  const [code, setCode] = useState(node?.data?.code || '');
+  const [inputs, setInputs] = useState(JSON.stringify(node?.data?.inputs || {}, null, 2));
+  const [note, setNote] = useState(node?.data?.note || '');
 
-  const handleExecute = useCallback(() => {
-    setIsRunning(true);
-    executeNode(id, 'worker');
-    // 실제로는 실행 완료 시 setIsRunning(false) 호출
-    setTimeout(() => setIsRunning(false), 3000);
-  }, [id, executeNode]);
-
-  const updateTaskStatus = (taskId: string, status: TaskStatus) => {
-    const updatedTasks = tasks.map(task => 
-      task.id === taskId ? { ...task, status } : task
-    );
-    setTasks(updatedTasks);
-    updateNodeData(id, { tasks: updatedTasks });
-  };
-
-  const getStatusIcon = (status: TaskStatus) => {
-    switch (status) {
-      case 'todo': 
-        return <div className="w-4 h-4 rounded-full border-2 border-blue-400" />;
-      case 'skip': 
-        return <XCircle className="w-4 h-4 text-red-400" />;
-      case 'partial': 
-        return <Clock className="w-4 h-4 text-yellow-400" />;
-    }
-  };
-
-  const getNextStatus = (status: TaskStatus): TaskStatus => {
-    const statusOrder: TaskStatus[] = ['todo', 'skip', 'partial'];
-    const currentIndex = statusOrder.indexOf(status);
-    return statusOrder[(currentIndex + 1) % statusOrder.length];
+  const handleSave = () => {
+    updateNodeData(nodeId, {
+      code,
+      inputs: JSON.parse(inputs),
+      note
+    });
+    onClose();
   };
 
   return (
-    <div
-      className={`workflow-node min-w-[320px] ${
-        selected ? 'ring-2 ring-blue-500 ring-offset-2 ring-offset-gray-950' : ''
-      }`}
-      style={{
-        '--node-color-1': '#3b82f6',
-        '--node-color-2': '#2563eb',
-        '--button-color-1': '#3b82f6',
-        '--button-color-2': '#2563eb',
-        '--progress-color-1': '#3b82f6',
-        '--progress-color-2': '#60a5fa',
-      } as React.CSSProperties}
-    >
-      <Handle 
-        type="target" 
-        position={Position.Top} 
-        className="!bg-blue-500" 
-      />
-      
-      {/* Header */}
-      <div className="node-header">
-        <div className="node-title">
-          <div className="node-icon">
-            <Zap className="w-4 h-4 text-white" />
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+      <div className="w-full max-w-6xl h-[80vh] bg-gray-900 rounded-lg shadow-2xl flex flex-col">
+        {/* 헤더 */}
+        <div className="flex items-center justify-between p-4 border-b border-gray-700">
+          <h2 className="text-lg font-bold text-white">Edit Worker Node</h2>
+          <button
+            onClick={onClose}
+            className="text-gray-400 hover:text-white"
+          >
+            ×
+          </button>
+        </div>
+
+        {/* 3패널 레이아웃 */}
+        <div className="flex-1 flex">
+          {/* 입력 패널 */}
+          <div className="w-1/3 border-r border-gray-700 flex flex-col">
+            <div className="p-3 border-b border-gray-700 flex items-center gap-2">
+              <FileText className="w-4 h-4 text-blue-400" />
+              <span className="text-sm font-medium text-gray-300">Input Data</span>
+            </div>
+            <textarea
+              value={inputs}
+              onChange={(e) => setInputs(e.target.value)}
+              className="flex-1 p-3 bg-gray-800 text-gray-300 text-sm font-mono resize-none outline-none"
+              placeholder="JSON input data..."
+            />
           </div>
-          <span>Worker Node</span>
-        </div>
-        <div className="flex gap-2">
-          <button
-            onClick={handleExecute}
-            disabled={isRunning}
-            className={`node-button primary ${isRunning ? 'opacity-50 cursor-not-allowed' : ''}`}
-          >
-            {isRunning ? (
-              <>
-                <div className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                <span>실행 중</span>
-              </>
-            ) : (
-              <>
-                <Play className="w-3 h-3" />
-                <span>실행</span>
-              </>
-            )}
-          </button>
-          <button
-            onClick={() => setIsExpanded(!isExpanded)}
-            className="node-button"
-          >
-            {isExpanded ? (
-              <ChevronUp className="w-3 h-3" />
-            ) : (
-              <ChevronDown className="w-3 h-3" />
-            )}
-          </button>
-        </div>
-      </div>
-      
-      {/* Tasks */}
-      <div className="space-y-2 mb-4">
-        {tasks.map((task, index) => (
-          <div key={task.id} className="node-card group slide-up" style={{ animationDelay: `${index * 50}ms` }}>
-            {/* Progress bar background */}
-            <div className="progress-bar absolute inset-0 opacity-30">
-              <div 
-                className="progress-bar-fill"
-                style={{ width: `${task.progress}%` }}
+
+          {/* 코드 패널 */}
+          <div className="w-1/3 flex flex-col">
+            <div className="p-3 border-b border-gray-700 flex items-center gap-2">
+              <Code className="w-4 h-4 text-green-400" />
+              <span className="text-sm font-medium text-gray-300">Python Code</span>
+            </div>
+            <textarea
+              value={code}
+              onChange={(e) => setCode(e.target.value)}
+              className="flex-1 p-3 bg-gray-800 text-gray-300 text-sm font-mono resize-none outline-none"
+              placeholder="# Python code here..."
+            />
+            <div className="p-3 border-t border-gray-700">
+              <input
+                type="text"
+                value={note}
+                onChange={(e) => setNote(e.target.value)}
+                placeholder="Add a note..."
+                className="w-full px-3 py-2 bg-gray-700 text-gray-300 text-sm rounded outline-none"
               />
             </div>
-            
-            {/* Task content */}
-            <div className="relative z-10 flex items-center justify-between">
-              <span className="text-sm text-gray-200 flex-1 mr-2">{task.text}</span>
-              <button
-                onClick={() => updateTaskStatus(task.id, getNextStatus(task.status))}
-                className="p-1 rounded-lg hover:bg-white/10 transition-all"
-                title={`Status: ${task.status}`}
-              >
-                {getStatusIcon(task.status)}
-              </button>
-            </div>
           </div>
-        ))}
-      </div>
-      
-      {/* Expanded content */}
-      {isExpanded && (
-        <div className="space-y-3 pt-3 border-t border-gray-700 slide-up">
-          {/* Code preview */}
-          <div className="node-card">
-            <div className="flex items-center gap-2 mb-2">
-              <Code className="w-3 h-3 text-blue-400" />
-              <span className="text-xs text-gray-400">Python Code</span>
+
+          {/* 출력 패널 */}
+          <div className="w-1/3 border-l border-gray-700 flex flex-col">
+            <div className="p-3 border-b border-gray-700 flex items-center gap-2">
+              <Settings className="w-4 h-4 text-purple-400" />
+              <span className="text-sm font-medium text-gray-300">Output & Logs</span>
             </div>
-            <pre className="text-xs text-gray-300 overflow-x-auto font-mono">
-              <code>{data.code || '# No code yet\nprint("Hello, World!")'}</code>
-            </pre>
-          </div>
-          
-          {/* Status */}
-          <div className="flex items-center justify-between">
-            <span className="text-xs text-gray-400">상태</span>
-            <span className={`status-badge ${
-              data.status === 'running' ? 'running' :
-              data.status === 'completed' ? 'success' :
-              data.status === 'error' ? 'error' :
-              'idle'
-            }`}>
-              {data.status === 'running' && <div className="w-2 h-2 rounded-full bg-blue-400 animate-pulse" />}
-              {data.status === 'completed' && <CheckCircle className="w-3 h-3" />}
-              {data.status === 'error' && <XCircle className="w-3 h-3" />}
-              {data.status || 'Ready'}
-            </span>
+            <div className="flex-1 p-3 bg-gray-800 text-gray-400 text-sm font-mono overflow-y-auto">
+              {node?.data?.outputs ? (
+                <pre>{JSON.stringify(node.data.outputs, null, 2)}</pre>
+              ) : (
+                <div>No output yet</div>
+              )}
+            </div>
           </div>
         </div>
-      )}
-      
-      {/* Note */}
-      <div className="mt-4">
-        <textarea 
-          className="modern-textarea"
-          placeholder="노트를 입력하세요..."
-          rows={2}
-          value={noteContent}
-          onChange={(e) => setNoteContent(e.target.value)}
-          onBlur={() => updateNodeData(id, { note: noteContent })}
-        />
+
+        {/* 푸터 */}
+        <div className="p-4 border-t border-gray-700 flex justify-end gap-2">
+          <button
+            onClick={onClose}
+            className="px-4 py-2 text-gray-400 hover:text-white transition-colors"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={handleSave}
+            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded transition-colors"
+          >
+            Save Changes
+          </button>
+        </div>
       </div>
-      
-      <Handle 
-        type="source" 
-        position={Position.Bottom} 
-        className="!bg-blue-500" 
-      />
     </div>
   );
-});
+};
 
 WorkerNode.displayName = 'WorkerNode';
 

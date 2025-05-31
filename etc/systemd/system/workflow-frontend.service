@@ -1,0 +1,18 @@
+# /etc/systemd/system/workflow-frontend.service
+[Unit]
+Description=Workflow Engine Frontend
+After=network.target
+
+[Service]
+Type=simple
+User=workflow
+Group=workflow
+WorkingDirectory=/opt/workflow-engine/frontend
+ExecStart=/usr/bin/npm run preview -- --host 0.0.0.0 --port 3000
+Restart=on-failure
+RestartSec=5
+StandardOutput=append:/opt/workflow-engine/logs/frontend.log
+StandardError=append:/opt/workflow-engine/logs/frontend-error.log
+
+[Install]
+WantedBy=multi-user.target

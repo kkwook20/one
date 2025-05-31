@@ -1,0 +1,19 @@
+# /etc/systemd/system/workflow-backend.service
+[Unit]
+Description=Workflow Engine Backend
+After=network.target
+
+[Service]
+Type=exec
+User=workflow
+Group=workflow
+WorkingDirectory=/opt/workflow-engine/backend
+Environment="PATH=/opt/workflow-engine/backend/venv/bin"
+ExecStart=/opt/workflow-engine/backend/venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4
+Restart=on-failure
+RestartSec=5
+StandardOutput=append:/opt/workflow-engine/logs/backend.log
+StandardError=append:/opt/workflow-engine/logs/backend-error.log
+
+[Install]
+WantedBy=multi-user.target
