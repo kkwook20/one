@@ -6,6 +6,9 @@ import asyncio
 import os
 import json
 from datetime import datetime
+import sys
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from models import ExecuteRequest, RestoreVersionRequest
 from storage import sections_db, save_node_data, get_node_versions
 from execution import execute_python_code, get_connected_outputs, node_processes
@@ -103,6 +106,17 @@ async def stop_node(node_id: str):
 @router.post("/node/{node_id}/deactivate")
 async def toggle_node_deactivation(node_id: str, section_id: str):
     """Toggle node deactivation status"""
+    from pydantic import BaseModel
+    
+    class DeactivateRequest(BaseModel):
+        sectionId: str
+    
+    # Parse request body
+    import json
+    request_body = await request.body()
+    data = json.loads(request_body) if request_body else {}
+    section_id = data.get('sectionId')
+    
     section = sections_db.get(section_id)
     if not section:
         raise HTTPException(status_code=404, detail="Section not found")

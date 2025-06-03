@@ -1,0 +1,41 @@
+# Global Variables System Documentation
+
+## Variable Naming Convention
+Format: {section}.{nodeType}.{nodeId}.{dataType}.{detail}
+
+## Available Data Types:
+- output: Node execution result JSON
+- files: Generated file paths
+- code: Current Python source
+- status: Execution status, progress
+- config: Node configuration values
+- tasks: Task item list (with status)
+- history: Version history (max 5)
+- metadata: Execution time, model used, token usage
+
+## Usage Examples:
+
+### In Python Code:
+```python
+# Get character settings from another section
+character_data = get_global_var("preproduction.planning.node003.output.character_settings")
+
+# Check task status of another node
+task_status = get_global_var("section2.worker.node005.tasks.status_list")
+
+# Access historical version
+old_code = get_global_var("section1.supervisor.node001.history.version_3")
+
+# Get connected node outputs
+connected_outputs = get_connected_outputs()
+```
+
+### Special Functions:
+- get_connected_outputs(): Get all connected node outputs
+- get_section_outputs(section_name): Get all outputs from a section
+- get_supervised_nodes(): For supervisor nodes, get supervised node list
+
+## File Structure:
+- node-storage/{nodeId}/data.json - Current node data
+- node-storage/{nodeId}/version_*.json - Version history
+- global-vars/index.json - Global variable index
