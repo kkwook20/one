@@ -3,67 +3,58 @@
 // - frontend/src/types/index.ts
 // Location: frontend/src/hooks/useNodeDrag.ts
 
-import { useState, useCallback, useEffect, RefObject } from 'react';
+import { useState, useCallback, useRef } from 'react';
 import { Node, Position } from '../types';
 
 interface UseNodeDragProps {
-  canvasRef: RefObject<HTMLDivElement>;
-  onNodeUpdate: (node: Node) => void;
+  onNodeUpdate: (nodeId: string, position: Position) => void;
 }
 
-export const useNodeDrag = ({ canvasRef, onNodeUpdate }: UseNodeDragProps) => {
-  const [isDragging, setIsDragging] = useState(false);
-  const [draggedNode, setDraggedNode] = useState<Node | null>(null);
-  const [dragOffset, setDragOffset] = useState<Position>({ x: 0, y: 0 });
+export const useNodeDrag = ({ onNodeUpdate }: UseNodeDragProps) => {
+  const [draggedNodeId, setDraggedNodeId] = useState<string | null>(null);
+  const dragOffset = useRef<Position>({ x: 0, y: 0 });
 
-  const handleMouseDown = (e: React.MouseEvent, node: Node) => {
-    if (e.button !== 0) return;
+  const handleMouseDown = useCallback((e: React.MouseEvent, node: Node) => {
+    e.preventDefault();
+    e.stopPropagation();
     
-    const rect = canvasRef.current?.getBoundingClientRect();
-    if (!rect) return;
+    const element = e.currentTarget as HTMLElement;
+    const rect = element.getBoundingClientRect();
+    
+    dragOffset.current = {
+      x: e.clientX - rect.left,
+      y: e.clientY - rect.top
+    };
+    
+    setDraggedNodeId(node.id);
 
-    setIsDragging(true);
-    setDraggedNode(node);
-    setDragOffset({
-      x: e.clientX - rect.left - node.position.x,
-      y: e.clientY - rect.top - node.position.y
-    });
-  };
-
-  const handleMouseMove = useCallback((e: MouseEvent) => {
-    if (!isDragging || !draggedNode || !canvasRef.current) return;
-
-    const rect = canvasRef.current.getBoundingClientRect();
-    const newPosition = {
-      x: Math.max(0, Math.min(rect.width - 200, e.clientX - rect.left - dragOffset.x)),
-      y: Math.max(0, Math.min(rect.height - 200, e.clientY - rect.top - dragOffset.y))
+    const handleMouseMove = (e: MouseEvent) => {
+      e.preventDefault();
+      const canvas = document.getElementById('pipeline-canvas');
+      if (!canvas) return;
+      
+      const canvasRect = canvas.getBoundingClientRect();
+      const newX = e.clientX - canvasRect.left - dragOffset.current.x;
+      const newY = e.clientY - canvasRect.top - dragOffset.current.y;
+      
+      onNodeUpdate(node.id, {
+        x: Math.max(0, Math.min(canvasRect.width - 200, newX)),
+        y: Math.max(0, Math.min(canvasRect.height - 100, newY))
+      });
     };
 
-    onNodeUpdate({
-      ...draggedNode,
-      position: newPosition
-    });
-  }, [isDragging, draggedNode, dragOffset, canvasRef, onNodeUpdate]);
+    const handleMouseUp = () => {
+      setDraggedNodeId(null);
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+    };
 
-  const handleMouseUp = useCallback(() => {
-    setIsDragging(false);
-    setDraggedNode(null);
-  }, []);
-
-  useEffect(() => {
-    if (isDragging) {
-      document.addEventListener('mousemove', handleMouseMove);
-      document.addEventListener('mouseup', handleMouseUp);
-      return () => {
-        document.removeEventListener('mousemove', handleMouseMove);
-        document.removeEventListener('mouseup', handleMouseUp);
-      };
-    }
-  }, [isDragging, handleMouseMove, handleMouseUp]);
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+  }, [onNodeUpdate]);
 
   return {
-    isDragging,
-    draggedNode,
+    draggedNodeId,
     handleMouseDown
   };
 };

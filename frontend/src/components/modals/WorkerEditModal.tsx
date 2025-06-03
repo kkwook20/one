@@ -35,16 +35,15 @@ export const WorkerEditModal: React.FC<WorkerEditModalProps> = ({
 
   useEffect(() => {
     // Load connected node data
-    if (selectedInput) {
-      const inputNode = allSections
-        .flatMap(s => s.nodes)
-        .find(n => n.id === selectedInput);
+    if (selectedInput || node.connectedFrom?.[0]) {
+      const inputId = selectedInput || node.connectedFrom?.[0];
+      const inputNode = section.nodes.find(n => n.id === inputId);
       
       if (inputNode?.output) {
         setConnectedNodeData(inputNode.output);
       }
     }
-  }, [selectedInput, allSections]);
+  }, [selectedInput, node.connectedFrom, section]);
 
   useEffect(() => {
     // Load version history
@@ -54,28 +53,34 @@ export const WorkerEditModal: React.FC<WorkerEditModalProps> = ({
   }, [node.id]);
 
   const handleSave = async () => {
-    const updatedNode = {
-      ...editedNode,
-      connectedFrom: selectedInput ? [selectedInput] : []
-    };
-    
     // Update section with new node data
     await apiClient.updateSection(section.id, {
       ...section,
-      nodes: section.nodes.map(n => n.id === node.id ? updatedNode : n)
+      nodes: section.nodes.map(n => n.id === node.id ? editedNode : n)
     });
     
-    onSave(updatedNode);
+    onSave(editedNode);
     onClose();
   };
 
   const executeCode = async () => {
     try {
+      // Get connected outputs for execution
+      const connectedOutputs: any = {};
+      if (node.connectedFrom) {
+        for (const connId of node.connectedFrom) {
+          const connNode = section.nodes.find(n => n.id === connId);
+          if (connNode?.output) {
+            connectedOutputs[connNode.label] = connNode.output;
+          }
+        }
+      }
+
       const response = await apiClient.executeNode(
         node.id,
         section.id,
         editedNode.code || '',
-        connectedNodeData
+        connectedOutputs
       );
       
       if (response.data.status === 'started') {
@@ -114,15 +119,16 @@ export const WorkerEditModal: React.FC<WorkerEditModalProps> = ({
               className="w-full border rounded p-2 mb-4"
             >
               <option value="">No input</option>
-              {allSections.flatMap(s =>
-                s.nodes
-                  .filter(n => n.id !== node.id && (n.type === 'worker' || n.type === 'input'))
-                  .map(n => (
-                    <option key={n.id} value={n.id}>
-                      {s.name} - {n.label}
-                    </option>
-                  ))
-              )}
+              {/* Only show nodes that are connected to this node */}
+              {node.connectedFrom?.map(connNodeId => {
+                const connNode = section.nodes.find(n => n.id === connNodeId);
+                if (!connNode) return null;
+                return (
+                  <option key={connNode.id} value={connNode.id}>
+                    {connNode.label} ({connNode.type})
+                  </option>
+                );
+              })}
             </select>
 
             {connectedNodeData && (

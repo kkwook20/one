@@ -4,7 +4,7 @@
 // - frontend/src/api/client.ts
 // Location: frontend/src/components/NodeComponent.tsx
 
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, memo } from 'react';
 import { 
   Play, Square, Trash2, MoreVertical, GripVertical, 
   Circle, X, Triangle, Power, Eye, Code, Database, Award
@@ -21,11 +21,14 @@ interface NodeComponentProps {
   onSelect: (id: string) => void;
   onEdit: (node: Node) => void;
   onStartConnection: (node: Node) => void;
+  onMouseDown: (e: React.MouseEvent, node: Node) => void;
   progress?: number;
+  isDragging: boolean;
 }
 
-export const NodeComponent: React.FC<NodeComponentProps> = ({ 
-  node, onUpdate, onDelete, onConnect, isSelected, onSelect, onEdit, onStartConnection, progress 
+export const NodeComponent = memo<NodeComponentProps>(({ 
+  node, onUpdate, onDelete, onConnect, isSelected, onSelect, onEdit, 
+  onStartConnection, onMouseDown, progress, isDragging 
 }) => {
   const [isEditing, setIsEditing] = useState(false);
   const [showMenu, setShowMenu] = useState(false);
@@ -108,12 +111,6 @@ export const NodeComponent: React.FC<NodeComponentProps> = ({
     setDraggedTaskId(null);
   };
 
-  const handleNodeDragStart = (e: React.DragEvent) => {
-    e.dataTransfer.setData('nodeId', node.id);
-    e.dataTransfer.setData('nodeType', node.type);
-    e.dataTransfer.effectAllowed = 'copy';
-  };
-
   const getNodeColor = () => {
     if (node.isDeactivated) return 'bg-gray-200 border-gray-400 opacity-50';
     switch (node.type) {
@@ -131,15 +128,19 @@ export const NodeComponent: React.FC<NodeComponentProps> = ({
       className={`absolute rounded-lg shadow-lg border-2 transition-all ${
         isSelected ? 'border-blue-500 shadow-xl z-20' : getNodeColor()
       } ${node.type === 'input' || node.type === 'output' ? 'w-32' : 'w-64'}`}
-      style={{ left: node.position.x, top: node.position.y }}
+      style={{ 
+        left: node.position.x, 
+        top: node.position.y,
+        cursor: isDragging ? 'grabbing' : 'grab',
+        userSelect: 'none'
+      }}
       onClick={() => onSelect(node.id)}
-      draggable={node.type === 'worker'}
-      onDragStart={handleNodeDragStart}
+      onMouseDown={(e) => onMouseDown(e, node)}
     >
       {/* Connection Handles */}
       {node.type !== 'output' && (
         <div
-          className="absolute -right-2 top-1/2 -translate-y-1/2 w-4 h-4 bg-blue-500 rounded-full cursor-crosshair hover:scale-125 transition-transform"
+          className="absolute -right-2 top-1/2 -translate-y-1/2 w-4 h-4 bg-blue-500 rounded-full cursor-crosshair hover:scale-125 transition-transform z-30"
           onMouseDown={(e) => {
             e.stopPropagation();
             onStartConnection(node);
@@ -154,20 +155,24 @@ export const NodeComponent: React.FC<NodeComponentProps> = ({
       <div className="p-3 border-b bg-opacity-70 rounded-t-lg">
         <div className="flex items-center justify-between mb-2">
           <div className="flex gap-1">
-            <button
-              onClick={toggleRun}
-              className="p-1 hover:bg-gray-200 rounded transition-colors"
-              title={node.isRunning ? "Stop" : "Run"}
-            >
-              {node.isRunning ? <Square className="w-4 h-4 text-red-500" /> : <Play className="w-4 h-4 text-green-500" />}
-            </button>
-            <button
-              onClick={() => onDelete(node.id)}
-              className="p-1 hover:bg-gray-200 rounded transition-colors"
-              title="Delete"
-            >
-              <Trash2 className="w-4 h-4 text-red-500" />
-            </button>
+            {node.type !== 'input' && node.type !== 'output' && (
+              <>
+                <button
+                  onClick={toggleRun}
+                  className="p-1 hover:bg-gray-200 rounded transition-colors"
+                  title={node.isRunning ? "Stop" : "Run"}
+                >
+                  {node.isRunning ? <Square className="w-4 h-4 text-red-500" /> : <Play className="w-4 h-4 text-green-500" />}
+                </button>
+                <button
+                  onClick={() => onDelete(node.id)}
+                  className="p-1 hover:bg-gray-200 rounded transition-colors"
+                  title="Delete"
+                >
+                  <Trash2 className="w-4 h-4 text-red-500" />
+                </button>
+              </>
+            )}
             <div className="relative">
               <button
                 onClick={(e) => {
@@ -189,34 +194,38 @@ export const NodeComponent: React.FC<NodeComponentProps> = ({
                   >
                     Open
                   </button>
-                  <button 
-                    onClick={() => {
-                      setIsEditing(true);
-                      setShowMenu(false);
-                    }}
-                    className="block px-4 py-2 hover:bg-gray-100 w-full text-left text-sm"
-                  >
-                    Rename
-                  </button>
-                  <button 
-                    onClick={() => {
-                      toggleDeactivate();
-                      setShowMenu(false);
-                    }}
-                    className="block px-4 py-2 hover:bg-gray-100 w-full text-left text-sm"
-                  >
-                    {node.isDeactivated ? 'Activate' : 'Deactivate'}
-                  </button>
-                  <hr className="my-1" />
-                  <button 
-                    onClick={() => {
-                      onDelete(node.id);
-                      setShowMenu(false);
-                    }}
-                    className="block px-4 py-2 hover:bg-gray-100 w-full text-left text-red-600 text-sm"
-                  >
-                    Delete
-                  </button>
+                  {node.type !== 'input' && node.type !== 'output' && (
+                    <>
+                      <button 
+                        onClick={() => {
+                          setIsEditing(true);
+                          setShowMenu(false);
+                        }}
+                        className="block px-4 py-2 hover:bg-gray-100 w-full text-left text-sm"
+                      >
+                        Rename
+                      </button>
+                      <button 
+                        onClick={() => {
+                          toggleDeactivate();
+                          setShowMenu(false);
+                        }}
+                        className="block px-4 py-2 hover:bg-gray-100 w-full text-left text-sm"
+                      >
+                        {node.isDeactivated ? 'Activate' : 'Deactivate'}
+                      </button>
+                      <hr className="my-1" />
+                      <button 
+                        onClick={() => {
+                          onDelete(node.id);
+                          setShowMenu(false);
+                        }}
+                        className="block px-4 py-2 hover:bg-gray-100 w-full text-left text-red-600 text-sm"
+                      >
+                        Delete
+                      </button>
+                    </>
+                  )}
                 </div>
               )}
             </div>
@@ -336,4 +345,14 @@ export const NodeComponent: React.FC<NodeComponentProps> = ({
       )}
     </div>
   );
-};
+}, (prevProps, nextProps) => {
+  // Custom comparison for performance
+  return (
+    prevProps.node === nextProps.node &&
+    prevProps.isSelected === nextProps.isSelected &&
+    prevProps.progress === nextProps.progress &&
+    prevProps.isDragging === nextProps.isDragging
+  );
+});
+
+NodeComponent.displayName = 'NodeComponent';

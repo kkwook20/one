@@ -10,7 +10,7 @@
 // - frontend/src/hooks/*.ts
 // Location: frontend/src/App.tsx
 
-import React, { useState, useRef, useCallback, useEffect } from 'react';
+import React, { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import { Play, Settings } from 'lucide-react';
 import { 
   Node, Section, Connection, Position, 
@@ -18,7 +18,7 @@ import {
 } from './types';
 import { GROUPS, NODE_TYPES } from './constants';
 import { apiClient } from './api/client';
-import { Canvas } from './components/Canvas';
+import { ConnectionDrawer } from './components/ConnectionDrawer';
 import { useWebSocket } from './hooks/useWebSocket';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 import { NodeComponent } from './components/NodeComponent';
@@ -42,18 +42,29 @@ export default function AIPipelineSystem() {
   const [nodeProgress, setNodeProgress] = useState<{ [key: string]: number }>({});
   const [connectingNode, setConnectingNode] = useState<Node | null>(null);
   const [mousePosition, setMousePosition] = useState<Position>({ x: 0, y: 0 });
-  const handleNodeUpdate = (node: Node) => {
-  setSections(prev => prev.map(section => ({
-    ...section,
-    nodes: section.nodes.map(n => n.id === node.id ? node : n)
-  })));
-};
-  const getCurrentSection = () => sections.find(s => s.name === selectedSection);
+  
+  // 최적화된 노드 업데이트 함수들
+  const handleNodeUpdate = useCallback((nodeId: string, position: Position) => {
+    setSections(prev => prev.map(section => ({
+      ...section,
+      nodes: section.nodes.map(n => 
+        n.id === nodeId ? { ...n, position } : n
+      )
+    })));
+  }, []);
+
+  const handleFullNodeUpdate = useCallback((node: Node) => {
+    setSections(prev => prev.map(section => ({
+      ...section,
+      nodes: section.nodes.map(n => n.id === node.id ? node : n)
+    })));
+  }, []);
+  
+  const getCurrentSection = useCallback(() => sections.find(s => s.name === selectedSection), [sections, selectedSection]);
   const canvasRef = useRef<HTMLDivElement>(null);
 
-  // Use node drag hook
-  const { isDragging, draggedNode, handleMouseDown } = useNodeDrag({
-    canvasRef,
+  // Use node drag hook with new logic
+  const { draggedNodeId, handleMouseDown } = useNodeDrag({
     onNodeUpdate: handleNodeUpdate
   });
 
@@ -84,6 +95,24 @@ export default function AIPipelineSystem() {
     );
     setSections(initSections);
   }, []);
+
+  // Mouse position tracking for connection drawing
+  useEffect(() => {
+    const handleMouseMove = (e: MouseEvent) => {
+      if (connectingNode && canvasRef.current) {
+        const rect = canvasRef.current.getBoundingClientRect();
+        setMousePosition({
+          x: e.clientX - rect.left,
+          y: e.clientY - rect.top
+        });
+      }
+    };
+
+    if (connectingNode) {
+      window.addEventListener('mousemove', handleMouseMove);
+      return () => window.removeEventListener('mousemove', handleMouseMove);
+    }
+  }, [connectingNode]);
 
   // WebSocket handlers
   const { isConnected } = useWebSocket({
@@ -133,7 +162,7 @@ export default function AIPipelineSystem() {
     }
   });
 
-  const handleNodeDelete = (nodeId: string) => {
+  const handleNodeDelete = useCallback((nodeId: string) => {
     setSections(prev => prev.map(section => {
       if (section.name === selectedSection) {
         return {
@@ -144,9 +173,9 @@ export default function AIPipelineSystem() {
       return section;
     }));
     setConnections(prev => prev.filter(c => c.from !== nodeId && c.to !== nodeId));
-  };
+  }, [selectedSection]);
 
-  const handleNodeConnect = async (fromId: string, toId: string) => {
+  const handleNodeConnect = useCallback(async (fromId: string, toId: string) => {
     setConnections(prev => [...prev, { from: fromId, to: toId }]);
     
     const currentSection = getCurrentSection();
@@ -170,19 +199,35 @@ export default function AIPipelineSystem() {
     if (toNode?.type === 'output') {
       await apiClient.updateOutputNode(currentSection.id);
     }
-  };
-const handleNodeDeactivate = async (nodeId: string) => {
-  const currentSection = getCurrentSection();
-  const node = currentSection?.nodes.find(n => n.id === nodeId);
-  if (!node || !currentSection) return; // currentSection 체크 추가
+  }, [getCurrentSection]);
 
-  try {
-    await apiClient.deactivateNode(nodeId, currentSection.id);
-    handleNodeUpdate({ ...node, isDeactivated: !node.isDeactivated });
-  } catch (error) {
-    console.error('Failed to toggle deactivation:', error);
-  }
-};
+  const handleStartConnection = useCallback((node: Node) => {
+    setConnectingNode(node);
+  }, []);
+
+  const handleCompleteConnection = useCallback((toNodeId: string) => {
+    if (connectingNode) {
+      handleNodeConnect(connectingNode.id, toNodeId);
+      setConnectingNode(null);
+    }
+  }, [connectingNode, handleNodeConnect]);
+
+  const handleCancelConnection = useCallback(() => {
+    setConnectingNode(null);
+  }, []);
+
+  const handleNodeDeactivate = useCallback(async (nodeId: string) => {
+    const currentSection = getCurrentSection();
+    const node = currentSection?.nodes.find(n => n.id === nodeId);
+    if (!node || !currentSection) return;
+
+    try {
+      await apiClient.deactivateNode(nodeId, currentSection.id);
+      handleFullNodeUpdate({ ...node, isDeactivated: !node.isDeactivated });
+    } catch (error) {
+      console.error('Failed to toggle deactivation:', error);
+    }
+  }, [getCurrentSection, handleFullNodeUpdate]);
 
   // Use keyboard shortcuts
   useKeyboardShortcuts({
@@ -193,7 +238,7 @@ const handleNodeDeactivate = async (nodeId: string) => {
     onNodeDeactivate: handleNodeDeactivate
   });
 
-  const handleNodeAdd = (nodeType: string) => {
+  const handleNodeAdd = useCallback((nodeType: string) => {
     const currentSection = getCurrentSection();
     if (!currentSection) return;
 
@@ -218,8 +263,9 @@ const handleNodeDeactivate = async (nodeId: string) => {
       }
       return section;
     }));
-  };
-  const playFlow = async () => {
+  }, [getCurrentSection, selectedSection]);
+
+  const playFlow = useCallback(async () => {
     const currentSection = getCurrentSection();
     if (!currentSection) return;
     
@@ -229,9 +275,9 @@ const handleNodeDeactivate = async (nodeId: string) => {
     } catch (error) {
       console.error('Flow execution failed:', error);
     }
-  };
+  }, [getCurrentSection]);
 
-  const currentSection = getCurrentSection();
+  const currentSection = useMemo(() => getCurrentSection(), [getCurrentSection]);
 
   return (
     <div className="flex flex-col h-screen bg-gray-100">
@@ -298,36 +344,98 @@ const handleNodeDeactivate = async (nodeId: string) => {
         </div>
       </div>
 
-      {/* Canvas - Simplified, actual implementation in separate Canvas component */}
+      {/* Canvas */}
       <div className="flex-1 relative overflow-hidden">
         <div 
           ref={canvasRef}
+          id="pipeline-canvas"
           className="absolute inset-0 bg-gray-50"
           style={{ 
             backgroundImage: 'radial-gradient(circle, #e5e7eb 1px, transparent 1px)', 
             backgroundSize: '20px 20px' 
           }}
         >
-          {/* Canvas content would be extracted to a separate component */}
+          {/* Grid Lines for better visual alignment */}
+          <svg className="absolute inset-0 pointer-events-none opacity-10">
+            <defs>
+              <pattern id="grid" width="100" height="100" patternUnits="userSpaceOnUse">
+                <path d="M 100 0 L 0 0 0 100" fill="none" stroke="gray" strokeWidth="1"/>
+              </pattern>
+            </defs>
+            <rect width="100%" height="100%" fill="url(#grid)" />
+          </svg>
+
+          {/* Connections */}
+          <svg className="absolute inset-0 pointer-events-none">
+            <defs>
+              <marker
+                id="arrowhead"
+                markerWidth="10"
+                markerHeight="7"
+                refX="9"
+                refY="3.5"
+                orient="auto"
+              >
+                <polygon
+                  points="0 0, 10 3.5, 0 7"
+                  fill="#94a3b8"
+                />
+              </marker>
+            </defs>
+            {connections.map((conn, index) => {
+              const fromNode = currentSection?.nodes.find(n => n.id === conn.from);
+              const toNode = currentSection?.nodes.find(n => n.id === conn.to);
+              if (!fromNode || !toNode) return null;
+
+              const fromX = fromNode.position.x + (fromNode.type === 'input' || fromNode.type === 'output' ? 64 : 128);
+              const fromY = fromNode.position.y + 40;
+              const toX = toNode.position.x;
+              const toY = toNode.position.y + 40;
+
+              // Curved connection path
+              const midX = (fromX + toX) / 2;
+              const path = `M ${fromX} ${fromY} Q ${midX} ${fromY} ${midX} ${toY} T ${toX} ${toY}`;
+
+              return (
+                <path
+                  key={index}
+                  d={path}
+                  stroke="#94a3b8"
+                  strokeWidth="2"
+                  fill="none"
+                  markerEnd="url(#arrowhead)"
+                />
+              );
+            })}
+          </svg>
+
+          {/* Connection Drawing */}
+          {connectingNode && (
+            <ConnectionDrawer
+              startNode={connectingNode}
+              endPosition={mousePosition}
+              onConnect={handleCompleteConnection}
+              onCancel={handleCancelConnection}
+              nodes={currentSection?.nodes || []}
+            />
+          )}
+
+          {/* Nodes - 최적화된 렌더링 */}
           {currentSection?.nodes.map(node => (
-            <div
+            <NodeComponent
               key={node.id}
-              onMouseDown={(e) => handleMouseDown(e, node)}
-              style={{ cursor: isDragging && draggedNode?.id === node.id ? 'grabbing' : 'grab' }}
-            >
-              <NodeComponent
-                key={node.id}
-                node={node}
-                onUpdate={handleNodeUpdate}
-                onDelete={handleNodeDelete}
-                onConnect={handleNodeConnect}
-                isSelected={selectedNodeId === node.id}
-                onSelect={setSelectedNodeId}
-                onEdit={setEditingNode}
-                onStartConnection={setConnectingNode}
-                progress={nodeProgress[node.id]}
-              />
-            </div>
+              node={node}
+              onUpdate={handleFullNodeUpdate}
+              onDelete={handleNodeDelete}
+              onConnect={handleNodeConnect}
+              isSelected={selectedNodeId === node.id}
+              onSelect={setSelectedNodeId}
+              onEdit={setEditingNode}
+              onStartConnection={handleStartConnection}
+              onMouseDown={handleMouseDown}
+              progress={nodeProgress[node.id]}
+              isDragging={draggedNodeId === node.id}
+            />
           ))}
         </div>
       </div>
@@ -335,7 +443,9 @@ const handleNodeDeactivate = async (nodeId: string) => {
       {/* Node Palette */}
       <div className="bg-white border-t p-4">
         <div className="flex gap-4 justify-center">
-          {NODE_TYPES.map(nodeType => {
+          {NODE_TYPES
+            .filter(nodeType => nodeType.type !== 'input' && nodeType.type !== 'output')
+            .map(nodeType => {
             const isDisabled = (nodeType.type === 'supervisor' || nodeType.type === 'planner') &&
               currentSection?.nodes.some(n => n.type === nodeType.type);
             
@@ -367,7 +477,7 @@ const handleNodeDeactivate = async (nodeId: string) => {
           allSections={sections}
           onClose={() => setEditingNode(null)}
           onSave={(node) => {
-            handleNodeUpdate(node);
+            handleFullNodeUpdate(node);
             setEditingNode(null);
           }}
         />
@@ -380,7 +490,7 @@ const handleNodeDeactivate = async (nodeId: string) => {
           allSections={sections}
           onClose={() => setEditingNode(null)}
           onSave={(node) => {
-            handleNodeUpdate(node);
+            handleFullNodeUpdate(node);
             setEditingNode(null);
           }}
         />
@@ -393,7 +503,7 @@ const handleNodeDeactivate = async (nodeId: string) => {
           allSections={sections}
           onClose={() => setEditingNode(null)}
           onSave={(node) => {
-            handleNodeUpdate(node);
+            handleFullNodeUpdate(node);
             setEditingNode(null);
           }}
         />
