@@ -30,6 +30,7 @@ export interface Node {
   connectedFrom?: string[];
   code?: string;
   output?: any;
+  error?: string; // 추가
   model?: string;
   vectorDB?: { name: string; table: string };
   supervisedNodes?: string[];
@@ -43,6 +44,7 @@ export interface Node {
   onDeactivate?: (nodeId: string) => void;
   onToggleRun?: () => void;
   progress?: number;
+  isExecuting?: boolean;
 }
 
 export interface Connection {

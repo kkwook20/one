@@ -1,15 +1,10 @@
-// Related files:
-// - frontend/src/App.tsx
-// - frontend/src/constants/index.ts
-// - frontend/src/types/index.ts
-// Location: frontend/src/hooks/useWebSocket.ts
-
+// frontend/src/hooks/useWebSocket.ts
 import { useEffect, useRef, useState } from 'react';
 import { WS_URL } from '../constants';
 import { Section } from '../types';
 
 export interface WebSocketHandlers {
-  onProgress?: (nodeId: string, progress: number) => void;
+  onProgress?: (nodeId: string, progress: number, message?: string) => void;
   onNodeOutputUpdated?: (nodeId: string, output: any) => void;
   onNodeSupervised?: (data: any) => void;
   onModificationAccepted?: (data: any) => void;
@@ -39,7 +34,7 @@ export const useWebSocket = (handlers: WebSocketHandlers) => {
       
       switch (data.type) {
         case 'progress':
-          handlers.onProgress?.(data.nodeId, data.progress);
+          handlers.onProgress?.(data.nodeId, data.progress, data.message);
           break;
         
         case 'node_output_updated':
@@ -61,6 +56,7 @@ export const useWebSocket = (handlers: WebSocketHandlers) => {
         case 'section_evaluated':
           handlers.onSectionEvaluated?.(data.data);
           break;
+          
         case 'output_node_updated':
           handlers.onOutputNodeUpdated?.(data.data);
           break;

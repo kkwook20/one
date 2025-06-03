@@ -1,6 +1,4 @@
-# Related files: backend/main.py, backend/models.py, backend/storage.py
-# Location: backend/execution.py
-
+# backend/execution.py
 import asyncio
 import json
 import os
@@ -10,12 +8,16 @@ import tempfile
 from typing import Dict, Any, Set, List
 from models import Node, Section
 from storage import get_global_var, sections_db
+from websocket_handler import send_progress, send_update
 
 # Global state for running processes
 node_processes: Dict[str, asyncio.Task] = {}
 
 async def execute_python_code(node_id: str, code: str, inputs: Dict[str, Any] = None, section_id: str = None) -> Dict[str, Any]:
-    """Execute Python code in isolated environment"""
+    """Execute Python code in isolated environment with progress updates"""
+    # 진행 상황 업데이트
+    await send_progress(node_id, 0.3, "Preparing execution environment...")
+    
     # Create temporary directory for execution
     with tempfile.TemporaryDirectory() as temp_dir:
         # Write code to file
@@ -51,6 +53,8 @@ else:
         with open(code_file, "w") as f:
             f.write(injected_code)
         
+        await send_progress(node_id, 0.5, "Executing code...")
+        
         # Execute code
         try:
             result = subprocess.run(
@@ -60,6 +64,8 @@ else:
                 timeout=300,  # 5 minutes timeout
                 cwd=temp_dir
             )
+            
+            await send_progress(node_id, 0.7, "Processing results...")
             
             if result.returncode == 0:
                 try:
@@ -86,15 +92,19 @@ def get_connected_outputs(node: Node, section: Section, all_sections: List[Secti
             for n in s.nodes:
                 if n.id == conn_id:
                     if n.type == 'input':
-                        # Input 노드는 설정된 소스에서 데이터 가져오기
-                        input_config = s.inputConfig
-                        if input_config and input_config.sources:
-                            for source_section_id in input_config.sources:
-                                source_section = next((sec for sec in all_sections if sec.id == source_section_id), None)
-                                if source_section:
-                                    for source_node in source_section.nodes:
-                                        if source_node.output:
-                                            outputs[source_node.label] = source_node.output
+                        # Preproduction Script의 경우 텍스트 입력 처리
+                        if s.group == 'preproduction' and s.name == 'Script' and n.output:
+                            outputs['script_input'] = n.output
+                        else:
+                            # 다른 Input 노드는 설정된 소스에서 데이터 가져오기
+                            input_config = s.inputConfig
+                            if input_config and input_config.sources:
+                                for source_section_id in input_config.sources:
+                                    source_section = next((sec for sec in all_sections if sec.id == source_section_id), None)
+                                    if source_section:
+                                        for source_node in source_section.nodes:
+                                            if source_node.output:
+                                                outputs[source_node.label] = source_node.output
                     else:
                         outputs[n.label] = n.output
                     break
@@ -130,7 +140,7 @@ def get_node_execution_order(section: Section) -> List[Node]:
     return result
 
 async def execute_flow(section_id: str) -> Dict[str, Any]:
-    """Execute all nodes in a section in order"""
+    """Execute all nodes in a section in order with detailed progress"""
     section = sections_db.get(section_id)
     if not section:
         return {"error": "Section not found"}
@@ -138,8 +148,17 @@ async def execute_flow(section_id: str) -> Dict[str, Any]:
     # Get execution order
     execution_order = get_node_execution_order(section)
     
+    # 실행 시작 알림
+    await send_update("flow_execution_started", {
+        "sectionId": section_id,
+        "nodeCount": len(execution_order)
+    })
+    
     results = []
-    for node in execution_order:
+    for idx, node in enumerate(execution_order):
+        # 노드 시작 알림
+        await send_progress(node.id, 0.1, f"Starting {node.label}...")
+        
         if node.type in ['worker', 'supervisor', 'planner'] and node.code:
             # Execute node
             all_sections = list(sections_db.values())
@@ -148,6 +167,18 @@ async def execute_flow(section_id: str) -> Dict[str, Any]:
             result = await execute_python_code(node.id, node.code, connected_outputs, section_id)
             if result["success"]:
                 node.output = result["output"]
+                
+                # Output 노드 자동 업데이트
+                for n in section.nodes:
+                    if n.type == 'output' and node.id in (n.connectedFrom or []):
+                        if not n.output:
+                            n.output = {}
+                        n.output[node.label] = result["output"]
+                        await send_update("output_node_updated", {
+                            "sectionId": section.id,
+                            "nodeId": n.id,
+                            "output": n.output
+                        })
             
             results.append({
                 "nodeId": node.id,
@@ -156,5 +187,30 @@ async def execute_flow(section_id: str) -> Dict[str, Any]:
                 "output": result.get("output"),
                 "error": result.get("error")
             })
+        elif node.type == 'input':
+            # Input 노드는 이미 데이터가 있음
+            await send_progress(node.id, 1.0, "Input ready")
+            results.append({
+                "nodeId": node.id,
+                "label": node.label,
+                "success": True,
+                "output": node.output
+            })
+        elif node.type == 'output':
+            # Output 노드 처리
+            await send_progress(node.id, 0.5, "Collecting outputs...")
+            await send_progress(node.id, 1.0, "Output collected")
+            results.append({
+                "nodeId": node.id,
+                "label": node.label,
+                "success": True,
+                "output": node.output
+            })
+    
+    # 실행 완료 알림
+    await send_update("flow_execution_completed", {
+        "sectionId": section_id,
+        "results": results
+    })
     
     return {"results": results, "executionOrder": [n.id for n in execution_order]}

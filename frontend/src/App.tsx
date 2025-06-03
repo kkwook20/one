@@ -1,4 +1,4 @@
-// frontend/src/App.tsx - React Flow 버전
+// frontend/src/App.tsx - 완전한 실행 로그 및 시각화 버전
 import React, { useState, useCallback, useEffect, useMemo } from 'react';
 import ReactFlow, {
   Node as FlowNode,
@@ -19,7 +19,7 @@ import ReactFlow, {
   MarkerType
 } from 'reactflow';
 import 'reactflow/dist/style.css';
-import { Play, Settings } from 'lucide-react';
+import { Play, Settings, ChevronUp, ChevronDown, FileText, CheckCircle, AlertCircle, Clock } from 'lucide-react';
 
 import { Node, Section, Connection, Position, TaskItem } from './types';
 import { GROUPS, NODE_TYPES } from './constants';
@@ -34,6 +34,17 @@ import {
   WorkerEditModal, 
   SectionSettingsModal 
 } from './components/modals';
+
+// 실행 로그 타입
+interface ExecutionLog {
+  id: string;
+  timestamp: string;
+  nodeId: string;
+  nodeLabel: string;
+  type: 'start' | 'processing' | 'complete' | 'error' | 'file_created' | 'info';
+  message: string;
+  data?: any;
+}
 
 // Custom node types for React Flow
 const nodeTypes: NodeTypes = {
@@ -61,10 +72,118 @@ function AIPipelineFlow() {
   const [editingNode, setEditingNode] = useState<Node | null>(null);
   const [showSettings, setShowSettings] = useState(false);
   const [nodeProgress, setNodeProgress] = useState<{ [key: string]: number }>({});
+  const [runningNodes, setRunningNodes] = useState<Set<string>>(new Set());
+  
+  // 실행 로그 상태
+  const [executionLogs, setExecutionLogs] = useState<ExecutionLog[]>([]);
+  const [showLogs, setShowLogs] = useState(true);
+  const [isExecuting, setIsExecuting] = useState(false);
+  const [logsHeight, setLogsHeight] = useState(200);
   
   const { fitView, zoomTo } = useReactFlow();
 
-  // Convert internal nodes to React Flow nodes
+  // 로그 추가 함수
+  const addLog = useCallback((log: Omit<ExecutionLog, 'id' | 'timestamp'>) => {
+    setExecutionLogs(prev => [...prev, {
+      ...log,
+      id: `log-${Date.now()}-${Math.random()}`,
+      timestamp: new Date().toISOString()
+    }]);
+  }, []);
+
+  // 로그 아이콘 가져오기
+  const getLogIcon = (type: ExecutionLog['type']) => {
+    switch (type) {
+      case 'start': return <Clock className="w-4 h-4 text-blue-500" />;
+      case 'processing': return <Clock className="w-4 h-4 text-yellow-500 animate-spin" />;
+      case 'complete': return <CheckCircle className="w-4 h-4 text-green-500" />;
+      case 'error': return <AlertCircle className="w-4 h-4 text-red-500" />;
+      case 'file_created': return <FileText className="w-4 h-4 text-purple-500" />;
+      default: return <Clock className="w-4 h-4 text-gray-500" />;
+    }
+  };
+
+  // getCurrentSection을 먼저 정의
+  const getCurrentSection = useCallback(() => sections.find(s => s.name === selectedSection), [sections, selectedSection]);
+
+  // handleNodeDeactivate 정의 (getCurrentSection 사용)
+  const handleNodeDeactivate = useCallback(async (nodeId: string) => {
+    const currentSection = getCurrentSection();
+    const node = currentSection?.nodes.find(n => n.id === nodeId);
+    if (!node || !currentSection) return;
+
+    try {
+      await apiClient.deactivateNode(nodeId, currentSection.id);
+      setSections(prev => prev.map(section => ({
+        ...section,
+        nodes: section.nodes.map(n => 
+          n.id === nodeId ? { ...n, isDeactivated: !n.isDeactivated } : n
+        )
+      })));
+    } catch (error) {
+      console.error('Failed to toggle deactivation:', error);
+    }
+  }, [getCurrentSection]);
+
+  // handleNodeRun 정의 (getCurrentSection 사용)
+  const handleNodeRun = useCallback(async (nodeId: string) => {
+    const currentSection = getCurrentSection();
+    const node = currentSection?.nodes.find(n => n.id === nodeId);
+    if (!node || !currentSection) return;
+
+    if (node.isRunning) {
+      // Stop node
+      try {
+        await apiClient.stopNode(nodeId);
+        setSections(prev => prev.map(section => ({
+          ...section,
+          nodes: section.nodes.map(n => 
+            n.id === nodeId ? { ...n, isRunning: false } : n
+          )
+        })));
+        setRunningNodes(prev => {
+          const newSet = new Set(prev);
+          newSet.delete(nodeId);
+          return newSet;
+        });
+      } catch (error) {
+        console.error('Failed to stop node:', error);
+      }
+    } else {
+      // Run node
+      setSections(prev => prev.map(section => ({
+        ...section,
+        nodes: section.nodes.map(n => 
+          n.id === nodeId ? { ...n, isRunning: true, error: undefined } : n
+        )
+      })));
+      
+      try {
+        // Get connected outputs
+        const connectedOutputs: any = {};
+        if (node.connectedFrom) {
+          for (const connId of node.connectedFrom) {
+            const connNode = currentSection.nodes.find(n => n.id === connId);
+            if (connNode?.output) {
+              connectedOutputs[connNode.label] = connNode.output;
+            }
+          }
+        }
+
+        await apiClient.executeNode(nodeId, currentSection.id, node.code || '', connectedOutputs);
+      } catch (error) {
+        console.error('Node execution failed:', error);
+        setSections(prev => prev.map(section => ({
+          ...section,
+          nodes: section.nodes.map(n => 
+            n.id === nodeId ? { ...n, isRunning: false, error: 'Execution failed' } : n
+          )
+        })));
+      }
+    }
+  }, [getCurrentSection]);
+
+  // Convert internal nodes to React Flow nodes (handleNodeDeactivate, handleNodeRun 사용)
   const convertToFlowNodes = useCallback((sectionNodes: Node[]): FlowNode[] => {
     return sectionNodes.map(node => ({
       id: node.id,
@@ -74,14 +193,16 @@ function AIPipelineFlow() {
         ...node,
         onEdit: () => setEditingNode(node),
         onDeactivate: () => handleNodeDeactivate(node.id),
+        onToggleRun: () => handleNodeRun(node.id),
         progress: nodeProgress[node.id],
+        isExecuting: runningNodes.has(node.id),
       },
       selected: selectedNodeId === node.id,
       style: {
         opacity: node.isDeactivated ? 0.5 : 1,
       }
     }));
-  }, [selectedNodeId, nodeProgress]);
+  }, [selectedNodeId, nodeProgress, runningNodes, handleNodeDeactivate, handleNodeRun]);
 
   // Convert connections to React Flow edges
   const convertToFlowEdges = useCallback((sectionNodes: Node[]): Edge[] => {
@@ -89,21 +210,30 @@ function AIPipelineFlow() {
     sectionNodes.forEach(node => {
       if (node.connectedFrom) {
         node.connectedFrom.forEach(fromId => {
+          const fromNode = sectionNodes.find(n => n.id === fromId);
+          const isActive = runningNodes.has(fromId) && runningNodes.has(node.id);
+          const isComplete = nodeProgress[fromId] === 1;
+          
           edges.push({
             id: `${fromId}-${node.id}`,
             source: fromId,
             target: node.id,
             type: 'custom',
-            animated: nodeProgress[fromId] !== undefined && nodeProgress[fromId] > 0,
+            animated: isActive || isComplete,
+            style: {
+              stroke: isComplete ? '#10b981' : isActive ? '#3b82f6' : '#94a3b8',
+              strokeWidth: isActive || isComplete ? 3 : 2,
+            },
             markerEnd: {
               type: MarkerType.ArrowClosed,
+              color: isComplete ? '#10b981' : isActive ? '#3b82f6' : '#94a3b8',
             },
           });
         });
       }
     });
     return edges;
-  }, [nodeProgress]);
+  }, [nodeProgress, runningNodes]);
 
   // Update React Flow when section changes
   useEffect(() => {
@@ -163,7 +293,7 @@ function AIPipelineFlow() {
 
   // Handle connections
   const onConnect = useCallback((params: FlowConnection) => {
-    setEdges((eds) => addEdge({ ...params, type: 'custom', animated: true }, eds));
+    setEdges((eds) => addEdge({ ...params, type: 'custom', animated: false }, eds));
     
     // Update section nodes
     setSections(prev => prev.map(section => {
@@ -185,18 +315,83 @@ function AIPipelineFlow() {
     }));
   }, [selectedSection, setEdges]);
 
-  const getCurrentSection = useCallback(() => sections.find(s => s.name === selectedSection), [sections, selectedSection]);
-
   // WebSocket handlers
   const { isConnected } = useWebSocket({
-    onProgress: (nodeId, progress) => {
+    onProgress: (nodeId, progress, message) => {
       setNodeProgress(prev => ({ ...prev, [nodeId]: progress }));
+      
+      const currentSection = getCurrentSection();
+      const node = currentSection?.nodes.find(n => n.id === nodeId);
+      
+      if (node) {
+        if (progress === 0.1) {
+          setRunningNodes(prev => new Set([...prev, nodeId]));
+          setSections(prev => prev.map(section => ({
+            ...section,
+            nodes: section.nodes.map(n => 
+              n.id === nodeId ? { ...n, isRunning: true, error: undefined } : n
+            )
+          })));
+          addLog({
+            nodeId,
+            nodeLabel: node.label,
+            type: 'start',
+            message: `Starting ${node.label} execution...`
+          });
+        } else if (progress === 0.5) {
+          addLog({
+            nodeId,
+            nodeLabel: node.label,
+            type: 'processing',
+            message: `Processing ${node.label}...`
+          });
+        } else if (progress === 0.9) {
+          addLog({
+            nodeId,
+            nodeLabel: node.label,
+            type: 'processing',
+            message: `${node.label} processing complete, generating output...`
+          });
+        } else if (progress === 1) {
+          setSections(prev => prev.map(section => ({
+            ...section,
+            nodes: section.nodes.map(n => 
+              n.id === nodeId ? { ...n, isRunning: false } : n
+            )
+          })));
+          addLog({
+            nodeId,
+            nodeLabel: node.label,
+            type: 'complete',
+            message: `✓ ${node.label} completed successfully`
+          });
+        } else if (progress < 0) {
+          setSections(prev => prev.map(section => ({
+            ...section,
+            nodes: section.nodes.map(n => 
+              n.id === nodeId ? { ...n, isRunning: false, error: message || 'Execution failed' } : n
+            )
+          })));
+          addLog({
+            nodeId,
+            nodeLabel: node.label,
+            type: 'error',
+            message: `✗ ${node.label} execution failed: ${message || 'Unknown error'}`
+          });
+        }
+      }
+      
       if (progress >= 1 || progress < 0) {
         setTimeout(() => {
           setNodeProgress(prev => {
             const newProgress = { ...prev };
             delete newProgress[nodeId];
             return newProgress;
+          });
+          setRunningNodes(prev => {
+            const newSet = new Set(prev);
+            newSet.delete(nodeId);
+            return newSet;
           });
         }, 2000);
       }
@@ -205,9 +400,39 @@ function AIPipelineFlow() {
       setSections(prev => prev.map(section => ({
         ...section,
         nodes: section.nodes.map(n => 
-          n.id === nodeId ? { ...n, output } : n
+          n.id === nodeId ? { ...n, output, error: undefined } : n
         )
       })));
+      
+      const currentSection = getCurrentSection();
+      const node = currentSection?.nodes.find(n => n.id === nodeId);
+      
+      if (node) {
+        // 파일 생성 로그
+        if (output && typeof output === 'object') {
+          const files: string[] = [];
+          const extractFiles = (obj: any, prefix = '') => {
+            Object.entries(obj).forEach(([key, value]) => {
+              if (typeof value === 'string' && (value.endsWith('.json') || value.endsWith('.xml') || value.endsWith('.yaml'))) {
+                files.push(prefix + key);
+              } else if (typeof value === 'object' && value !== null) {
+                extractFiles(value, prefix + key + '.');
+              }
+            });
+          };
+          extractFiles(output);
+          
+          if (files.length > 0) {
+            addLog({
+              nodeId,
+              nodeLabel: node.label,
+              type: 'file_created',
+              message: `Generated files: ${files.join(', ')}`,
+              data: output
+            });
+          }
+        }
+      }
     },
     onNodeSupervised: (data) => {
       setSections(prev => prev.map(section => ({
@@ -219,6 +444,15 @@ function AIPipelineFlow() {
           return n;
         })
       })));
+    },
+    onOutputNodeUpdated: (data) => {
+      addLog({
+        nodeId: data.nodeId,
+        nodeLabel: 'Output',
+        type: 'complete',
+        message: `Output node updated with combined results from ${Object.keys(data.output || {}).length} nodes`,
+        data: data.output
+      });
     }
   });
 
@@ -236,24 +470,6 @@ function AIPipelineFlow() {
       return section;
     }));
   }, [selectedSection, setNodes, setEdges]);
-
-  const handleNodeDeactivate = useCallback(async (nodeId: string) => {
-    const currentSection = getCurrentSection();
-    const node = currentSection?.nodes.find(n => n.id === nodeId);
-    if (!node || !currentSection) return;
-
-    try {
-      await apiClient.deactivateNode(nodeId, currentSection.id);
-      setSections(prev => prev.map(section => ({
-        ...section,
-        nodes: section.nodes.map(n => 
-          n.id === nodeId ? { ...n, isDeactivated: !n.isDeactivated } : n
-        )
-      })));
-    } catch (error) {
-      console.error('Failed to toggle deactivation:', error);
-    }
-  }, [getCurrentSection]);
 
   const handleNodeAdd = useCallback((nodeType: string) => {
     const currentSection = getCurrentSection();
@@ -286,13 +502,53 @@ function AIPipelineFlow() {
     const currentSection = getCurrentSection();
     if (!currentSection) return;
     
+    setIsExecuting(true);
+    setExecutionLogs([]); // 로그 초기화
+    setRunningNodes(new Set());
+    setNodeProgress({});
+    
+    addLog({
+      nodeId: 'system',
+      nodeLabel: 'System',
+      type: 'info',
+      message: `🚀 Starting flow execution for "${currentSection.name}" section...`
+    });
+    
     try {
       const response = await apiClient.executeFlow(currentSection.id);
-      console.log('Flow execution results:', response.data);
+      
+      // 실행 완료
+      setIsExecuting(false);
+      
+      addLog({
+        nodeId: 'system',
+        nodeLabel: 'System',
+        type: 'complete',
+        message: `✅ Flow execution completed! Processed ${response.data.results.length} nodes.`,
+        data: response.data
+      });
+      
+      // 실행 요약
+      const successCount = response.data.results.filter((r: any) => r.success).length;
+      const failCount = response.data.results.filter((r: any) => !r.success).length;
+      
+      addLog({
+        nodeId: 'system',
+        nodeLabel: 'System',
+        type: 'info',
+        message: `Summary: ${successCount} successful, ${failCount} failed`
+      });
+      
     } catch (error) {
-      console.error('Flow execution failed:', error);
+      setIsExecuting(false);
+      addLog({
+        nodeId: 'system',
+        nodeLabel: 'System',
+        type: 'error',
+        message: `❌ Flow execution failed: ${error}`
+      });
     }
-  }, [getCurrentSection]);
+  }, [getCurrentSection, addLog]);
 
   // Keyboard shortcuts
   useKeyboardShortcuts({
@@ -313,6 +569,27 @@ function AIPipelineFlow() {
       fitView({ padding: 0.2 });
     }, 100);
   }, [selectedSection, fitView]);
+
+  // 로그 패널 리사이즈
+  const handleLogResize = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    const startY = e.clientY;
+    const startHeight = logsHeight;
+
+    const handleMouseMove = (e: MouseEvent) => {
+      const deltaY = startY - e.clientY;
+      const newHeight = Math.max(100, Math.min(500, startHeight + deltaY));
+      setLogsHeight(newHeight);
+    };
+
+    const handleMouseUp = () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+    };
+
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+  }, [logsHeight]);
 
   return (
     <div className="flex flex-col h-screen bg-gray-100">
@@ -361,11 +638,16 @@ function AIPipelineFlow() {
           <div className="ml-auto flex gap-2">
             <button
               onClick={playFlow}
-              className="flex items-center gap-2 px-3 py-1 bg-green-500 text-white rounded text-sm hover:bg-green-600"
+              disabled={isExecuting}
+              className={`flex items-center gap-2 px-3 py-1 rounded text-sm transition-colors ${
+                isExecuting 
+                  ? 'bg-gray-400 text-gray-200 cursor-not-allowed' 
+                  : 'bg-green-500 text-white hover:bg-green-600'
+              }`}
               title="Play Flow - Execute all connected nodes left to right"
             >
               <Play className="w-4 h-4" />
-              Play Flow
+              {isExecuting ? 'Executing...' : 'Play Flow'}
             </button>
             <button
               onClick={() => setShowSettings(true)}
@@ -380,7 +662,7 @@ function AIPipelineFlow() {
       </div>
 
       {/* React Flow Canvas */}
-      <div className="flex-1">
+      <div className="flex-1" style={{ height: showLogs ? `calc(100% - ${logsHeight}px)` : '100%' }}>
         <ReactFlow
           nodes={nodes}
           edges={edges}
@@ -397,6 +679,9 @@ function AIPipelineFlow() {
           <Controls />
           <MiniMap 
             nodeColor={(node) => {
+              const isRunning = runningNodes.has(node.id);
+              if (isRunning) return '#3b82f6';
+              
               switch (node.type) {
                 case 'supervisor': return '#a855f7';
                 case 'planner': return '#10b981';
@@ -439,7 +724,62 @@ function AIPipelineFlow() {
         </ReactFlow>
       </div>
 
-      {/* Modals - 기존과 동일 */}
+      {/* Execution Logs Panel */}
+      <div 
+        className={`bg-white border-t transition-all duration-300 ${showLogs ? '' : 'hidden'}`}
+        style={{ height: `${logsHeight}px` }}
+      >
+        {/* Resize Handle */}
+        <div
+          className="h-1 bg-gray-200 hover:bg-gray-300 cursor-ns-resize"
+          onMouseDown={handleLogResize}
+        />
+        
+        {/* Log Header */}
+        <div className="flex items-center justify-between px-4 py-2 border-b bg-gray-50">
+          <h3 className="font-semibold text-sm">Execution Logs</h3>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setExecutionLogs([])}
+              className="text-xs text-gray-600 hover:text-gray-800"
+            >
+              Clear
+            </button>
+            <button
+              onClick={() => setShowLogs(!showLogs)}
+              className="text-gray-600 hover:text-gray-800"
+            >
+              {showLogs ? <ChevronDown className="w-4 h-4" /> : <ChevronUp className="w-4 h-4" />}
+            </button>
+          </div>
+        </div>
+        
+        {/* Log Content */}
+        <div className="flex-1 overflow-y-auto p-2" style={{ maxHeight: logsHeight - 40 }}>
+          {executionLogs.length === 0 ? (
+            <div className="text-center text-gray-500 text-sm py-8">
+              No execution logs yet. Click "Play Flow" to start.
+            </div>
+          ) : (
+            <div className="space-y-1">
+              {executionLogs.map(log => (
+                <div key={log.id} className="flex items-start gap-2 text-sm hover:bg-gray-50 px-2 py-1 rounded">
+                  <div className="mt-0.5">{getLogIcon(log.type)}</div>
+                  <div className="text-gray-600 text-xs whitespace-nowrap">
+                    {new Date(log.timestamp).toLocaleTimeString()}
+                  </div>
+                  <div className="flex-1">
+                    <span className="font-medium text-gray-800">[{log.nodeLabel}]</span>
+                    <span className="text-gray-700 ml-1">{log.message}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Modals */}
       {editingNode && editingNode.type === 'worker' && (
         <WorkerEditModal
           node={editingNode}

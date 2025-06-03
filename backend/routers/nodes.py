@@ -31,13 +31,21 @@ async def execute_node(request: ExecuteRequest):
         raise HTTPException(status_code=404, detail="Section not found")
     
     node = next((n for n in section.nodes if n.id == node_id), None)
-    if not node or node.isDeactivated:
-        raise HTTPException(status_code=400, detail="Node not found or deactivated")
+    if not node:
+        raise HTTPException(status_code=404, detail="Node not found")
+    
+    if node.isDeactivated:
+        raise HTTPException(status_code=400, detail="Node is deactivated")
     
     # Create execution task
     async def run_node():
         try:
             await send_progress(node_id, 0.1, "Starting execution...")
+            
+            # Check if node has code
+            if not node.code:
+                await send_progress(node_id, -1, "No code to execute")
+                return {"success": False, "error": "No code to execute"}
             
             # Get connected outputs
             all_sections = list(sections_db.values())
@@ -46,16 +54,18 @@ async def execute_node(request: ExecuteRequest):
             # Merge with provided inputs
             final_inputs = {**connected_outputs, **(request.inputs or {})}
             
+            await send_progress(node_id, 0.5, "Executing code...")
+            
             # Execute code
             result = await execute_python_code(node_id, request.code, final_inputs, request.sectionId)
             
-            await send_progress(node_id, 0.9, "Execution complete")
-            
-            # Update node with output
             if result["success"]:
-                node.output = result["output"]
+                await send_progress(node_id, 0.9, "Execution complete")
                 
-
+                # Update node with output
+                node.output = result["output"]
+                node.isRunning = False
+                
                 # 이 노드가 Output 노드에 연결되어 있는지 확인
                 for n in section.nodes:
                     if n.type == 'output' and node.id in (n.connectedFrom or []):
@@ -88,18 +98,29 @@ async def execute_node(request: ExecuteRequest):
                     "output": result["output"],
                     "timestamp": datetime.now().isoformat()
                 })
-            
-            await send_progress(node_id, 1.0, "Done")
-            await send_update("node_output_updated", {"nodeId": node_id, "output": result.get("output")})
+                
+                await send_progress(node_id, 1.0, "Done")
+                await send_update("node_output_updated", {"nodeId": node_id, "output": result.get("output")})
+            else:
+                error_msg = result.get("error", "Unknown error")
+                await send_progress(node_id, -1, f"Error: {error_msg}")
+                node.isRunning = False
+                return {"success": False, "error": error_msg}
             
             return result
             
         except Exception as e:
-            await send_progress(node_id, -1, f"Error: {str(e)}")
+            error_msg = str(e)
+            await send_progress(node_id, -1, f"Error: {error_msg}")
+            node.isRunning = False
             raise
         finally:
             if node_id in node_processes:
                 del node_processes[node_id]
+            node.isRunning = False
+    
+    # Mark node as running
+    node.isRunning = True
     
     # Start execution
     task = asyncio.create_task(run_node())
@@ -110,6 +131,13 @@ async def execute_node(request: ExecuteRequest):
 @router.post("/stop/{node_id}")
 async def stop_node(node_id: str):
     """Stop node execution"""
+    # Find node and mark as not running
+    for section in sections_db.values():
+        for node in section.nodes:
+            if node.id == node_id:
+                node.isRunning = False
+                break
+    
     if node_id in node_processes:
         node_processes[node_id].cancel()
         del node_processes[node_id]
@@ -118,18 +146,9 @@ async def stop_node(node_id: str):
     return {"status": "not_running"}
 
 @router.post("/node/{node_id}/deactivate")
-async def toggle_node_deactivation(node_id: str, section_id: str):
+async def toggle_node_deactivation(node_id: str, request: dict):
     """Toggle node deactivation status"""
-    from pydantic import BaseModel
-    
-    class DeactivateRequest(BaseModel):
-        sectionId: str
-    
-    # Parse request body
-    import json
-    request_body = await request.body()
-    data = json.loads(request_body) if request_body else {}
-    section_id = data.get('sectionId')
+    section_id = request.get('sectionId')
     
     section = sections_db.get(section_id)
     if not section:
