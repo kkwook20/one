@@ -1,7 +1,12 @@
+# ==============================================================================
+# File: backend/models.py
 # Related files: backend/main.py
 # Location: backend/models.py
+# Last Modified: 2025-06-03
+# Description: Pydantic V2 호환성 수정
+# ==============================================================================
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, ConfigDict
 from typing import Dict, List, Optional, Any
 from datetime import datetime
 
@@ -32,12 +37,14 @@ class Node(BaseModel):
     updateHistory: Optional[List[Dict[str, Any]]] = None
     aiScore: Optional[float] = None
 
+# ✅ Pydantic V2 방식으로 수정
 class Connection(BaseModel):
-    from_node: str = None  # 'from' is reserved
+    from_node: str = Field(default=None, alias='from')  # V2 방식
     to: str
 
-    class Config:
-        fields = {'from_node': 'from'}
+    model_config = ConfigDict(
+        populate_by_name=True  # alias와 원래 이름 모두 허용
+    )
 
 class SectionConfig(BaseModel):
     sources: List[str] = []
