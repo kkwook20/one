@@ -81,10 +81,22 @@ def get_connected_outputs(node: Node, section: Section, all_sections: List[Secti
     
     outputs = {}
     for conn_id in node.connectedFrom:
+        # Input 노드인 경우 특별 처리
         for s in all_sections:
             for n in s.nodes:
                 if n.id == conn_id:
-                    outputs[n.label] = n.output
+                    if n.type == 'input':
+                        # Input 노드는 설정된 소스에서 데이터 가져오기
+                        input_config = s.inputConfig
+                        if input_config and input_config.sources:
+                            for source_section_id in input_config.sources:
+                                source_section = next((sec for sec in all_sections if sec.id == source_section_id), None)
+                                if source_section:
+                                    for source_node in source_section.nodes:
+                                        if source_node.output:
+                                            outputs[source_node.label] = source_node.output
+                    else:
+                        outputs[n.label] = n.output
                     break
     return outputs
 

@@ -55,6 +55,20 @@ async def execute_node(request: ExecuteRequest):
             if result["success"]:
                 node.output = result["output"]
                 
+
+                # 이 노드가 Output 노드에 연결되어 있는지 확인
+                for n in section.nodes:
+                    if n.type == 'output' and node.id in (n.connectedFrom or []):
+                        # Output 노드 자동 업데이트
+                        if not n.output:
+                            n.output = {}
+                        n.output[node.label] = result["output"]
+                        await send_update("output_node_updated", {
+                            "sectionId": section.id,
+                            "nodeId": n.id,
+                            "output": n.output
+                        })
+
                 # Add to update history
                 if not node.updateHistory:
                     node.updateHistory = []

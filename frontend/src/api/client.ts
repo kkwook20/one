@@ -58,6 +58,9 @@ export const apiClient = {
   executeFlow: (sectionId: string) =>
     axios.post(`${API_URL}/execute-flow/${sectionId}`),
 
+  updateOutputNode: (sectionId: string) =>
+    axios.post(`${API_URL}/sections/update-output-node/${sectionId}`),
+
   // Export
   exportOutput: (sectionId: string) =>
     axios.post(`${API_URL}/export-output/${sectionId}`)

@@ -66,3 +66,24 @@ async def export_section_output(section_id: str):
         return {"xml": ET.tostring(root, encoding="unicode")}
     
     return outputs
+@router.post("/update-output-node/{section_id}")
+async def update_output_node(section_id: str):
+    """Update output node with connected node outputs"""
+    section = sections_db.get(section_id)
+    if not section:
+        raise HTTPException(status_code=404, detail="Section not found")
+    
+    output_node = next((n for n in section.nodes if n.type == 'output'), None)
+    if not output_node:
+        return {"error": "No output node found"}
+    
+    # 연결된 노드들의 출력 수집
+    outputs = {}
+    if output_node.connectedFrom:
+        for conn_id in output_node.connectedFrom:
+            connected_node = next((n for n in section.nodes if n.id == conn_id), None)
+            if connected_node and connected_node.output:
+                outputs[connected_node.label] = connected_node.output
+    
+    output_node.output = outputs
+    return {"success": True, "output": outputs}

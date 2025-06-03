@@ -146,8 +146,12 @@ export default function AIPipelineSystem() {
     setConnections(prev => prev.filter(c => c.from !== nodeId && c.to !== nodeId));
   };
 
-  const handleNodeConnect = (fromId: string, toId: string) => {
+  const handleNodeConnect = async (fromId: string, toId: string) => {
     setConnections(prev => [...prev, { from: fromId, to: toId }]);
+    
+    const currentSection = getCurrentSection();
+    if (!currentSection) return;
+    
     setSections(prev => prev.map(section => ({
       ...section,
       nodes: section.nodes.map(n => {
@@ -160,8 +164,13 @@ export default function AIPipelineSystem() {
         return n;
       })
     })));
+    
+    // Output 노드에 연결된 경우 자동 업데이트
+    const toNode = currentSection.nodes.find(n => n.id === toId);
+    if (toNode?.type === 'output') {
+      await apiClient.updateOutputNode(currentSection.id);
+    }
   };
-
 const handleNodeDeactivate = async (nodeId: string) => {
   const currentSection = getCurrentSection();
   const node = currentSection?.nodes.find(n => n.id === nodeId);
@@ -210,7 +219,6 @@ const handleNodeDeactivate = async (nodeId: string) => {
       return section;
     }));
   };
-
   const playFlow = async () => {
     const currentSection = getCurrentSection();
     if (!currentSection) return;

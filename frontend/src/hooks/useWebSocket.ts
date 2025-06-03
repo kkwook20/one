@@ -15,6 +15,7 @@ export interface WebSocketHandlers {
   onModificationAccepted?: (data: any) => void;
   onModificationRejected?: (data: any) => void;
   onSectionEvaluated?: (data: any) => void;
+  onOutputNodeUpdated?: (data: any) => void;
 }
 
 export const useWebSocket = (handlers: WebSocketHandlers) => {
@@ -59,6 +60,9 @@ export const useWebSocket = (handlers: WebSocketHandlers) => {
         
         case 'section_evaluated':
           handlers.onSectionEvaluated?.(data.data);
+          break;
+        case 'output_node_updated':
+          handlers.onOutputNodeUpdated?.(data.data);
           break;
       }
     };
