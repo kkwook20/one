@@ -224,19 +224,29 @@ export const NodeComponent: React.FC<NodeComponentProps> = ({
           {/* Icons for special features */}
           <div className="flex gap-1">
             {node.isDeactivated && (
-              <Power className="w-4 h-4 text-gray-500" title="Deactivated" />
+              <span title="Deactivated">
+                <Power className="w-4 h-4 text-gray-500" />
+              </span>
             )}
             {node.model && node.model !== 'none' && (
-              <Eye className="w-4 h-4 text-purple-500" title={`AI: ${node.model}`} />
+              <span title={`AI: ${node.model}`}>
+                <Eye className="w-4 h-4 text-purple-500" />
+              </span>
             )}
             {node.vectorDB && (
-              <Database className="w-4 h-4 text-green-500" title={`DB: ${node.vectorDB.name}`} />
+              <span title={`DB: ${node.vectorDB.name}`}>
+                <Database className="w-4 h-4 text-green-500" />
+              </span>
             )}
             {node.code && (
-              <Code className="w-4 h-4 text-blue-500" title="Has code" />
+              <span title="Has code">
+                <Code className="w-4 h-4 text-blue-500" />
+              </span>
             )}
             {node.aiScore && (
-              <Award className="w-4 h-4 text-yellow-500" title={`Score: ${node.aiScore}/100`} />
+              <span title={`Score: ${node.aiScore}/100`}>
+                <Award className="w-4 h-4 text-yellow-500" />
+              </span>
             )}
           </div>
         </div>

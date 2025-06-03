@@ -162,18 +162,18 @@ export default function AIPipelineSystem() {
     })));
   };
 
-  const handleNodeDeactivate = async (nodeId: string) => {
-    const currentSection = getCurrentSection();
-    const node = currentSection?.nodes.find(n => n.id === nodeId);
-    if (!node) return;
+const handleNodeDeactivate = async (nodeId: string) => {
+  const currentSection = getCurrentSection();
+  const node = currentSection?.nodes.find(n => n.id === nodeId);
+  if (!node || !currentSection) return; // currentSection 체크 추가
 
-    try {
-      await apiClient.deactivateNode(nodeId, currentSection.id);
-      handleNodeUpdate({ ...node, isDeactivated: !node.isDeactivated });
-    } catch (error) {
-      console.error('Failed to toggle deactivation:', error);
-    }
-  };
+  try {
+    await apiClient.deactivateNode(nodeId, currentSection.id);
+    handleNodeUpdate({ ...node, isDeactivated: !node.isDeactivated });
+  } catch (error) {
+    console.error('Failed to toggle deactivation:', error);
+  }
+};
 
   // Use keyboard shortcuts
   useKeyboardShortcuts({
