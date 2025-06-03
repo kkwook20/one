@@ -1,4 +1,3 @@
-// Related files: frontend/src/App.tsx
 // Location: frontend/src/index.tsx
 
 import React from 'react';
