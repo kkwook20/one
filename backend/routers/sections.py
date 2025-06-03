@@ -3,6 +3,7 @@
 
 from fastapi import APIRouter, HTTPException
 from typing import List
+from websocket_handler import send_update
 import xml.etree.ElementTree as ET
 import json
 import yaml
