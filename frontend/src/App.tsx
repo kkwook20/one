@@ -21,6 +21,8 @@ import { apiClient } from './api/client';
 import { Canvas } from './components/Canvas';
 import { useWebSocket } from './hooks/useWebSocket';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
+import { NodeComponent } from './components/NodeComponent';
+import { useNodeDrag } from './hooks/useNodeDrag';
 import { 
   IOConfigModal, 
   SupervisorEditModal, 
@@ -40,6 +42,13 @@ export default function AIPipelineSystem() {
   const [nodeProgress, setNodeProgress] = useState<{ [key: string]: number }>({});
   const [connectingNode, setConnectingNode] = useState<Node | null>(null);
   const [mousePosition, setMousePosition] = useState<Position>({ x: 0, y: 0 });
+  const handleNodeUpdate = (node: Node) => {
+  setSections(prev => prev.map(section => ({
+    ...section,
+    nodes: section.nodes.map(n => n.id === node.id ? node : n)
+  })));
+};
+  const getCurrentSection = () => sections.find(s => s.name === selectedSection);
   const canvasRef = useRef<HTMLDivElement>(null);
 
   // Use node drag hook
@@ -299,17 +308,18 @@ export default function AIPipelineSystem() {
               style={{ cursor: isDragging && draggedNode?.id === node.id ? 'grabbing' : 'grab' }}
             >
               <NodeComponent
-              key={node.id}
-              node={node}
-              onUpdate={handleNodeUpdate}
-              onDelete={handleNodeDelete}
-              onConnect={handleNodeConnect}
-              isSelected={selectedNodeId === node.id}
-              onSelect={setSelectedNodeId}
-              onEdit={setEditingNode}
-              onStartConnection={setConnectingNode}
-              progress={nodeProgress[node.id]}
-            />
+                key={node.id}
+                node={node}
+                onUpdate={handleNodeUpdate}
+                onDelete={handleNodeDelete}
+                onConnect={handleNodeConnect}
+                isSelected={selectedNodeId === node.id}
+                onSelect={setSelectedNodeId}
+                onEdit={setEditingNode}
+                onStartConnection={setConnectingNode}
+                progress={nodeProgress[node.id]}
+              />
+            </div>
           ))}
         </div>
       </div>
