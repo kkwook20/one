@@ -1,10 +1,4 @@
-// Related files: 
-// - frontend/src/App.tsx
-// - frontend/src/components/*.tsx
-// - frontend/src/hooks/*.ts
-// - frontend/src/api/*.ts
-// Location: frontend/src/types/index.ts
-
+// frontend/src/types/index.ts
 export interface Position {
   x: number;
   y: number;
@@ -41,6 +35,14 @@ export interface Node {
   supervisedNodes?: string[];
   updateHistory?: UpdateHistory[];
   aiScore?: number;
+  
+  // React Flow callbacks
+  onEdit?: (node: Node) => void;
+  onUpdate?: (node: Node) => void;
+  onDelete?: (nodeId: string) => void;
+  onDeactivate?: (nodeId: string) => void;
+  onToggleRun?: () => void;
+  progress?: number;
 }
 
 export interface Connection {

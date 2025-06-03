@@ -1,28 +1,33 @@
-// Related files: 
-// - backend/main.py
-// - package.json
-// - global-vars-documentation.txt
-// - frontend/src/types/index.ts
-// - frontend/src/constants/index.ts
-// - frontend/src/api/client.ts
-// - frontend/src/components/*.tsx
-// - frontend/src/components/modals/*.tsx
-// - frontend/src/hooks/*.ts
-// Location: frontend/src/App.tsx
-
-import React, { useState, useRef, useCallback, useEffect, useMemo } from 'react';
+// frontend/src/App.tsx - React Flow 버전
+import React, { useState, useCallback, useEffect, useMemo } from 'react';
+import ReactFlow, {
+  Node as FlowNode,
+  Edge,
+  Controls,
+  MiniMap,
+  Background,
+  BackgroundVariant,
+  useNodesState,
+  useEdgesState,
+  addEdge,
+  Connection as FlowConnection,
+  NodeTypes,
+  EdgeTypes,
+  ReactFlowProvider,
+  useReactFlow,
+  Panel,
+  MarkerType
+} from 'reactflow';
+import 'reactflow/dist/style.css';
 import { Play, Settings } from 'lucide-react';
-import { 
-  Node, Section, Connection, Position, 
-  TaskItem, UpdateHistory, Version 
-} from './types';
+
+import { Node, Section, Connection, Position, TaskItem } from './types';
 import { GROUPS, NODE_TYPES } from './constants';
 import { apiClient } from './api/client';
-import { ConnectionDrawer } from './components/ConnectionDrawer';
 import { useWebSocket } from './hooks/useWebSocket';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
-import { NodeComponent } from './components/NodeComponent';
-import { useNodeDrag } from './hooks/useNodeDrag';
+import { CustomNode } from './components/flow/CustomNode';
+import { CustomEdge } from './components/flow/CustomEdge';
 import { 
   IOConfigModal, 
   SupervisorEditModal, 
@@ -30,43 +35,84 @@ import {
   SectionSettingsModal 
 } from './components/modals';
 
-export default function AIPipelineSystem() {
+// Custom node types for React Flow
+const nodeTypes: NodeTypes = {
+  worker: CustomNode,
+  supervisor: CustomNode,
+  planner: CustomNode,
+  input: CustomNode,
+  output: CustomNode,
+};
+
+// Custom edge types
+const edgeTypes: EdgeTypes = {
+  custom: CustomEdge,
+};
+
+function AIPipelineFlow() {
   const [selectedGroup, setSelectedGroup] = useState<keyof typeof GROUPS>('preproduction');
   const [selectedSection, setSelectedSection] = useState<string>('Script');
   const [sections, setSections] = useState<Section[]>([]);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
-  const [connections, setConnections] = useState<Connection[]>([]);
-
+  
+  // React Flow states
+  const [nodes, setNodes, onNodesChange] = useNodesState([]);
+  const [edges, setEdges, onEdgesChange] = useEdgesState([]);
   const [editingNode, setEditingNode] = useState<Node | null>(null);
   const [showSettings, setShowSettings] = useState(false);
   const [nodeProgress, setNodeProgress] = useState<{ [key: string]: number }>({});
-  const [connectingNode, setConnectingNode] = useState<Node | null>(null);
-  const [mousePosition, setMousePosition] = useState<Position>({ x: 0, y: 0 });
   
-  // 최적화된 노드 업데이트 함수들
-  const handleNodeUpdate = useCallback((nodeId: string, position: Position) => {
-    setSections(prev => prev.map(section => ({
-      ...section,
-      nodes: section.nodes.map(n => 
-        n.id === nodeId ? { ...n, position } : n
-      )
-    })));
-  }, []);
+  const { fitView, zoomTo } = useReactFlow();
 
-  const handleFullNodeUpdate = useCallback((node: Node) => {
-    setSections(prev => prev.map(section => ({
-      ...section,
-      nodes: section.nodes.map(n => n.id === node.id ? node : n)
-    })));
-  }, []);
-  
-  const getCurrentSection = useCallback(() => sections.find(s => s.name === selectedSection), [sections, selectedSection]);
-  const canvasRef = useRef<HTMLDivElement>(null);
+  // Convert internal nodes to React Flow nodes
+  const convertToFlowNodes = useCallback((sectionNodes: Node[]): FlowNode[] => {
+    return sectionNodes.map(node => ({
+      id: node.id,
+      type: node.type,
+      position: node.position,
+      data: {
+        ...node,
+        onEdit: () => setEditingNode(node),
+        onDeactivate: () => handleNodeDeactivate(node.id),
+        progress: nodeProgress[node.id],
+      },
+      selected: selectedNodeId === node.id,
+      style: {
+        opacity: node.isDeactivated ? 0.5 : 1,
+      }
+    }));
+  }, [selectedNodeId, nodeProgress]);
 
-  // Use node drag hook with new logic
-  const { draggedNodeId, handleMouseDown } = useNodeDrag({
-    onNodeUpdate: handleNodeUpdate
-  });
+  // Convert connections to React Flow edges
+  const convertToFlowEdges = useCallback((sectionNodes: Node[]): Edge[] => {
+    const edges: Edge[] = [];
+    sectionNodes.forEach(node => {
+      if (node.connectedFrom) {
+        node.connectedFrom.forEach(fromId => {
+          edges.push({
+            id: `${fromId}-${node.id}`,
+            source: fromId,
+            target: node.id,
+            type: 'custom',
+            animated: nodeProgress[fromId] !== undefined && nodeProgress[fromId] > 0,
+            markerEnd: {
+              type: MarkerType.ArrowClosed,
+            },
+          });
+        });
+      }
+    });
+    return edges;
+  }, [nodeProgress]);
+
+  // Update React Flow when section changes
+  useEffect(() => {
+    const currentSection = sections.find(s => s.name === selectedSection);
+    if (currentSection) {
+      setNodes(convertToFlowNodes(currentSection.nodes));
+      setEdges(convertToFlowEdges(currentSection.nodes));
+    }
+  }, [selectedSection, sections, convertToFlowNodes, convertToFlowEdges]);
 
   // Initialize sections
   useEffect(() => {
@@ -96,23 +142,50 @@ export default function AIPipelineSystem() {
     setSections(initSections);
   }, []);
 
-  // Mouse position tracking for connection drawing
-  useEffect(() => {
-    const handleMouseMove = (e: MouseEvent) => {
-      if (connectingNode && canvasRef.current) {
-        const rect = canvasRef.current.getBoundingClientRect();
-        setMousePosition({
-          x: e.clientX - rect.left,
-          y: e.clientY - rect.top
-        });
+  // Handle node position changes
+  const handleNodesChange = useCallback((changes: any) => {
+    onNodesChange(changes);
+    
+    // Update section nodes with new positions
+    changes.forEach((change: any) => {
+      if (change.type === 'position' && change.position) {
+        setSections(prev => prev.map(section => ({
+          ...section,
+          nodes: section.nodes.map(n => 
+            n.id === change.id 
+              ? { ...n, position: change.position }
+              : n
+          )
+        })));
       }
-    };
+    });
+  }, [onNodesChange]);
 
-    if (connectingNode) {
-      window.addEventListener('mousemove', handleMouseMove);
-      return () => window.removeEventListener('mousemove', handleMouseMove);
-    }
-  }, [connectingNode]);
+  // Handle connections
+  const onConnect = useCallback((params: FlowConnection) => {
+    setEdges((eds) => addEdge({ ...params, type: 'custom', animated: true }, eds));
+    
+    // Update section nodes
+    setSections(prev => prev.map(section => {
+      if (section.name === selectedSection) {
+        return {
+          ...section,
+          nodes: section.nodes.map(n => {
+            if (n.id === params.source) {
+              return { ...n, connectedTo: [...(n.connectedTo || []), params.target!] };
+            }
+            if (n.id === params.target) {
+              return { ...n, connectedFrom: [...(n.connectedFrom || []), params.source!] };
+            }
+            return n;
+          })
+        };
+      }
+      return section;
+    }));
+  }, [selectedSection, setEdges]);
+
+  const getCurrentSection = useCallback(() => sections.find(s => s.name === selectedSection), [sections, selectedSection]);
 
   // WebSocket handlers
   const { isConnected } = useWebSocket({
@@ -143,19 +216,6 @@ export default function AIPipelineSystem() {
           if (n.id === data.targetId) {
             return { ...n, aiScore: data.score };
           }
-          if (n.id === data.supervisorId) {
-            const modHistory = (n as any).modificationHistory || [];
-            return { 
-              ...n, 
-              modificationHistory: [...modHistory, { 
-                id: data.modificationId,
-                timestamp: new Date().toISOString(),
-                targetNodeId: data.targetId,
-                score: data.score,
-                status: 'pending'
-              }]
-            };
-          }
           return n;
         })
       })));
@@ -163,6 +223,9 @@ export default function AIPipelineSystem() {
   });
 
   const handleNodeDelete = useCallback((nodeId: string) => {
+    setNodes((nds) => nds.filter((n) => n.id !== nodeId));
+    setEdges((eds) => eds.filter((e) => e.source !== nodeId && e.target !== nodeId));
+    
     setSections(prev => prev.map(section => {
       if (section.name === selectedSection) {
         return {
@@ -172,49 +235,7 @@ export default function AIPipelineSystem() {
       }
       return section;
     }));
-    setConnections(prev => prev.filter(c => c.from !== nodeId && c.to !== nodeId));
-  }, [selectedSection]);
-
-  const handleNodeConnect = useCallback(async (fromId: string, toId: string) => {
-    setConnections(prev => [...prev, { from: fromId, to: toId }]);
-    
-    const currentSection = getCurrentSection();
-    if (!currentSection) return;
-    
-    setSections(prev => prev.map(section => ({
-      ...section,
-      nodes: section.nodes.map(n => {
-        if (n.id === fromId) {
-          return { ...n, connectedTo: [...(n.connectedTo || []), toId] };
-        }
-        if (n.id === toId) {
-          return { ...n, connectedFrom: [...(n.connectedFrom || []), fromId] };
-        }
-        return n;
-      })
-    })));
-    
-    // Output 노드에 연결된 경우 자동 업데이트
-    const toNode = currentSection.nodes.find(n => n.id === toId);
-    if (toNode?.type === 'output') {
-      await apiClient.updateOutputNode(currentSection.id);
-    }
-  }, [getCurrentSection]);
-
-  const handleStartConnection = useCallback((node: Node) => {
-    setConnectingNode(node);
-  }, []);
-
-  const handleCompleteConnection = useCallback((toNodeId: string) => {
-    if (connectingNode) {
-      handleNodeConnect(connectingNode.id, toNodeId);
-      setConnectingNode(null);
-    }
-  }, [connectingNode, handleNodeConnect]);
-
-  const handleCancelConnection = useCallback(() => {
-    setConnectingNode(null);
-  }, []);
+  }, [selectedSection, setNodes, setEdges]);
 
   const handleNodeDeactivate = useCallback(async (nodeId: string) => {
     const currentSection = getCurrentSection();
@@ -223,20 +244,16 @@ export default function AIPipelineSystem() {
 
     try {
       await apiClient.deactivateNode(nodeId, currentSection.id);
-      handleFullNodeUpdate({ ...node, isDeactivated: !node.isDeactivated });
+      setSections(prev => prev.map(section => ({
+        ...section,
+        nodes: section.nodes.map(n => 
+          n.id === nodeId ? { ...n, isDeactivated: !n.isDeactivated } : n
+        )
+      })));
     } catch (error) {
       console.error('Failed to toggle deactivation:', error);
     }
-  }, [getCurrentSection, handleFullNodeUpdate]);
-
-  // Use keyboard shortcuts
-  useKeyboardShortcuts({
-    selectedNodeId,
-    getCurrentSection,
-    onNodeEdit: setEditingNode,
-    onNodeDelete: handleNodeDelete,
-    onNodeDeactivate: handleNodeDeactivate
-  });
+  }, [getCurrentSection]);
 
   const handleNodeAdd = useCallback((nodeType: string) => {
     const currentSection = getCurrentSection();
@@ -277,7 +294,25 @@ export default function AIPipelineSystem() {
     }
   }, [getCurrentSection]);
 
-  const currentSection = useMemo(() => getCurrentSection(), [getCurrentSection]);
+  // Keyboard shortcuts
+  useKeyboardShortcuts({
+    selectedNodeId,
+    getCurrentSection,
+    onNodeEdit: setEditingNode,
+    onNodeDelete: handleNodeDelete,
+    onNodeDeactivate: handleNodeDeactivate
+  });
+
+  const handleNodeClick = useCallback((event: React.MouseEvent, node: FlowNode) => {
+    setSelectedNodeId(node.id);
+  }, []);
+
+  // Fit view when section changes
+  useEffect(() => {
+    setTimeout(() => {
+      fitView({ padding: 0.2 });
+    }, 100);
+  }, [selectedSection, fitView]);
 
   return (
     <div className="flex flex-col h-screen bg-gray-100">
@@ -344,140 +379,78 @@ export default function AIPipelineSystem() {
         </div>
       </div>
 
-      {/* Canvas */}
-      <div className="flex-1 relative overflow-hidden">
-        <div 
-          ref={canvasRef}
-          id="pipeline-canvas"
-          className="absolute inset-0 bg-gray-50"
-          style={{ 
-            backgroundImage: 'radial-gradient(circle, #e5e7eb 1px, transparent 1px)', 
-            backgroundSize: '20px 20px' 
-          }}
+      {/* React Flow Canvas */}
+      <div className="flex-1">
+        <ReactFlow
+          nodes={nodes}
+          edges={edges}
+          onNodesChange={handleNodesChange}
+          onEdgesChange={onEdgesChange}
+          onConnect={onConnect}
+          onNodeClick={handleNodeClick}
+          nodeTypes={nodeTypes}
+          edgeTypes={edgeTypes}
+          fitView
+          attributionPosition="bottom-right"
         >
-          {/* Grid Lines for better visual alignment */}
-          <svg className="absolute inset-0 pointer-events-none opacity-10">
-            <defs>
-              <pattern id="grid" width="100" height="100" patternUnits="userSpaceOnUse">
-                <path d="M 100 0 L 0 0 0 100" fill="none" stroke="gray" strokeWidth="1"/>
-              </pattern>
-            </defs>
-            <rect width="100%" height="100%" fill="url(#grid)" />
-          </svg>
-
-          {/* Connections */}
-          <svg className="absolute inset-0 pointer-events-none">
-            <defs>
-              <marker
-                id="arrowhead"
-                markerWidth="10"
-                markerHeight="7"
-                refX="9"
-                refY="3.5"
-                orient="auto"
-              >
-                <polygon
-                  points="0 0, 10 3.5, 0 7"
-                  fill="#94a3b8"
-                />
-              </marker>
-            </defs>
-            {connections.map((conn, index) => {
-              const fromNode = currentSection?.nodes.find(n => n.id === conn.from);
-              const toNode = currentSection?.nodes.find(n => n.id === conn.to);
-              if (!fromNode || !toNode) return null;
-
-              const fromX = fromNode.position.x + (fromNode.type === 'input' || fromNode.type === 'output' ? 64 : 128);
-              const fromY = fromNode.position.y + 40;
-              const toX = toNode.position.x;
-              const toY = toNode.position.y + 40;
-
-              // Curved connection path
-              const midX = (fromX + toX) / 2;
-              const path = `M ${fromX} ${fromY} Q ${midX} ${fromY} ${midX} ${toY} T ${toX} ${toY}`;
-
-              return (
-                <path
-                  key={index}
-                  d={path}
-                  stroke="#94a3b8"
-                  strokeWidth="2"
-                  fill="none"
-                  markerEnd="url(#arrowhead)"
-                />
-              );
-            })}
-          </svg>
-
-          {/* Connection Drawing */}
-          {connectingNode && (
-            <ConnectionDrawer
-              startNode={connectingNode}
-              endPosition={mousePosition}
-              onConnect={handleCompleteConnection}
-              onCancel={handleCancelConnection}
-              nodes={currentSection?.nodes || []}
-            />
-          )}
-
-          {/* Nodes - 최적화된 렌더링 */}
-          {currentSection?.nodes.map(node => (
-            <NodeComponent
-              key={node.id}
-              node={node}
-              onUpdate={handleFullNodeUpdate}
-              onDelete={handleNodeDelete}
-              onConnect={handleNodeConnect}
-              isSelected={selectedNodeId === node.id}
-              onSelect={setSelectedNodeId}
-              onEdit={setEditingNode}
-              onStartConnection={handleStartConnection}
-              onMouseDown={handleMouseDown}
-              progress={nodeProgress[node.id]}
-              isDragging={draggedNodeId === node.id}
-            />
-          ))}
-        </div>
+          <Background variant={BackgroundVariant.Dots} gap={20} size={1} />
+          <Controls />
+          <MiniMap 
+            nodeColor={(node) => {
+              switch (node.type) {
+                case 'supervisor': return '#a855f7';
+                case 'planner': return '#10b981';
+                case 'input': return '#3b82f6';
+                case 'output': return '#f97316';
+                default: return '#6b7280';
+              }
+            }}
+          />
+          
+          {/* Custom Panel for adding nodes */}
+          <Panel position="bottom-center" className="bg-white rounded-lg shadow-lg p-4">
+            <div className="flex gap-4">
+              {NODE_TYPES
+                .filter(nodeType => nodeType.type !== 'input' && nodeType.type !== 'output')
+                .map(nodeType => {
+                const currentSection = getCurrentSection();
+                const isDisabled = (nodeType.type === 'supervisor' || nodeType.type === 'planner') &&
+                  currentSection?.nodes.some(n => n.type === nodeType.type);
+                
+                return (
+                  <button
+                    key={nodeType.type}
+                    onClick={() => handleNodeAdd(nodeType.type)}
+                    disabled={isDisabled}
+                    className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-all ${
+                      isDisabled 
+                        ? 'bg-gray-100 text-gray-400 cursor-not-allowed' 
+                        : 'bg-gray-100 hover:bg-gray-200 hover:shadow-md'
+                    }`}
+                    title={isDisabled ? `Only one ${nodeType.type} allowed per section` : `Add ${nodeType.label}`}
+                  >
+                    <span className="text-xl">{nodeType.icon}</span>
+                    <span>{nodeType.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </Panel>
+        </ReactFlow>
       </div>
 
-      {/* Node Palette */}
-      <div className="bg-white border-t p-4">
-        <div className="flex gap-4 justify-center">
-          {NODE_TYPES
-            .filter(nodeType => nodeType.type !== 'input' && nodeType.type !== 'output')
-            .map(nodeType => {
-            const isDisabled = (nodeType.type === 'supervisor' || nodeType.type === 'planner') &&
-              currentSection?.nodes.some(n => n.type === nodeType.type);
-            
-            return (
-              <button
-                key={nodeType.type}
-                onClick={() => handleNodeAdd(nodeType.type)}
-                disabled={isDisabled}
-                className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-all ${
-                  isDisabled 
-                    ? 'bg-gray-100 text-gray-400 cursor-not-allowed' 
-                    : 'bg-gray-100 hover:bg-gray-200 hover:shadow-md'
-                }`}
-                title={isDisabled ? `Only one ${nodeType.type} allowed per section` : `Add ${nodeType.label}`}
-              >
-                <span className="text-xl">{nodeType.icon}</span>
-                <span>{nodeType.label}</span>
-              </button>
-            );
-          })}
-        </div>
-      </div>
-
-      {/* Modals */}
+      {/* Modals - 기존과 동일 */}
       {editingNode && editingNode.type === 'worker' && (
         <WorkerEditModal
           node={editingNode}
-          section={currentSection!}
+          section={getCurrentSection()!}
           allSections={sections}
           onClose={() => setEditingNode(null)}
           onSave={(node) => {
-            handleFullNodeUpdate(node);
+            setSections(prev => prev.map(section => ({
+              ...section,
+              nodes: section.nodes.map(n => n.id === node.id ? node : n)
+            })));
             setEditingNode(null);
           }}
         />
@@ -486,11 +459,14 @@ export default function AIPipelineSystem() {
       {editingNode && (editingNode.type === 'supervisor' || editingNode.type === 'planner') && (
         <SupervisorEditModal
           node={editingNode}
-          section={currentSection!}
+          section={getCurrentSection()!}
           allSections={sections}
           onClose={() => setEditingNode(null)}
           onSave={(node) => {
-            handleFullNodeUpdate(node);
+            setSections(prev => prev.map(section => ({
+              ...section,
+              nodes: section.nodes.map(n => n.id === node.id ? node : n)
+            })));
             setEditingNode(null);
           }}
         />
@@ -499,19 +475,22 @@ export default function AIPipelineSystem() {
       {editingNode && (editingNode.type === 'input' || editingNode.type === 'output') && (
         <IOConfigModal
           node={editingNode}
-          section={currentSection!}
+          section={getCurrentSection()!}
           allSections={sections}
           onClose={() => setEditingNode(null)}
           onSave={(node) => {
-            handleFullNodeUpdate(node);
+            setSections(prev => prev.map(section => ({
+              ...section,
+              nodes: section.nodes.map(n => n.id === node.id ? node : n)
+            })));
             setEditingNode(null);
           }}
         />
       )}
 
-      {showSettings && currentSection && (
+      {showSettings && getCurrentSection() && (
         <SectionSettingsModal
-          section={currentSection}
+          section={getCurrentSection()!}
           allSections={sections}
           onClose={() => setShowSettings(false)}
           onSave={(section) => {
@@ -521,5 +500,14 @@ export default function AIPipelineSystem() {
         />
       )}
     </div>
+  );
+}
+
+// Wrap with ReactFlowProvider
+export default function AIPipelineSystem() {
+  return (
+    <ReactFlowProvider>
+      <AIPipelineFlow />
+    </ReactFlowProvider>
   );
 }
