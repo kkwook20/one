@@ -1,0 +1,281 @@
+// Related files:
+// - frontend/src/App.tsx
+// - frontend/src/types/index.ts
+// - frontend/src/api/client.ts
+// - frontend/src/components/CodeEditor.tsx
+// - frontend/src/components/modals/index.ts
+// Location: frontend/src/components/modals/WorkerEditModal.tsx
+
+import React, { useState, useEffect } from 'react';
+import { Save, Play, Database, Clock, Award } from 'lucide-react';
+import { Node, Section, Version } from '../../types';
+import { apiClient } from '../../api/client';
+import { CodeEditor } from '../CodeEditor';
+
+interface WorkerEditModalProps {
+  node: Node;
+  section: Section;
+  allSections: Section[];
+  onClose: () => void;
+  onSave: (node: Node) => void;
+}
+
+export const WorkerEditModal: React.FC<WorkerEditModalProps> = ({
+  node,
+  section,
+  allSections,
+  onClose,
+  onSave
+}) => {
+  const [editedNode, setEditedNode] = useState(node);
+  const [selectedInput, setSelectedInput] = useState<string>(node.connectedFrom?.[0] || '');
+  const [connectedNodeData, setConnectedNodeData] = useState<any>(null);
+  const [versions, setVersions] = useState<Version[]>([]);
+  const [activeTab, setActiveTab] = useState<'code' | 'history'>('code');
+
+  useEffect(() => {
+    // Load connected node data
+    if (selectedInput) {
+      const inputNode = allSections
+        .flatMap(s => s.nodes)
+        .find(n => n.id === selectedInput);
+      
+      if (inputNode?.output) {
+        setConnectedNodeData(inputNode.output);
+      }
+    }
+  }, [selectedInput, allSections]);
+
+  useEffect(() => {
+    // Load version history
+    apiClient.getVersions(node.id)
+      .then(res => setVersions(res.data))
+      .catch(console.error);
+  }, [node.id]);
+
+  const handleSave = async () => {
+    const updatedNode = {
+      ...editedNode,
+      connectedFrom: selectedInput ? [selectedInput] : []
+    };
+    
+    // Update section with new node data
+    await apiClient.updateSection(section.id, {
+      ...section,
+      nodes: section.nodes.map(n => n.id === node.id ? updatedNode : n)
+    });
+    
+    onSave(updatedNode);
+    onClose();
+  };
+
+  const executeCode = async () => {
+    try {
+      const response = await apiClient.executeNode(
+        node.id,
+        section.id,
+        editedNode.code || '',
+        connectedNodeData
+      );
+      
+      if (response.data.status === 'started') {
+        alert('Execution started!');
+      }
+    } catch (error) {
+      console.error('Execution failed:', error);
+    }
+  };
+
+  const restoreVersion = async (versionId: string) => {
+    try {
+      await apiClient.restoreVersion(node.id, versionId);
+      alert('Version restored successfully!');
+      onClose();
+    } catch (error) {
+      console.error('Failed to restore version:', error);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+      <div className="bg-white rounded-lg w-full max-w-7xl h-5/6 flex flex-col">
+        <div className="p-4 border-b flex justify-between items-center">
+          <h2 className="text-xl font-bold">Edit {node.label}</h2>
+          <button onClick={onClose} className="text-2xl">&times;</button>
+        </div>
+
+        <div className="flex flex-1 overflow-hidden">
+          {/* Left Panel - Input */}
+          <div className="w-1/4 border-r p-4 overflow-y-auto">
+            <h3 className="font-semibold mb-2">Input Source</h3>
+            <select
+              value={selectedInput}
+              onChange={(e) => setSelectedInput(e.target.value)}
+              className="w-full border rounded p-2 mb-4"
+            >
+              <option value="">No input</option>
+              {allSections.flatMap(s =>
+                s.nodes
+                  .filter(n => n.id !== node.id && (n.type === 'worker' || n.type === 'input'))
+                  .map(n => (
+                    <option key={n.id} value={n.id}>
+                      {s.name} - {n.label}
+                    </option>
+                  ))
+              )}
+            </select>
+
+            {connectedNodeData && (
+              <div className="bg-gray-100 rounded p-3">
+                <h4 className="font-medium mb-2">Input Data:</h4>
+                <pre className="text-xs overflow-x-auto">
+                  {JSON.stringify(connectedNodeData, null, 2)}
+                </pre>
+              </div>
+            )}
+          </div>
+
+          {/* Center Panel - Code Editor with tabs */}
+          <div className="flex-1 flex flex-col">
+            <div className="flex border-b">
+              <button
+                onClick={() => setActiveTab('code')}
+                className={`px-4 py-2 ${activeTab === 'code' ? 'bg-gray-100 border-b-2 border-blue-500' : ''}`}
+              >
+                Code
+              </button>
+              <button
+                onClick={() => setActiveTab('history')}
+                className={`px-4 py-2 ${activeTab === 'history' ? 'bg-gray-100 border-b-2 border-blue-500' : ''}`}
+              >
+                Update History
+              </button>
+            </div>
+            
+            <div className="flex-1 overflow-hidden">
+              {activeTab === 'code' ? (
+                <CodeEditor
+                  value={editedNode.code || `# ${node.label} Implementation
+# Access input data via 'inputs' variable or get_connected_outputs()
+# Set results in 'output' variable
+
+import json
+
+# Get connected outputs
+data = get_connected_outputs()
+
+# Your processing logic here
+output = {
+    "result": "processed data",
+    "status": "success"
+}
+`}
+                  onChange={(code) => setEditedNode({ ...editedNode, code })}
+                />
+              ) : (
+                <div className="p-4 overflow-y-auto">
+                  <h3 className="font-semibold mb-3">Update History</h3>
+                  <div className="space-y-3">
+                    {editedNode.updateHistory?.map((update, idx) => (
+                      <div key={idx} className="border rounded p-3">
+                        <div className="flex justify-between items-start">
+                          <div>
+                            <div className="text-sm text-gray-600">
+                              {new Date(update.timestamp).toLocaleString()}
+                            </div>
+                            <div className="font-medium">
+                              Type: {update.type}
+                              {update.by && ` by ${update.by}`}
+                            </div>
+                            {update.score !== undefined && (
+                              <div className="flex items-center gap-1 mt-1">
+                                <Award className="w-4 h-4 text-yellow-500" />
+                                <span className="text-sm">AI Score: {update.score}/100</span>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+            
+            <div className="p-4 border-t flex gap-2">
+              <button
+                onClick={handleSave}
+                className="flex items-center gap-2 bg-blue-500 text-white rounded px-4 py-2"
+              >
+                <Save className="w-4 h-4" />
+                Save
+              </button>
+              <button
+                onClick={executeCode}
+                className="flex items-center gap-2 bg-green-500 text-white rounded px-4 py-2"
+              >
+                <Play className="w-4 h-4" />
+                Run Code
+              </button>
+              {editedNode.vectorDB && (
+                <button className="flex items-center gap-2 bg-purple-500 text-white rounded px-4 py-2">
+                  <Database className="w-4 h-4" />
+                  Configure DB
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* Right Panel - Output & History */}
+          <div className="w-1/3 border-l flex flex-col">
+            <div className="flex-1 p-4 overflow-y-auto">
+              <h3 className="font-semibold mb-2">Output</h3>
+              {editedNode.output ? (
+                <pre className="bg-gray-100 rounded p-3 text-xs overflow-x-auto">
+                  {JSON.stringify(editedNode.output, null, 2)}
+                </pre>
+              ) : (
+                <div className="text-gray-500">No output yet</div>
+              )}
+              
+              {editedNode.aiScore && (
+                <div className="mt-4 p-3 bg-yellow-50 rounded">
+                  <div className="flex items-center gap-2">
+                    <Award className="w-5 h-5 text-yellow-600" />
+                    <span className="font-medium">AI Evaluation Score</span>
+                  </div>
+                  <div className="text-2xl font-bold text-yellow-600 mt-1">
+                    {editedNode.aiScore}/100
+                  </div>
+                </div>
+              )}
+            </div>
+            
+            <div className="border-t p-4">
+              <h3 className="font-semibold mb-2 flex items-center gap-2">
+                <Clock className="w-4 h-4" />
+                Version History
+              </h3>
+              <div className="space-y-2 max-h-48 overflow-y-auto">
+                {versions.map(v => (
+                  <div key={v.id} className="border rounded p-2 text-sm">
+                    <div className="text-gray-600">{new Date(v.timestamp).toLocaleString()}</div>
+                    <div className="flex justify-between items-center">
+                      <span>Model: {v.metadata.modelVersion}</span>
+                      <button 
+                        onClick={() => restoreVersion(v.id)}
+                        className="text-blue-500 hover:underline"
+                      >
+                        Restore
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};

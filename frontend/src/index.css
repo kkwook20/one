@@ -1,0 +1,6 @@
+/* Related files: frontend/src/App.tsx */
+/* Location: frontend/src/index.css */
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
