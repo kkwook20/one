@@ -37,13 +37,12 @@ class Node(BaseModel):
     updateHistory: Optional[List[Dict[str, Any]]] = None
     aiScore: Optional[float] = None
 
-# ✅ Pydantic V2 방식으로 수정
 class Connection(BaseModel):
-    from_node: str = Field(default=None, alias='from')  # V2 방식
+    from_node: str = Field(default=None, alias='from')
     to: str
 
     model_config = ConfigDict(
-        populate_by_name=True  # alias와 원래 이름 모두 허용
+        populate_by_name=True
     )
 
 class SectionConfig(BaseModel):

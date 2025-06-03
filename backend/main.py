@@ -12,7 +12,7 @@ import subprocess
 import sys
 from datetime import datetime
 from typing import Dict, List, Optional, Any, Set
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, ConfigDict
 import aiofiles
 import httpx
 from pathlib import Path
@@ -52,11 +52,12 @@ class Node(BaseModel):
     aiScore: Optional[float] = None
 
 class Connection(BaseModel):
-    from_node: str = None  # 'from' is reserved
+    from_node: str = Field(default=None, alias='from')
     to: str
 
-    class Config:
-        fields = {'from_node': 'from'}
+    model_config = ConfigDict(
+        populate_by_name=True
+    )
 
 class SectionConfig(BaseModel):
     sources: List[str] = []
