@@ -1,13 +1,6 @@
-// Related files:
-// - frontend/src/App.tsx
-// - frontend/src/types/index.ts
-// - frontend/src/api/client.ts
-// - frontend/src/components/CodeEditor.tsx
-// - frontend/src/components/modals/index.ts
-// Location: frontend/src/components/modals/WorkerEditModal.tsx
-
+// frontend/src/components/modals/WorkerEditModal.tsx
 import React, { useState, useEffect } from 'react';
-import { Save, Play, Database, Clock, Award } from 'lucide-react';
+import { Save, Play, Database, Clock, Award, Loader, X } from 'lucide-react';
 import { Node, Section, Version } from '../../types';
 import { apiClient } from '../../api/client';
 import { CodeEditor } from '../CodeEditor';
@@ -32,6 +25,8 @@ export const WorkerEditModal: React.FC<WorkerEditModalProps> = ({
   const [connectedNodeData, setConnectedNodeData] = useState<any>(null);
   const [versions, setVersions] = useState<Version[]>([]);
   const [activeTab, setActiveTab] = useState<'code' | 'history'>('code');
+  const [isExecuting, setIsExecuting] = useState(false);
+  const [executionResult, setExecutionResult] = useState<{ success: boolean; output?: any; error?: string } | null>(null);
 
   useEffect(() => {
     // Load connected node data
@@ -53,17 +48,14 @@ export const WorkerEditModal: React.FC<WorkerEditModalProps> = ({
   }, [node.id]);
 
   const handleSave = async () => {
-    // Update section with new node data
-    await apiClient.updateSection(section.id, {
-      ...section,
-      nodes: section.nodes.map(n => n.id === node.id ? editedNode : n)
-    });
-    
     onSave(editedNode);
     onClose();
   };
 
   const executeCode = async () => {
+    setIsExecuting(true);
+    setExecutionResult(null);
+    
     try {
       // Get connected outputs for execution
       const connectedOutputs: any = {};
@@ -84,10 +76,23 @@ export const WorkerEditModal: React.FC<WorkerEditModalProps> = ({
       );
       
       if (response.data.status === 'started') {
-        alert('Execution started!');
+        // 실행이 시작되었으므로 결과를 기다림
+        // WebSocket을 통해 결과가 올 것이므로 일단 성공 메시지만 표시
+        setTimeout(() => {
+          setIsExecuting(false);
+          setExecutionResult({
+            success: true,
+            output: "Code execution started. Check the node for results."
+          });
+        }, 1000);
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error('Execution failed:', error);
+      setIsExecuting(false);
+      setExecutionResult({
+        success: false,
+        error: error.response?.data?.detail || error.message || 'Execution failed'
+      });
     }
   };
 
@@ -208,27 +213,72 @@ output = {
               )}
             </div>
             
+            {/* Bottom Panel - Execution Result (if any) */}
+            {executionResult && (
+              <div className={`p-3 border-t ${executionResult.success ? 'bg-green-50' : 'bg-red-50'}`}>
+                <div className="flex items-start gap-2">
+                  <div className="flex-1">
+                    {executionResult.success ? (
+                      <div className="text-green-700">
+                        <strong>Success:</strong> {typeof executionResult.output === 'string' ? executionResult.output : JSON.stringify(executionResult.output)}
+                      </div>
+                    ) : (
+                      <div className="text-red-700">
+                        <strong>Error:</strong> {executionResult.error}
+                      </div>
+                    )}
+                  </div>
+                  <button
+                    onClick={() => setExecutionResult(null)}
+                    className="text-gray-500 hover:text-gray-700"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+            )}
+            
             <div className="p-4 border-t flex gap-2">
               <button
                 onClick={handleSave}
-                className="flex items-center gap-2 bg-blue-500 text-white rounded px-4 py-2"
+                className="flex items-center gap-2 bg-blue-500 text-white rounded px-4 py-2 hover:bg-blue-600"
               >
                 <Save className="w-4 h-4" />
                 Save
               </button>
               <button
                 onClick={executeCode}
-                className="flex items-center gap-2 bg-green-500 text-white rounded px-4 py-2"
+                disabled={isExecuting}
+                className={`flex items-center gap-2 rounded px-4 py-2 ${
+                  isExecuting 
+                    ? 'bg-gray-400 text-gray-200 cursor-not-allowed' 
+                    : 'bg-green-500 text-white hover:bg-green-600'
+                }`}
               >
-                <Play className="w-4 h-4" />
-                Run Code
+                {isExecuting ? (
+                  <>
+                    <Loader className="w-4 h-4 animate-spin" />
+                    Running...
+                  </>
+                ) : (
+                  <>
+                    <Play className="w-4 h-4" />
+                    Run Code
+                  </>
+                )}
               </button>
               {editedNode.vectorDB && (
-                <button className="flex items-center gap-2 bg-purple-500 text-white rounded px-4 py-2">
+                <button className="flex items-center gap-2 bg-purple-500 text-white rounded px-4 py-2 hover:bg-purple-600">
                   <Database className="w-4 h-4" />
                   Configure DB
                 </button>
               )}
+              <button
+                onClick={onClose}
+                className="ml-auto flex items-center gap-2 bg-gray-300 text-gray-700 rounded px-4 py-2 hover:bg-gray-400"
+              >
+                Cancel
+              </button>
             </div>
           </div>
 

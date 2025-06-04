@@ -183,7 +183,61 @@ function AIPipelineFlow() {
     }
   }, [getCurrentSection]);
 
-  // Convert internal nodes to React Flow nodes (handleNodeDeactivate, handleNodeRun 사용)
+  // Handle node deletion
+  const handleNodeDelete = useCallback((nodeId: string) => {
+    setNodes((nds) => nds.filter((n) => n.id !== nodeId));
+    setEdges((eds) => eds.filter((e) => e.source !== nodeId && e.target !== nodeId));
+    
+    setSections(prev => prev.map(section => {
+      if (section.name === selectedSection) {
+        return {
+          ...section,
+          nodes: section.nodes.filter(n => n.id !== nodeId)
+        };
+      }
+      return section;
+    }));
+  }, [selectedSection, setNodes, setEdges]);
+
+  // Handle edge deletion
+  const handleEdgeDelete = useCallback((edgeId: string) => {
+    // Find the edge to get source and target
+    const edge = edges.find(e => e.id === edgeId);
+    if (!edge) return;
+    
+    const sourceId = edge.source;
+    const targetId = edge.target;
+    
+    // Remove edge from React Flow
+    setEdges((eds) => eds.filter((e) => e.id !== edgeId));
+    
+    // Update sections state
+    setSections(prev => prev.map(section => {
+      if (section.name === selectedSection) {
+        return {
+          ...section,
+          nodes: section.nodes.map(n => {
+            if (n.id === sourceId && n.connectedTo) {
+              return {
+                ...n,
+                connectedTo: n.connectedTo.filter(id => id !== targetId)
+              };
+            }
+            if (n.id === targetId && n.connectedFrom) {
+              return {
+                ...n,
+                connectedFrom: n.connectedFrom.filter(id => id !== sourceId)
+              };
+            }
+            return n;
+          })
+        };
+      }
+      return section;
+    }));
+  }, [selectedSection, setEdges, edges]);
+
+  // Convert internal nodes to React Flow nodes
   const convertToFlowNodes = useCallback((sectionNodes: Node[]): FlowNode[] => {
     return sectionNodes.map(node => ({
       id: node.id,
@@ -194,6 +248,13 @@ function AIPipelineFlow() {
         onEdit: () => setEditingNode(node),
         onDeactivate: () => handleNodeDeactivate(node.id),
         onToggleRun: () => handleNodeRun(node.id),
+        onDelete: (nodeId: string) => handleNodeDelete(nodeId),
+        onUpdate: (updatedNode: Node) => {
+          setSections(prev => prev.map(section => ({
+            ...section,
+            nodes: section.nodes.map(n => n.id === updatedNode.id ? updatedNode : n)
+          })));
+        },
         progress: nodeProgress[node.id],
         isExecuting: runningNodes.has(node.id),
       },
@@ -202,11 +263,11 @@ function AIPipelineFlow() {
         opacity: node.isDeactivated ? 0.5 : 1,
       }
     }));
-  }, [selectedNodeId, nodeProgress, runningNodes, handleNodeDeactivate, handleNodeRun]);
+  }, [selectedNodeId, nodeProgress, runningNodes, handleNodeDeactivate, handleNodeRun, handleNodeDelete]);
 
   // Convert connections to React Flow edges
   const convertToFlowEdges = useCallback((sectionNodes: Node[]): Edge[] => {
-    const edges: Edge[] = [];
+    const flowEdges: Edge[] = [];
     sectionNodes.forEach(node => {
       if (node.connectedFrom) {
         node.connectedFrom.forEach(fromId => {
@@ -214,12 +275,15 @@ function AIPipelineFlow() {
           const isActive = runningNodes.has(fromId) && runningNodes.has(node.id);
           const isComplete = nodeProgress[fromId] === 1;
           
-          edges.push({
+          flowEdges.push({
             id: `${fromId}-${node.id}`,
             source: fromId,
             target: node.id,
             type: 'custom',
             animated: isActive || isComplete,
+            data: {
+              onDelete: handleEdgeDelete
+            },
             style: {
               stroke: isComplete ? '#10b981' : isActive ? '#3b82f6' : '#94a3b8',
               strokeWidth: isActive || isComplete ? 3 : 2,
@@ -232,8 +296,8 @@ function AIPipelineFlow() {
         });
       }
     });
-    return edges;
-  }, [nodeProgress, runningNodes]);
+    return flowEdges;
+  }, [nodeProgress, runningNodes, handleEdgeDelete]);
 
   // Update React Flow when section changes
   useEffect(() => {
@@ -456,21 +520,6 @@ function AIPipelineFlow() {
     }
   });
 
-  const handleNodeDelete = useCallback((nodeId: string) => {
-    setNodes((nds) => nds.filter((n) => n.id !== nodeId));
-    setEdges((eds) => eds.filter((e) => e.source !== nodeId && e.target !== nodeId));
-    
-    setSections(prev => prev.map(section => {
-      if (section.name === selectedSection) {
-        return {
-          ...section,
-          nodes: section.nodes.filter(n => n.id !== nodeId)
-        };
-      }
-      return section;
-    }));
-  }, [selectedSection, setNodes, setEdges]);
-
   const handleNodeAdd = useCallback((nodeType: string) => {
     const currentSection = getCurrentSection();
     if (!currentSection) return;
@@ -487,7 +536,9 @@ function AIPipelineFlow() {
       label: nodeType.charAt(0).toUpperCase() + nodeType.slice(1),
       position: { x: 300, y: 300 },
       isRunning: false,
-      tasks: nodeType === 'worker' ? [] : undefined
+      tasks: nodeType === 'worker' ? [
+        { id: `task-${Date.now()}-1`, text: '', status: 'pending' }
+      ] : undefined
     };
 
     setSections(prev => prev.map(section => {

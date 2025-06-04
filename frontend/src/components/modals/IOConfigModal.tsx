@@ -36,22 +36,15 @@ export const IOConfigModal: React.FC<IOConfigModalProps> = ({
   const handleSave = async () => {
     if (node.type === 'input') {
       if (section.group === 'preproduction' && section.name === 'Script') {
-        // 텍스트 입력 저장
+        // 텍스트 입력 저장 - API 호출 없이 로컬 상태만 업데이트
         const updatedNode = {
           ...node,
           output: { text: textContent, type: 'script' }
         };
         
-        // 노드 업데이트를 섹션에 반영
-        const updatedSection = {
-          ...section,
-          nodes: section.nodes.map(n => n.id === node.id ? updatedNode : n)
-        };
-        await apiClient.updateSection(section.id, updatedSection);
-        
         onSave(updatedNode);
       } else {
-        // 기존 방식
+        // 기존 방식 - 다른 input 노드들
         const updatedSection = {
           ...section,
           inputConfig: {
@@ -59,10 +52,18 @@ export const IOConfigModal: React.FC<IOConfigModalProps> = ({
             selectedItems: Object.values(selectedItems).flat()
           }
         };
-        await apiClient.updateSection(section.id, updatedSection);
+        
+        // API 호출도 try-catch로 감싸서 에러 처리
+        try {
+          await apiClient.updateSection(section.id, updatedSection);
+        } catch (error) {
+          console.error('Failed to update section:', error);
+        }
+        
         onSave(node);
       }
-    } else {
+    } else if (node.type === 'output') {
+      // Output 노드는 설정만 저장
       onSave(node);
     }
     onClose();
@@ -94,6 +95,12 @@ export const IOConfigModal: React.FC<IOConfigModalProps> = ({
                 <textarea
                   value={textContent}
                   onChange={(e) => setTextContent(e.target.value)}
+                  onKeyDown={(e) => {
+                    // Prevent modal from closing on Enter
+                    if (e.key === 'Enter') {
+                      e.stopPropagation();
+                    }
+                  }}
                   className="w-full h-96 p-4 border-2 border-gray-300 rounded-lg font-mono text-sm focus:border-blue-500 focus:outline-none"
                   placeholder={`Enter your script content here...
 
@@ -188,6 +195,7 @@ Scene 2:
                     <select
                       value={section.outputConfig?.format || 'json'}
                       onChange={(e) => {
+                        // 로컬 상태만 업데이트, API 호출 제거
                         const updatedSection = {
                           ...section,
                           outputConfig: {
@@ -196,7 +204,8 @@ Scene 2:
                             autoSave: section.outputConfig?.autoSave ?? true
                           }
                         };
-                        apiClient.updateSection(section.id, updatedSection);
+                        // 부모 컴포넌트로 전달
+                        onSave(node);
                       }}
                       className="w-full border rounded p-2"
                     >

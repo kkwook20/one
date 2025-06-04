@@ -23,6 +23,12 @@ async def execute_python_code(node_id: str, code: str, inputs: Dict[str, Any] = 
         # Write code to file
         code_file = os.path.join(temp_dir, "node_code.py")
         
+        # Handle empty code case
+        if not code or code.strip() == '':
+            await send_progress(node_id, 0.7, "No code to execute...")
+            await send_progress(node_id, 1.0, "Execution complete")
+            return {"success": True, "output": {"message": "No code to execute", "status": "empty"}}
+        
         # Inject global variable access and inputs
         injected_code = f"""
 import json
@@ -32,7 +38,7 @@ import os
 # Global variable access function
 def get_global_var(var_path):
     # This would be replaced with actual API call in production
-    return {json.dumps(get_global_var(var_path))}
+    return None  # Placeholder
 
 def get_connected_outputs():
     return {json.dumps(inputs or {})}
@@ -40,14 +46,20 @@ def get_connected_outputs():
 # Inputs
 inputs = {json.dumps(inputs or {})}
 
+# Initialize output
+output = None
+
 # User code
-{code}
+try:
+{chr(10).join('    ' + line for line in code.split(chr(10)))}
+except Exception as e:
+    output = {{"error": str(e), "type": str(type(e).__name__)}}
 
 # Output results
-if 'output' in locals():
+if output is not None:
     print(json.dumps({{"success": True, "output": output}}))
 else:
-    print(json.dumps({{"success": False, "error": "No output variable defined"}}))
+    print(json.dumps({{"success": True, "output": {{"message": "Code executed but no output was set", "inputs": inputs}}}}))
 """
         
         with open(code_file, "w") as f:
@@ -69,15 +81,23 @@ else:
             
             if result.returncode == 0:
                 try:
-                    return json.loads(result.stdout)
-                except:
-                    return {"success": True, "output": result.stdout}
+                    output_data = json.loads(result.stdout)
+                    await send_progress(node_id, 1.0, "Execution complete")
+                    return output_data
+                except json.JSONDecodeError:
+                    # If output is not JSON, return as string
+                    await send_progress(node_id, 1.0, "Execution complete")
+                    return {"success": True, "output": result.stdout.strip() or "No output"}
             else:
-                return {"success": False, "error": result.stderr}
+                error_msg = result.stderr or "Unknown error"
+                await send_progress(node_id, -1, f"Execution failed: {error_msg}")
+                return {"success": False, "error": error_msg}
                 
         except subprocess.TimeoutExpired:
-            return {"success": False, "error": "Code execution timeout"}
+            await send_progress(node_id, -1, "Code execution timeout")
+            return {"success": False, "error": "Code execution timeout (5 minutes limit)"}
         except Exception as e:
+            await send_progress(node_id, -1, f"Execution error: {str(e)}")
             return {"success": False, "error": str(e)}
 
 def get_connected_outputs(node: Node, section: Section, all_sections: List[Section]) -> Dict[str, Any]:
@@ -159,12 +179,15 @@ async def execute_flow(section_id: str) -> Dict[str, Any]:
         # 노드 시작 알림
         await send_progress(node.id, 0.1, f"Starting {node.label}...")
         
-        if node.type in ['worker', 'supervisor', 'planner'] and node.code:
-            # Execute node
+        if node.type in ['worker', 'supervisor', 'planner']:
+            # Execute node - even if code is empty
             all_sections = list(sections_db.values())
             connected_outputs = get_connected_outputs(node, section, all_sections)
             
-            result = await execute_python_code(node.id, node.code, connected_outputs, section_id)
+            # Execute even if no code
+            code_to_execute = node.code if node.code else ""
+            result = await execute_python_code(node.id, code_to_execute, connected_outputs, section_id)
+            
             if result["success"]:
                 node.output = result["output"]
                 

@@ -3,6 +3,10 @@
 
 from fastapi import APIRouter, HTTPException
 from datetime import datetime
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from storage import sections_db, save_node_data
 from ai_integration import execute_with_lm_studio, evaluate_section_with_ai, calculate_code_diff
 from websocket_handler import send_update

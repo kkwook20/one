@@ -1,6 +1,4 @@
-# Related files: backend/main.py, backend/models.py, backend/storage.py, backend/execution.py
-# Location: backend/routers/nodes.py
-
+# backend/routers/nodes.py
 from fastapi import APIRouter, HTTPException
 import asyncio
 import os
@@ -42,11 +40,6 @@ async def execute_node(request: ExecuteRequest):
         try:
             await send_progress(node_id, 0.1, "Starting execution...")
             
-            # Check if node has code
-            if not node.code:
-                await send_progress(node_id, -1, "No code to execute")
-                return {"success": False, "error": "No code to execute"}
-            
             # Get connected outputs
             all_sections = list(sections_db.values())
             connected_outputs = get_connected_outputs(node, section, all_sections)
@@ -56,8 +49,9 @@ async def execute_node(request: ExecuteRequest):
             
             await send_progress(node_id, 0.5, "Executing code...")
             
-            # Execute code
-            result = await execute_python_code(node_id, request.code, final_inputs, request.sectionId)
+            # Execute code - even if empty
+            code_to_execute = request.code if request.code else ""
+            result = await execute_python_code(node_id, code_to_execute, final_inputs, request.sectionId)
             
             if result["success"]:
                 await send_progress(node_id, 0.9, "Execution complete")
@@ -65,6 +59,10 @@ async def execute_node(request: ExecuteRequest):
                 # Update node with output
                 node.output = result["output"]
                 node.isRunning = False
+                
+                # Update code only if provided
+                if request.code is not None:
+                    node.code = request.code
                 
                 # 이 노드가 Output 노드에 연결되어 있는지 확인
                 for n in section.nodes:
@@ -93,7 +91,7 @@ async def execute_node(request: ExecuteRequest):
                 
                 # Save results
                 save_node_data(node_id, {
-                    "code": request.code,
+                    "code": code_to_execute,
                     "inputs": final_inputs,
                     "output": result["output"],
                     "timestamp": datetime.now().isoformat()
@@ -105,6 +103,8 @@ async def execute_node(request: ExecuteRequest):
                 error_msg = result.get("error", "Unknown error")
                 await send_progress(node_id, -1, f"Error: {error_msg}")
                 node.isRunning = False
+                node.error = error_msg
+                await send_update("node_error", {"nodeId": node_id, "error": error_msg})
                 return {"success": False, "error": error_msg}
             
             return result
@@ -113,6 +113,7 @@ async def execute_node(request: ExecuteRequest):
             error_msg = str(e)
             await send_progress(node_id, -1, f"Error: {error_msg}")
             node.isRunning = False
+            node.error = error_msg
             raise
         finally:
             if node_id in node_processes:
@@ -121,6 +122,7 @@ async def execute_node(request: ExecuteRequest):
     
     # Mark node as running
     node.isRunning = True
+    node.error = None  # Clear any previous errors
     
     # Start execution
     task = asyncio.create_task(run_node())

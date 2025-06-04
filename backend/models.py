@@ -2,8 +2,8 @@
 # File: backend/models.py
 # Related files: backend/main.py
 # Location: backend/models.py
-# Last Modified: 2025-06-03
-# Description: Pydantic V2 호환성 수정
+# Last Modified: 2025-06-04
+# Description: Pydantic V2 호환성 수정 + error 필드 추가
 # ==============================================================================
 
 from pydantic import BaseModel, Field, ConfigDict
@@ -31,11 +31,17 @@ class Node(BaseModel):
     connectedFrom: Optional[List[str]] = None
     code: Optional[str] = None
     output: Optional[Any] = None
+    error: Optional[str] = None  # ← 이 필드가 추가되어야 함!
     model: Optional[str] = None
     vectorDB: Optional[Dict[str, str]] = None
     supervisedNodes: Optional[List[str]] = None
     updateHistory: Optional[List[Dict[str, Any]]] = None
     aiScore: Optional[float] = None
+    
+    # Supervisor/Planner 전용 필드
+    modificationHistory: Optional[List[Dict[str, Any]]] = None  # Supervisor용
+    evaluationHistory: Optional[List[Dict[str, Any]]] = None   # Planner용
+    plannerRecommendations: Optional[List[str]] = None         # Planner 추천사항
 
 class Connection(BaseModel):
     from_node: str = Field(default=None, alias='from')
@@ -64,7 +70,7 @@ class Section(BaseModel):
 class Version(BaseModel):
     id: str
     timestamp: str
-    node: Node
+    data: Dict[str, Any]  # node 대신 data로 변경 (실제 저장 구조와 일치)
     metadata: Dict[str, Any]
 
 class ExecuteRequest(BaseModel):

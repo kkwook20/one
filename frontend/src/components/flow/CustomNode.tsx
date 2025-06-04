@@ -1,9 +1,9 @@
 // frontend/src/components/flow/CustomNode.tsx
-import React, { memo } from 'react';
+import React, { memo, useState } from 'react';
 import { Handle, Position, NodeProps } from 'reactflow';
 import { 
   Play, Square, Trash2, MoreVertical, GripVertical, 
-  Circle, X, Triangle, Power, Eye, Code, Database, Award, Loader, CheckCircle
+  Circle, X, Triangle, Power, Eye, Code, Database, Award, Loader, CheckCircle, Plus
 } from 'lucide-react';
 import { Node, TaskItem } from '../../types';
 
@@ -11,6 +11,7 @@ export const CustomNode = memo<NodeProps<Node>>(({ data, selected }) => {
   const [showMenu, setShowMenu] = React.useState(false);
   const [isEditingLabel, setIsEditingLabel] = React.useState(false);
   const [label, setLabel] = React.useState(data.label);
+  const [localTasks, setLocalTasks] = useState<TaskItem[]>(data.tasks || []);
 
   const getNodeColor = () => {
     if (data.isDeactivated) return 'bg-gray-200 border-gray-400 opacity-50';
@@ -49,19 +50,75 @@ export const CustomNode = memo<NodeProps<Node>>(({ data, selected }) => {
 
   const getStatusIcon = (status: TaskItem['status']) => {
     switch (status) {
-      case 'pending': return <Circle className="w-4 h-4" />;
-      case 'none': return <X className="w-4 h-4" />;
-      case 'partial': return <Triangle className="w-4 h-4" />;
+      case 'pending': return <Circle className="w-4 h-4 text-yellow-500" />;
+      case 'none': return <X className="w-4 h-4 text-red-500" />;
+      case 'partial': return <Triangle className="w-4 h-4 text-green-500" />;
+    }
+  };
+
+  const cycleTaskStatus = (taskId: string) => {
+    const newTasks = localTasks.map(task => {
+      if (task.id === taskId) {
+        const statusOrder: TaskItem['status'][] = ['pending', 'none', 'partial'];
+        const currentIndex = statusOrder.indexOf(task.status);
+        const newStatus = statusOrder[(currentIndex + 1) % statusOrder.length];
+        return { ...task, status: newStatus };
+      }
+      return task;
+    });
+    
+    setLocalTasks(newTasks);
+    if (data.onUpdate) {
+      data.onUpdate({ ...data, tasks: newTasks });
+    }
+  };
+
+  const updateTaskText = (taskId: string, text: string) => {
+    const newTasks = localTasks.map(task => 
+      task.id === taskId ? { ...task, text } : task
+    );
+    setLocalTasks(newTasks);
+    if (data.onUpdate) {
+      data.onUpdate({ ...data, tasks: newTasks });
+    }
+  };
+
+  const addNewTask = () => {
+    const newTask: TaskItem = {
+      id: `task-${Date.now()}`,
+      text: '',
+      status: 'pending'
+    };
+    const newTasks = [...localTasks, newTask];
+    setLocalTasks(newTasks);
+    if (data.onUpdate) {
+      data.onUpdate({ ...data, tasks: newTasks });
+    }
+  };
+
+  const deleteTask = (taskId: string) => {
+    const newTasks = localTasks.filter(task => task.id !== taskId);
+    setLocalTasks(newTasks);
+    if (data.onUpdate) {
+      data.onUpdate({ ...data, tasks: newTasks });
     }
   };
 
   const isSmallNode = data.type === 'input' || data.type === 'output';
 
-  // 더블클릭 핸들러
-  const handleDoubleClick = (e: React.MouseEvent) => {
+  // 노드 더블클릭 핸들러 - 코드 편집 창 열기
+  const handleNodeDoubleClick = (e: React.MouseEvent) => {
     e.stopPropagation();
-    if (data.onEdit) {
+    if (!isEditingLabel && data.onEdit) {
       data.onEdit(data);
+    }
+  };
+
+  // 라벨 더블클릭 핸들러 - 이름 수정
+  const handleLabelDoubleClick = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (data.type !== 'input' && data.type !== 'output') {
+      setIsEditingLabel(true);
     }
   };
 
@@ -70,7 +127,7 @@ export const CustomNode = memo<NodeProps<Node>>(({ data, selected }) => {
       className={`rounded-lg shadow-lg border-2 transition-all relative ${
         selected ? 'border-blue-500 shadow-xl' : getNodeColor()
       } ${getNodeBorderStyle()} ${isSmallNode ? 'w-32' : 'w-64'}`}
-      onDoubleClick={handleDoubleClick}
+      onDoubleClick={handleNodeDoubleClick}
     >
       {/* n8n 스타일 실행 중 표시 */}
       {data.isExecuting && (
@@ -139,7 +196,9 @@ export const CustomNode = memo<NodeProps<Node>>(({ data, selected }) => {
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
-                    data.onDelete?.(data.id);
+                    if (data.onDelete) {
+                      data.onDelete(data.id);
+                    }
                   }}
                   className="p-1 hover:bg-gray-200 rounded transition-colors"
                   title="Delete"
@@ -217,7 +276,12 @@ export const CustomNode = memo<NodeProps<Node>>(({ data, selected }) => {
             onChange={(e) => setLabel(e.target.value)}
             onBlur={handleLabelChange}
             onKeyDown={(e) => {
-              if (e.key === 'Enter') handleLabelChange();
+              if (e.key === 'Enter') {
+                handleLabelChange();
+              } else if (e.key === 'Escape') {
+                setLabel(data.label);
+                setIsEditingLabel(false);
+              }
               e.stopPropagation();
             }}
             onClick={(e) => e.stopPropagation()}
@@ -225,29 +289,77 @@ export const CustomNode = memo<NodeProps<Node>>(({ data, selected }) => {
             autoFocus
           />
         ) : (
-          <div className="text-lg font-semibold">
+          <div 
+            className="text-lg font-semibold cursor-pointer hover:text-blue-600"
+            onDoubleClick={handleLabelDoubleClick}
+          >
             {data.label}
           </div>
         )}
       </div>
 
-      {/* Task List for Worker Nodes */}
-      {data.type === 'worker' && data.tasks && (
+      {/* Progress Bar */}
+      {(data.isRunning || data.isExecuting || (data.progress !== undefined && data.progress > 0)) && (
+        <div className="px-3 py-1">
+          <div className="h-2 bg-gray-200 rounded-full overflow-hidden">
+            <div 
+              className="h-full bg-blue-500 transition-all duration-300"
+              style={{ width: `${(data.progress || 0) * 100}%` }}
+            />
+          </div>
+        </div>
+      )}
+
+      {/* Task List for Worker Nodes - 복원된 기능 */}
+      {data.type === 'worker' && (
         <div className="p-3 border-t">
-          <div className="space-y-1 max-h-32 overflow-y-auto">
-            {data.tasks.map((task, index) => (
+          <div className="space-y-1 max-h-48 overflow-y-auto">
+            {localTasks.map((task, index) => (
               <div
                 key={task.id}
-                className="flex items-center gap-2 p-1 hover:bg-gray-50 rounded"
+                className="flex items-center gap-2 p-1 hover:bg-gray-50 rounded group"
               >
-                <GripVertical className="w-4 h-4 text-gray-400" />
                 <span className="text-sm text-gray-500 w-6">{index + 1}.</span>
-                <span className="flex-1 text-sm truncate">{task.text || 'Empty task'}</span>
-                <span className="p-1">
+                <input
+                  type="text"
+                  value={task.text}
+                  onChange={(e) => updateTaskText(task.id, e.target.value)}
+                  onClick={(e) => e.stopPropagation()}
+                  className="flex-1 text-sm border-b border-transparent hover:border-gray-300 focus:border-blue-500 outline-none bg-transparent"
+                  placeholder="Enter task description..."
+                />
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    cycleTaskStatus(task.id);
+                  }}
+                  className="p-1 hover:bg-gray-200 rounded"
+                  title={`Status: ${task.status === 'pending' ? 'To Do' : task.status === 'none' ? 'Locked' : 'In Progress'}`}
+                >
                   {getStatusIcon(task.status)}
-                </span>
+                </button>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    deleteTask(task.id);
+                  }}
+                  className="opacity-0 group-hover:opacity-100 p-1 hover:bg-red-100 rounded transition-opacity"
+                  title="Delete task"
+                >
+                  <X className="w-3 h-3 text-red-500" />
+                </button>
               </div>
             ))}
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                addNewTask();
+              }}
+              className="text-sm text-blue-500 hover:text-blue-700 pl-8 flex items-center gap-1"
+            >
+              <Plus className="w-3 h-3" />
+              Add task
+            </button>
           </div>
         </div>
       )}
