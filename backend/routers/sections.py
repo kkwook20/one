@@ -1,6 +1,4 @@
-# Related files: backend/main.py, backend/models.py, backend/storage.py
-# Location: backend/routers/sections.py
-
+# backend/routers/sections.py
 from fastapi import APIRouter, HTTPException
 from typing import List
 import sys
@@ -11,7 +9,7 @@ from websocket_handler import send_update
 import xml.etree.ElementTree as ET
 import json
 import yaml
-from models import Section
+from models import Section, Node
 from storage import sections_db
 
 router = APIRouter(prefix="/sections", tags=["sections"])
@@ -36,9 +34,60 @@ async def create_section(section: Section) -> Section:
 
 @router.put("/{section_id}")
 async def update_section(section_id: str, section: Section) -> Section:
-    """Update section"""
+    """Update section - 노드 추가/삭제/수정 포함"""
+    if section_id not in sections_db:
+        raise HTTPException(status_code=404, detail="Section not found")
+    
+    # 전체 섹션 업데이트 (노드 포함)
     sections_db[section_id] = section
+    
+    # WebSocket으로 업데이트 알림
+    await send_update("section_updated", {
+        "sectionId": section_id,
+        "nodeCount": len(section.nodes)
+    })
+    
     return section
+
+@router.post("/{section_id}/nodes")
+async def add_node(section_id: str, node: Node) -> Node:
+    """Add node to section"""
+    if section_id not in sections_db:
+        raise HTTPException(status_code=404, detail="Section not found")
+    
+    section = sections_db[section_id]
+    section.nodes.append(node)
+    
+    await send_update("node_added", {
+        "sectionId": section_id,
+        "nodeId": node.id,
+        "nodeType": node.type
+    })
+    
+    return node
+
+@router.delete("/{section_id}/nodes/{node_id}")
+async def delete_node(section_id: str, node_id: str):
+    """Delete node from section"""
+    if section_id not in sections_db:
+        raise HTTPException(status_code=404, detail="Section not found")
+    
+    section = sections_db[section_id]
+    section.nodes = [n for n in section.nodes if n.id != node_id]
+    
+    # 연결 정리
+    for node in section.nodes:
+        if node.connectedTo and node_id in node.connectedTo:
+            node.connectedTo.remove(node_id)
+        if node.connectedFrom and node_id in node.connectedFrom:
+            node.connectedFrom.remove(node_id)
+    
+    await send_update("node_deleted", {
+        "sectionId": section_id,
+        "nodeId": node_id
+    })
+    
+    return {"success": True}
 
 @router.post("/export-output/{section_id}")
 async def export_section_output(section_id: str):
@@ -71,6 +120,7 @@ async def export_section_output(section_id: str):
         return {"xml": ET.tostring(root, encoding="unicode")}
     
     return outputs
+
 @router.post("/update-output-node/{section_id}")
 async def update_output_node(section_id: str):
     """Update output node with connected node outputs"""

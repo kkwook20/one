@@ -1,10 +1,4 @@
-// Related files:
-// - frontend/src/App.tsx
-// - frontend/src/components/*.tsx
-// - frontend/src/types/index.ts
-// - frontend/src/constants/index.ts
-// Location: frontend/src/api/client.ts
-
+// frontend/src/api/client.ts
 import axios from 'axios';
 import { API_URL } from '../constants';
 import { Section, Node } from '../types';
@@ -13,7 +7,9 @@ export const apiClient = {
   // Models
   getModels: () => axios.get(`${API_URL}/models`),
 
-  // Sections
+  // Sections - getSections 추가!
+  getSections: () => axios.get(`${API_URL}/sections`),
+  
   updateSection: (sectionId: string, data: Section) => 
     axios.put(`${API_URL}/sections/${sectionId}`, data),
 
