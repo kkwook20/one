@@ -1,9 +1,14 @@
 // frontend/src/components/flow/CustomEdge.tsx
-import React, { useState } from 'react';
-import { EdgeProps, getBezierPath, EdgeLabelRenderer, BaseEdge } from 'reactflow';
+import React from 'react';
+import { EdgeProps, getBezierPath, EdgeLabelRenderer } from 'reactflow';
 import { X } from 'lucide-react';
 
-export const CustomEdge: React.FC<EdgeProps> = ({
+interface CustomEdgeData {
+  onDelete?: (edgeId: string) => void;
+  isActive?: boolean;
+}
+
+export const CustomEdge: React.FC<EdgeProps<CustomEdgeData>> = ({
   id,
   sourceX,
   sourceY,
@@ -13,10 +18,8 @@ export const CustomEdge: React.FC<EdgeProps> = ({
   targetPosition,
   style = {},
   markerEnd,
-  animated,
   data,
 }) => {
-  const [showDelete, setShowDelete] = useState(false);
   const [edgePath, labelX, labelY] = getBezierPath({
     sourceX,
     sourceY,
@@ -27,76 +30,89 @@ export const CustomEdge: React.FC<EdgeProps> = ({
   });
 
   const handleDelete = (e: React.MouseEvent) => {
+    e.preventDefault();
     e.stopPropagation();
+    // React의 SyntheticEvent에서 native event의 stopImmediatePropagation 접근
+    if (e.nativeEvent.stopImmediatePropagation) {
+      e.nativeEvent.stopImmediatePropagation();
+    }
+    
+    console.log('CustomEdge: Delete button clicked for edge:', id);
+    console.log('CustomEdge: data object:', data);
+    console.log('CustomEdge: onDelete function exists?', !!data?.onDelete);
+    
     if (data?.onDelete) {
-      data.onDelete(id);
+      console.log('CustomEdge: Calling onDelete handler with id:', id);
+      try {
+        data.onDelete(id);
+        console.log('CustomEdge: onDelete handler called successfully');
+      } catch (error) {
+        console.error('CustomEdge: Error calling onDelete:', error);
+      }
+    } else {
+      console.error('CustomEdge: No onDelete handler provided for edge:', id);
     }
   };
 
   return (
     <>
-      <g
-        onMouseEnter={() => setShowDelete(true)}
-        onMouseLeave={() => setShowDelete(false)}
-      >
-        <BaseEdge
-          id={id}
-          path={edgePath}
-          markerEnd={markerEnd}
+      {/* 활성화된 경우 애니메이션 효과를 위한 배경 path */}
+      {data?.isActive && (
+        <path
           style={{
             ...style,
-            strokeWidth: showDelete ? 4 : 2,
-            cursor: 'pointer',
+            stroke: '#10b981',
+            strokeWidth: 6,
+            opacity: 0.3,
+            filter: 'blur(4px)',
           }}
-        />
-        {/* Invisible wider path for better hover detection */}
-        <path
+          className="react-flow__edge-path animate-pulse"
           d={edgePath}
-          fill="none"
-          strokeOpacity={0}
-          strokeWidth={20}
-          style={{ cursor: 'pointer' }}
+          markerEnd={markerEnd}
         />
-      </g>
-      
-      {animated && (
-        <circle r="4" fill="#3b82f6">
-          <animateMotion dur="2s" repeatCount="indefinite" path={edgePath} />
-        </circle>
       )}
       
+      <path
+        id={id}
+        style={style}
+        className={`react-flow__edge-path ${data?.isActive ? 'animate-pulse' : ''}`}
+        d={edgePath}
+        markerEnd={markerEnd}
+      />
+      
       <EdgeLabelRenderer>
-        {showDelete && (
-          <div
-            style={{
-              position: 'absolute',
-              transform: `translate(-50%, -50%) translate(${labelX}px,${labelY}px)`,
-              pointerEvents: 'all',
-              // 호버 영역을 확장하여 안정성 향상
-              padding: '20px',
-              margin: '-20px'
+        <div
+          style={{
+            position: 'absolute',
+            transform: `translate(-50%, -50%) translate(${labelX}px,${labelY}px)`,
+            pointerEvents: 'all',
+          }}
+          className="edge-label-container"
+        >
+          <button
+            onClick={handleDelete}
+            onMouseDown={(e) => {
+              // 드래그 방지
+              e.stopPropagation();
             }}
-            onMouseEnter={() => setShowDelete(true)}
-            onMouseLeave={() => setShowDelete(false)}
+            className="group relative flex items-center justify-center w-6 h-6 bg-red-500 hover:bg-red-600 text-white rounded-full transition-all duration-200 hover:scale-110 shadow-md hover:shadow-lg"
+            style={{
+              cursor: 'pointer',
+              zIndex: 1000,
+            }}
+            type="button"
+            aria-label="Delete connection"
           >
-            <button
-              onClick={handleDelete}
-              className="bg-red-500 text-white rounded-full p-2 hover:bg-red-600 transition-colors shadow-lg"
-              title="Delete connection"
-              style={{
-                // 버튼 크기를 키워서 클릭하기 쉽게 만듦
-                width: '32px',
-                height: '32px',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center'
-              }}
-            >
-              <X className="w-5 h-5" />
-            </button>
-          </div>
-        )}
+            <X className="w-3 h-3" />
+            <span className="absolute invisible group-hover:visible bg-gray-800 text-white text-xs rounded py-1 px-2 -top-8 whitespace-nowrap">
+              Delete connection
+            </span>
+          </button>
+        </div>
       </EdgeLabelRenderer>
     </>
   );
 };
+
+// default export도 추가 (호환성을 위해)
+export default CustomEdge;

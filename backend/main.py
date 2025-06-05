@@ -1,200 +1,130 @@
-# ==============================================================================
-# File: backend/main.py
-# Related files: frontend/src/App.tsx, docker-compose.yml, global-vars-documentation.txt
-# Location: backend/main.py
-# ==============================================================================
+# backend/main.py 에서 WebSocket CORS 설정 추가
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from contextlib import asynccontextmanager
-import os
-from typing import Dict
+import asyncio
+import json
 
-# Import models and storage
-from models import Section, Node, Position
-from storage import (
-    sections_db, ensure_directories, create_global_vars_documentation,
-    get_global_var
-)
-from docker_manager import start_vector_db, stop_vector_db
-from websocket_handler import websocket_endpoint, websocket_connections
-from ai_integration import get_available_models
+app = FastAPI()
 
-# Import routers
-from routers import nodes, sections, supervisor
-
-# 섹션 초기화 함수
-def initialize_default_sections():
-    """백엔드 시작 시 기본 섹션 생성"""
-    groups = {
-        'preproduction': ['Script', 'Storyboard', 'Planning'],
-        'postproduction': ['Modeling', 'Rigging', 'Texture', 'Animation', 'VFX', 'Lighting & Rendering', 'Sound Design', 'Compositing'],
-        'director': ['Direction', 'Review']
-    }
-    
-    for group, section_names in groups.items():
-        for section_name in section_names:
-            section_id = f"{group}-{section_name}".lower().replace(' ', '-').replace('&', '')
-            
-            # 이미 존재하는 섹션은 건너뛰기
-            if section_id in sections_db:
-                continue
-                
-            # 새 섹션 생성
-            section = Section(
-                id=section_id,
-                name=section_name,
-                group=group,
-                nodes=[
-                    Node(
-                        id=f"input-{section_id}-{hash(section_id) % 10000}",
-                        type="input",
-                        label="Input",
-                        position=Position(x=50, y=200),
-                        isRunning=False
-                    ),
-                    Node(
-                        id=f"output-{section_id}-{hash(section_id) % 10000 + 1}",
-                        type="output",
-                        label="Output",
-                        position=Position(x=700, y=200),
-                        isRunning=False
-                    )
-                ]
-            )
-            sections_db[section_id] = section
-    
-    print(f"Initialized {len(sections_db)} sections")
-
-# Initialize
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    # Startup
-    print("Starting AI Pipeline System...")
-    ensure_directories()
-    print("Directories created")
-    
-    try:
-        start_vector_db()
-        print("Vector DB started")
-    except Exception as e:
-        print(f"Warning: Vector DB failed to start: {e}")
-    
-    create_global_vars_documentation()
-    print("Documentation created")
-    
-    initialize_default_sections()  # 섹션 초기화 추가
-    
-    yield
-    
-    # Shutdown
-    print("Shutting down AI Pipeline System...")
-    try:
-        stop_vector_db()
-    except:
-        pass
-
-app = FastAPI(lifespan=lifespan)
-
-# CORS - 모든 origin 허용 (개발 환경)
+# CORS 설정 - WebSocket을 위해 필요
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # 개발 환경에서는 모든 origin 허용
+    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],  # React 앱 주소
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Include routers
-app.include_router(nodes.router)
-app.include_router(sections.router)
-app.include_router(supervisor.router)
+# WebSocket 연결 관리
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: list[WebSocket] = []
 
-# WebSocket endpoint
-@app.websocket("/ws/{client_id}")
-async def ws_endpoint(websocket: WebSocket, client_id: str):
-    await websocket_endpoint(websocket, client_id)
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+        print(f"Client connected. Total connections: {len(self.active_connections)}")
 
-# Global variable endpoint
-@app.get("/global-var/{var_path:path}")
-async def get_global_variable(var_path: str):
-    """Get global variable value"""
-    value = get_global_var(var_path)
-    if value is None:
-        raise HTTPException(status_code=404, detail="Variable not found")
-    return {"path": var_path, "value": value}
+    def disconnect(self, websocket: WebSocket):
+        self.active_connections.remove(websocket)
+        print(f"Client disconnected. Total connections: {len(self.active_connections)}")
 
-# Models endpoint
-@app.get("/models")
-async def get_models():
-    """Get available LM Studio models"""
+    async def broadcast(self, message: dict):
+        for connection in self.active_connections:
+            try:
+                await connection.send_json(message)
+            except:
+                pass
+
+manager = ConnectionManager()
+
+@app.websocket("/ws")
+async def websocket_route(websocket: WebSocket):
+    """단순화된 WebSocket endpoint"""
     try:
-        return await get_available_models()
+        # 연결 수락
+        await websocket.accept()
+        print("WebSocket connection accepted")
+        
+        # websocket_handler로 위임
+        await websocket_endpoint(websocket)
+        
     except Exception as e:
-        print(f"Error getting models: {e}")
-        # 에러 발생 시 기본 모델 리스트 반환
-        return {"data": [
-            {"id": "none"},
-            {"id": "llama-3.1-8b"},
-            {"id": "mistral-7b"},
-            {"id": "codellama-13b"}
-        ]}
+        print(f"WebSocket connection error: {e}")
+        try:
+            await websocket.close()
+        except:
+            pass
 
-# Health check
-@app.get("/")
-async def root():
-    return {
-        "status": "running",
-        "message": "AI Pipeline System API",
-        "version": "1.0.0",
-        "sections": len(sections_db),
-        "endpoints": {
-            "health": "/",
-            "sections": "/sections",
-            "models": "/models",
-            "websocket": "/ws/{client_id}",
-            "docs": "/docs"
-        }
+# 노드 실행 시 WebSocket으로 상태 전송
+async def send_node_status(node_id: str, status: str, progress: float = None, output: str = None):
+    message = {
+        "type": f"node_{status}",
+        "nodeId": node_id
     }
+    
+    if progress is not None:
+        message["type"] = "progress"
+        message["progress"] = progress
+    
+    if output is not None:
+        message["type"] = "node_output_updated"
+        message["output"] = output
+    
+    await manager.broadcast(message)
 
-# 추가 디버그 엔드포인트
-@app.get("/debug/sections")
-async def debug_sections():
-    """디버그용: 현재 로드된 섹션 확인"""
-    return {
-        "count": len(sections_db),
-        "sections": {
-            section_id: {
-                "name": section.name,
-                "group": section.group,
-                "nodes": len(section.nodes)
-            }
-            for section_id, section in sections_db.items()
-        }
-    }
+# Flow 실행 엔드포인트
+@app.post("/execute-flow")
+async def execute_flow(request: dict):
+    section_id = request.get("sectionId")
+    start_node_id = request.get("startNodeId")
+    
+    if not section_id or not start_node_id:
+        return {"error": "Missing sectionId or startNodeId"}
+    
+    # 비동기로 flow 실행
+    asyncio.create_task(run_flow(section_id, start_node_id))
+    
+    return {"success": True, "message": "Flow execution started"}
 
-@app.get("/debug/connections")
-async def debug_connections():
-    """디버그용: 현재 WebSocket 연결 확인"""
-    return {
-        "active_connections": len(websocket_connections),
-        "clients": list(websocket_connections.keys())
-    }
+async def run_flow(section_id: str, start_node_id: str):
+    # 여기에 실제 flow 실행 로직 구현
+    await send_node_status(start_node_id, "execution_start")
+    
+    # 시뮬레이션 - 실제로는 노드 실행 로직
+    for i in range(101):
+        await asyncio.sleep(0.05)  # 50ms 간격
+        await send_node_status(start_node_id, "progress", progress=i/100)
+    
+    await send_node_status(start_node_id, "execution_complete")
+    await send_node_status(start_node_id, "output_updated", output="Execution completed successfully")
 
-# 에러 핸들러
-@app.exception_handler(Exception)
-async def general_exception_handler(request, exc):
-    """전역 에러 핸들러"""
-    print(f"Unhandled error: {exc}")
-    return {"error": str(exc), "type": type(exc).__name__}
+# 개별 노드 실행
+@app.post("/execute")
+async def execute_node(request: dict):
+    node_id = request.get("nodeId")
+    section_id = request.get("sectionId")
+    code = request.get("code", "")
+    
+    # 비동기로 노드 실행
+    asyncio.create_task(run_node(node_id, code))
+    
+    return {"success": True, "message": f"Node {node_id} execution started"}
 
-if __name__ == "__main__":
-    import uvicorn
-    # 개발 환경에서 더 자세한 로그 출력
-    uvicorn.run(
-        app,
-        host="0.0.0.0",
-        port=8000,
-        log_level="info",
-        reload=True
-    )
+async def run_node(node_id: str, code: str):
+    await send_node_status(node_id, "execution_start")
+    
+    try:
+        # 노드 타입에 따른 실행 로직
+        for i in range(101):
+            await asyncio.sleep(0.02)
+            await send_node_status(node_id, "progress", progress=i/100)
+        
+        # 결과 생성
+        output = f"Output from node {node_id}"
+        await send_node_status(node_id, "output_updated", output=output)
+        await send_node_status(node_id, "execution_complete")
+        
+    except Exception as e:
+        await send_node_status(node_id, "execution_error", output=str(e))

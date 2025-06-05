@@ -1,50 +1,33 @@
+// frontend/src/index.tsx
+
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import './index.css';
 import App from './App';
 
-// ResizeObserver loop 에러 완전 억제
-window.addEventListener('error', (e) => {
-  if (e.message === 'ResizeObserver loop completed with undelivered notifications.' ||
-      e.message === 'ResizeObserver loop limit exceeded') {
-    e.stopImmediatePropagation();
-    e.stopPropagation();
-    e.preventDefault();
-    return false;
-  }
-});
-
-// console.error도 필터링
-const originalError = console.error;
-console.error = (...args) => {
-  if (typeof args[0] === 'string' && 
-      (args[0].includes('ResizeObserver loop completed with undelivered notifications') ||
-       args[0].includes('ResizeObserver loop limit exceeded'))) {
-    return;
-  }
-  originalError.apply(console, args);
-};
-
-// ResizeObserver 패치
-if (window.ResizeObserver) {
-  const nativeResizeObserver = window.ResizeObserver;
-  window.ResizeObserver = class ResizeObserver extends nativeResizeObserver {
-    constructor(callback: ResizeObserverCallback) {
-      super((entries, observer) => {
-        requestAnimationFrame(() => {
-          callback(entries, observer);
-        });
-      });
-    }
-  };
-}
-
 const root = ReactDOM.createRoot(
   document.getElementById('root') as HTMLElement
 );
 
+// 개발 환경에서 WebSocket 중복 연결 방지를 위해 StrictMode 제거
+// 프로덕션에서는 다시 활성화하는 것을 권장
 root.render(
-  <React.StrictMode>
+  // <React.StrictMode>
     <App />
-  </React.StrictMode>
+  // </React.StrictMode>
 );
+
+// 또는 조건부로 StrictMode 적용
+/*
+const isDevelopment = process.env.NODE_ENV === 'development';
+
+root.render(
+  isDevelopment ? (
+    <App />
+  ) : (
+    <React.StrictMode>
+      <App />
+    </React.StrictMode>
+  )
+);
+*/

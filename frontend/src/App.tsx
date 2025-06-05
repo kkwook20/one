@@ -1,5 +1,5 @@
-// frontend/src/App.tsx - wire 연결 시 노드 이동 버그 및 edge 삭제 버그 수정
-import React, { useState, useCallback, useEffect, useRef } from 'react';
+// frontend/src/App.tsx - 완전히 수정된 버전
+import React, { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import ReactFlow, {
   Node as FlowNode,
   Edge,
@@ -16,18 +16,20 @@ import ReactFlow, {
   ReactFlowProvider,
   useReactFlow,
   Panel,
-  MarkerType
+  MarkerType,
+  EdgeChange,
+  NodeChange,
+  Position,
 } from 'reactflow';
 import 'reactflow/dist/style.css';
-import { Play, Settings, ChevronUp, ChevronDown, FileText, CheckCircle, AlertCircle, Clock, RefreshCw } from 'lucide-react';
+import { Play, Settings, ChevronUp, ChevronDown, FileText, CheckCircle, AlertCircle, Clock, RefreshCw, Loader2 } from 'lucide-react';
+import axios from 'axios';
 
-import { Node, Section, TaskItem } from './types';
-import { GROUPS, NODE_TYPES } from './constants';
-import { apiClient } from './api/client';
+import { Node, Section } from './types';
+import { GROUPS, NODE_TYPES, API_URL } from './constants';
 import { useWebSocket } from './hooks/useWebSocket';
-import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 import { CustomNode } from './components/flow/CustomNode';
-import { CustomEdge } from './components/flow/CustomEdge';
+import CustomEdge from './components/flow/CustomEdge';
 import { 
   IOConfigModal, 
   SupervisorEditModal, 
@@ -43,10 +45,9 @@ interface ExecutionLog {
   nodeLabel: string;
   type: 'start' | 'processing' | 'complete' | 'error' | 'file_created' | 'info';
   message: string;
-  data?: any;
 }
 
-// Custom node/edge types
+// Node types
 const nodeTypes: NodeTypes = {
   worker: CustomNode,
   supervisor: CustomNode,
@@ -60,36 +61,58 @@ const edgeTypes: EdgeTypes = {
 };
 
 function AIPipelineFlow() {
-  // State
+  // Core states
   const [selectedGroup, setSelectedGroup] = useState<keyof typeof GROUPS>('preproduction');
   const [selectedSection, setSelectedSection] = useState<string>('Script');
   const [sections, setSections] = useState<Section[]>([]);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
-  const [isExecuting, setIsExecuting] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
   
   // React Flow states
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
+  
+  // UI states
   const [editingNode, setEditingNode] = useState<Node | null>(null);
   const [showSettings, setShowSettings] = useState(false);
   const [nodeProgress, setNodeProgress] = useState<{ [key: string]: number }>({});
   const [runningNodes, setRunningNodes] = useState<Set<string>>(new Set());
-  
-  // 실행 로그 상태
   const [executionLogs, setExecutionLogs] = useState<ExecutionLog[]>([]);
   const [showLogs, setShowLogs] = useState(false);
-  const [logsHeight, setLogsHeight] = useState(150);
+  const [logsHeight, setLogsHeight] = useState(200);
+  const [completedNodes, setCompletedNodes] = useState<Set<string>>(new Set());
+  const [activeEdges, setActiveEdges] = useState<Set<string>>(new Set());
   
-  // 백엔드 업데이트 디바운스를 위한 ref
-  const updateTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const pendingPositionUpdates = useRef<Map<string, { x: number; y: number }>>(new Map());
+  // Refs
+  const lastSelectedSectionRef = useRef<string | null>(null);
+  const isUpdatingRef = useRef(false);
   
   const { project } = useReactFlow();
 
+  // 안전한 문자열 변환 함수
+  const getOutputPreview = (output: any): string => {
+    if (!output) return '';
+    
+    let str = '';
+    if (typeof output === 'string') {
+      str = output;
+    } else if (typeof output === 'object') {
+      try {
+        str = JSON.stringify(output);
+      } catch (e) {
+        str = String(output);
+      }
+    } else {
+      str = String(output);
+    }
+    
+    return str.length > 50 ? str.substring(0, 50) + '...' : str;
+  };
+
   // 현재 섹션 가져오기
-  const getCurrentSection = useCallback(() => 
-    sections.find(s => s.name === selectedSection), [sections, selectedSection]);
+  const getCurrentSection = useCallback(() => {
+    return sections.find(s => s.name === selectedSection);
+  }, [sections, selectedSection]);
 
   // 로그 추가
   const addLog = useCallback((log: Omit<ExecutionLog, 'id' | 'timestamp'>) => {
@@ -100,411 +123,456 @@ function AIPipelineFlow() {
     }]);
   }, []);
 
-  // 로그 아이콘
-  const getLogIcon = (type: ExecutionLog['type']) => {
-    const icons = {
-      'start': <Clock className="w-4 h-4 text-blue-500" />,
-      'processing': <Clock className="w-4 h-4 text-yellow-500 animate-spin" />,
-      'complete': <CheckCircle className="w-4 h-4 text-green-500" />,
-      'error': <AlertCircle className="w-4 h-4 text-red-500" />,
-      'file_created': <FileText className="w-4 h-4 text-purple-500" />,
-      'info': <Clock className="w-4 h-4 text-gray-500" />
-    };
-    return icons[type] || icons.info;
-  };
-
-  // 백엔드에서 섹션 데이터 가져오기
-  const fetchSections = useCallback(async () => {
+  // 백엔드에서 섹션 가져오기
+  const fetchSections = async () => {
+    console.log('Fetching sections...');
+    setIsLoading(true);
+    
     try {
-      setIsLoading(true);
-      const response = await apiClient.getSections();
+      const response = await axios.get(`${API_URL}/sections`);
+      console.log('Sections response:', response.data);
       setSections(response.data);
-      
-      console.log('Fetched sections:', response.data);
-      
-      if (response.data.length > 0 && !getCurrentSection()) {
-        const firstSection = response.data[0];
-        setSelectedGroup(firstSection.group);
-        setSelectedSection(firstSection.name);
-      }
+      setIsLoading(false);
     } catch (error) {
       console.error('Failed to fetch sections:', error);
+      setIsLoading(false);
       addLog({
         nodeId: 'system',
         nodeLabel: 'System',
         type: 'error',
-        message: 'Failed to load sections from server. Please check if backend is running.'
+        message: 'Failed to load sections. Check if backend is running on port 8000.'
       });
-    } finally {
-      setIsLoading(false);
     }
-  }, [getCurrentSection, addLog]);
+  };
 
   // 초기 로드
   useEffect(() => {
     fetchSections();
   }, []);
 
-  // 백엔드에 섹션 업데이트 저장
+  // 백엔드 업데이트
   const updateSectionInBackend = useCallback(async (section: Section) => {
+    if (isUpdatingRef.current) return;
+    
+    isUpdatingRef.current = true;
     try {
-      await apiClient.updateSection(section.id, section);
-      console.log('Section updated in backend:', section.id);
+      await axios.put(`${API_URL}/sections/${section.id}`, section);
+      console.log('Section updated in backend');
     } catch (error) {
       console.error('Failed to update section:', error);
-      throw error;
+    } finally {
+      setTimeout(() => {
+        isUpdatingRef.current = false;
+      }, 100);
     }
   }, []);
 
-  // 디바운스된 위치 업데이트
-  const debouncedPositionUpdate = useCallback(() => {
-    if (updateTimeoutRef.current) {
-      clearTimeout(updateTimeoutRef.current);
-    }
-    
-    updateTimeoutRef.current = setTimeout(async () => {
-      const currentSection = getCurrentSection();
-      if (!currentSection || pendingPositionUpdates.current.size === 0) return;
-      
-      const updatedSection = {
-        ...currentSection,
-        nodes: currentSection.nodes.map(n => {
-          const pendingPosition = pendingPositionUpdates.current.get(n.id);
-          if (pendingPosition) {
-            return { ...n, position: pendingPosition };
-          }
-          return n;
-        })
-      };
-      
-      try {
-        await updateSectionInBackend(updatedSection);
-        pendingPositionUpdates.current.clear();
-      } catch (error) {
-        console.error('Failed to update node positions:', error);
+  // 노드 업데이트
+  const handleNodeUpdate = useCallback((updatedNode: Node) => {
+    setSections(prev => prev.map(section => {
+      if (section.id === getCurrentSection()?.id) {
+        const updatedSection = {
+          ...section,
+          nodes: section.nodes.map(n => n.id === updatedNode.id ? updatedNode : n)
+        };
+        updateSectionInBackend(updatedSection);
+        return updatedSection;
       }
-    }, 500); // 500ms 디바운스
-  }, [getCurrentSection, updateSectionInBackend]);
-
-  // Convert internal nodes to React Flow nodes
-  const convertToFlowNodes = useCallback((sectionNodes: Node[]): FlowNode[] => {
-    return sectionNodes.map(node => ({
-      id: node.id,
-      type: node.type,
-      position: node.position,
-      data: {
-        ...node,
-        onEdit: () => setEditingNode(node),
-        onDeactivate: () => handleNodeDeactivate(node.id),
-        onToggleRun: () => handleNodeRun(node.id),
-        onDelete: (nodeId: string) => handleNodeDelete(nodeId),
-        onUpdate: (updatedNode: Node) => {
-          setSections(prev => prev.map(section => ({
-            ...section,
-            nodes: section.nodes.map(n => n.id === updatedNode.id ? updatedNode : n)
-          })));
-        },
-        progress: nodeProgress[node.id],
-        isExecuting: runningNodes.has(node.id),
-      },
-      selected: selectedNodeId === node.id,
-      style: {
-        opacity: node.isDeactivated ? 0.5 : 1,
-      }
+      return section;
     }));
-  }, [selectedNodeId, nodeProgress, runningNodes]);
-
-  // Convert connections to React Flow edges
-  const convertToFlowEdges = useCallback((sectionNodes: Node[]): Edge[] => {
-    const flowEdges: Edge[] = [];
-    sectionNodes.forEach(node => {
-      if (node.connectedFrom) {
-        node.connectedFrom.forEach(fromId => {
-          const isActive = runningNodes.has(fromId) && runningNodes.has(node.id);
-          const isComplete = nodeProgress[fromId] === 1;
-          
-          flowEdges.push({
-            id: `${fromId}-${node.id}`,
-            source: fromId,
-            target: node.id,
-            type: 'custom',
-            animated: isActive || isComplete,
-            data: { 
-              onDelete: () => handleEdgeDelete(`${fromId}-${node.id}`) // 직접 호출하도록 수정
-            },
-            style: {
-              stroke: isComplete ? '#10b981' : isActive ? '#3b82f6' : '#94a3b8',
-              strokeWidth: isActive || isComplete ? 3 : 2,
-            },
-            markerEnd: {
-              type: MarkerType.ArrowClosed,
-              color: isComplete ? '#10b981' : isActive ? '#3b82f6' : '#94a3b8',
-            },
-          });
-        });
-      }
-    });
-    return flowEdges;
-  }, [nodeProgress, runningNodes]);
-
-  // 섹션 변경 시 React Flow 업데이트
-  useEffect(() => {
-    const currentSection = sections.find(s => s.name === selectedSection);
-    console.log(`Section "${selectedSection}" nodes:`, currentSection?.nodes);
-    
-    if (currentSection) {
-      const flowNodes = convertToFlowNodes(currentSection.nodes);
-      const flowEdges = convertToFlowEdges(currentSection.nodes);
-      
-      setNodes(flowNodes);
-      setEdges(flowEdges);
-    }
-  }, [selectedSection, sections, convertToFlowNodes, convertToFlowEdges]);
+  }, [getCurrentSection, updateSectionInBackend]);
 
   // 노드 비활성화
   const handleNodeDeactivate = useCallback(async (nodeId: string) => {
-    const currentSection = getCurrentSection();
-    if (!currentSection) return;
-
     try {
-      await apiClient.deactivateNode(nodeId, currentSection.id);
-      await fetchSections();
+      const currentSection = getCurrentSection();
+      if (!currentSection) return;
+      
+      await axios.post(`${API_URL}/node/${nodeId}/deactivate`, { 
+        sectionId: currentSection.id 
+      });
+      
+      const node = currentSection.nodes.find(n => n.id === nodeId);
+      if (node) {
+        handleNodeUpdate({ ...node, isDeactivated: !node.isDeactivated });
+      }
     } catch (error) {
       console.error('Failed to toggle deactivation:', error);
     }
-  }, [getCurrentSection, fetchSections]);
+  }, [getCurrentSection, handleNodeUpdate]);
 
-  // 노드 실행/중지
+  // 노드 실행
   const handleNodeRun = useCallback(async (nodeId: string) => {
     const currentSection = getCurrentSection();
     const node = currentSection?.nodes.find(n => n.id === nodeId);
+    
     if (!node || !currentSection) return;
 
-    if (node.isRunning) {
+    if (runningNodes.has(nodeId)) {
+      // 중지
       try {
-        await apiClient.stopNode(nodeId);
-        setSections(prev => prev.map(section => ({
-          ...section,
-          nodes: section.nodes.map(n => 
-            n.id === nodeId ? { ...n, isRunning: false } : n
-          )
-        })));
+        await axios.post(`${API_URL}/stop/${nodeId}`);
         setRunningNodes(prev => {
           const newSet = new Set(prev);
           newSet.delete(nodeId);
           return newSet;
         });
+        addLog({
+          nodeId,
+          nodeLabel: node.label || node.type,
+          type: 'info',
+          message: 'Execution stopped'
+        });
       } catch (error) {
         console.error('Failed to stop node:', error);
       }
     } else {
-      setSections(prev => prev.map(section => ({
-        ...section,
-        nodes: section.nodes.map(n => 
-          n.id === nodeId ? { ...n, isRunning: true, error: undefined } : n
-        )
-      })));
+      // 실행
+      setRunningNodes(prev => new Set([...prev, nodeId]));
       
       try {
-        const connectedOutputs: any = {};
-        if (node.connectedFrom) {
-          for (const connId of node.connectedFrom) {
-            const connNode = currentSection.nodes.find(n => n.id === connId);
-            if (connNode?.output) {
-              connectedOutputs[connNode.label] = connNode.output;
-            }
-          }
-        }
-
-        await apiClient.executeNode(nodeId, currentSection.id, node.code || '', connectedOutputs);
+        addLog({
+          nodeId,
+          nodeLabel: node.label || node.type,
+          type: 'start',
+          message: 'Starting execution...'
+        });
+        
+        await axios.post(`${API_URL}/execute`, {
+          nodeId,
+          sectionId: currentSection.id,
+          code: node.code || '',
+          inputs: {}
+        });
       } catch (error) {
         console.error('Node execution failed:', error);
-        setSections(prev => prev.map(section => ({
-          ...section,
-          nodes: section.nodes.map(n => 
-            n.id === nodeId ? { ...n, isRunning: false, error: 'Execution failed' } : n
-          )
-        })));
+        setRunningNodes(prev => {
+          const newSet = new Set(prev);
+          newSet.delete(nodeId);
+          return newSet;
+        });
+        addLog({
+          nodeId,
+          nodeLabel: node.label || node.type,
+          type: 'error',
+          message: 'Execution failed'
+        });
       }
     }
-  }, [getCurrentSection]);
+  }, [getCurrentSection, runningNodes, addLog]);
 
-  // 노드 삭제 - 백엔드 저장 포함
-  const handleNodeDelete = useCallback(async (nodeId: string) => {
+  // 노드 삭제
+  const handleNodeDelete = useCallback((nodeId: string) => {
     const currentSection = getCurrentSection();
     if (!currentSection) return;
     
-    // UI 즉시 업데이트
-    setNodes((nds) => nds.filter((n) => n.id !== nodeId));
-    setEdges((eds) => eds.filter((e) => e.source !== nodeId && e.target !== nodeId));
+    // React Flow에서 즉시 제거
+    setNodes(prev => prev.filter(n => n.id !== nodeId));
+    setEdges(prev => prev.filter(e => e.source !== nodeId && e.target !== nodeId));
     
-    // 섹션 업데이트 및 백엔드 저장
+    // 섹션 데이터 업데이트
     const updatedSection = {
       ...currentSection,
-      nodes: currentSection.nodes.filter(n => n.id !== nodeId).map(n => {
-        const updatedNode = { ...n };
-        if (updatedNode.connectedTo) {
-          updatedNode.connectedTo = updatedNode.connectedTo.filter(id => id !== nodeId);
+      nodes: currentSection.nodes
+        .filter(n => n.id !== nodeId)
+        .map(n => {
+          const updatedNode = { ...n };
+          if (updatedNode.connectedTo) {
+            updatedNode.connectedTo = updatedNode.connectedTo.filter(id => id !== nodeId);
+          }
+          if (updatedNode.connectedFrom) {
+            updatedNode.connectedFrom = updatedNode.connectedFrom.filter(id => id !== nodeId);
+          }
+          return updatedNode;
+        })
+    };
+    
+    setSections(prev => prev.map(s => s.id === updatedSection.id ? updatedSection : s));
+    updateSectionInBackend(updatedSection);
+    
+    addLog({
+      nodeId: 'system',
+      nodeLabel: 'System',
+      type: 'info',
+      message: `Node deleted: ${nodeId}`
+    });
+  }, [getCurrentSection, setNodes, setEdges, updateSectionInBackend, addLog]);
+
+  // Edge 삭제 함수
+  const deleteEdgeById = useCallback((edgeId: string) => {
+    console.log('Deleting edge:', edgeId);
+    
+    // React Flow에서 즉시 제거
+    setEdges(prev => prev.filter(e => e.id !== edgeId));
+    
+    // 섹션 데이터 업데이트
+    const currentSection = getCurrentSection();
+    if (!currentSection) return;
+    
+    // ID 파싱
+    const [sourceId, targetId] = edgeId.split('-').filter(Boolean);
+    if (!sourceId || !targetId) return;
+    
+    const updatedSection = {
+      ...currentSection,
+      nodes: currentSection.nodes.map(node => {
+        if (node.id === sourceId && node.connectedTo) {
+          return { 
+            ...node,
+            connectedTo: node.connectedTo.filter(id => id !== targetId) 
+          };
         }
-        if (updatedNode.connectedFrom) {
-          updatedNode.connectedFrom = updatedNode.connectedFrom.filter(id => id !== nodeId);
+        if (node.id === targetId && node.connectedFrom) {
+          return { 
+            ...node,
+            connectedFrom: node.connectedFrom.filter(id => id !== sourceId) 
+          };
         }
-        return updatedNode;
+        return node;
       })
     };
     
-    try {
-      await updateSectionInBackend(updatedSection);
-      setSections(prev => prev.map(section => 
-        section.id === currentSection.id ? updatedSection : section
-      ));
-    } catch (error) {
-      console.error('Failed to delete node:', error);
-      await fetchSections();
-    }
-  }, [getCurrentSection, setNodes, setEdges, updateSectionInBackend, fetchSections]);
-
-  // 엣지 삭제 - 수정된 버전
-  const handleEdgeDelete = useCallback(async (edgeId: string) => {
-    console.log('Deleting edge:', edgeId);
+    setSections(prev => prev.map(s => 
+      s.id === updatedSection.id ? updatedSection : s
+    ));
     
-    const edge = edges.find(e => e.id === edgeId);
-    if (!edge) {
-      console.log('Edge not found:', edgeId);
+    updateSectionInBackend(updatedSection);
+    
+    addLog({
+      nodeId: 'system',
+      nodeLabel: 'System',
+      type: 'info',
+      message: `Connection removed: ${sourceId} → ${targetId}`
+    });
+  }, [getCurrentSection, setEdges, updateSectionInBackend, addLog]);
+
+  // 섹션 변경 시 React Flow 업데이트
+  useEffect(() => {
+    const currentSection = getCurrentSection();
+    
+    if (!currentSection || lastSelectedSectionRef.current === currentSection.id) return;
+    
+    console.log('Updating React Flow for section:', currentSection.name);
+    
+    // 노드 변환 - 좌우 연결을 위한 핸들 위치 설정
+    const flowNodes: FlowNode[] = currentSection.nodes.map(node => ({
+      id: node.id,
+      type: node.type,
+      position: { ...node.position },
+      data: {
+        ...node,
+        onEdit: () => setEditingNode(node),
+        onDeactivate: () => handleNodeDeactivate(node.id),
+        onToggleRun: () => handleNodeRun(node.id),
+        onDelete: handleNodeDelete,
+        onUpdate: handleNodeUpdate,
+        progress: nodeProgress[node.id],
+        isExecuting: runningNodes.has(node.id),
+        isCompleted: completedNodes.has(node.id),
+      },
+      selected: selectedNodeId === node.id,
+      style: {
+        opacity: node.isDeactivated ? 0.5 : 1,
+      },
+      // 핸들 위치 설정
+      sourcePosition: Position.Right,
+      targetPosition: Position.Left,
+    }));
+    
+    // 엣지 변환
+    const flowEdges: Edge[] = [];
+    currentSection.nodes.forEach(node => {
+      if (node.connectedFrom) {
+        node.connectedFrom.forEach(fromId => {
+          const edgeId = `${fromId}-${node.id}`;
+          flowEdges.push({
+            id: edgeId,
+            source: fromId,
+            target: node.id,
+            type: 'custom',
+            animated: activeEdges.has(edgeId),
+            data: { 
+              onDelete: deleteEdgeById,
+              isActive: activeEdges.has(edgeId)
+            },
+            style: {
+              stroke: activeEdges.has(edgeId) ? '#10b981' : '#94a3b8',
+              strokeWidth: activeEdges.has(edgeId) ? 3 : 2,
+            },
+            markerEnd: {
+              type: MarkerType.ArrowClosed,
+              color: activeEdges.has(edgeId) ? '#10b981' : '#94a3b8',
+            },
+          });
+        });
+      }
+    });
+    
+    setNodes(flowNodes);
+    setEdges(flowEdges);
+    
+    lastSelectedSectionRef.current = currentSection.id;
+  }, [selectedSection, sections, selectedNodeId, nodeProgress, runningNodes, completedNodes, activeEdges, 
+      getCurrentSection, handleNodeDelete, handleNodeUpdate, handleNodeDeactivate, handleNodeRun, 
+      deleteEdgeById, setNodes, setEdges]);
+
+  // 연결 생성
+  const onConnect = useCallback((params: FlowConnection) => {
+    const currentSection = getCurrentSection();
+    if (!currentSection || params.source === params.target) return;
+    
+    // 이미 존재하는 연결인지 확인
+    const edgeId = `${params.source}-${params.target}`;
+    const existingEdge = edges.find(e => e.id === edgeId);
+    if (existingEdge) {
+      addLog({
+        nodeId: 'system',
+        nodeLabel: 'System',
+        type: 'info',
+        message: 'Connection already exists'
+      });
       return;
     }
     
-    const currentSection = getCurrentSection();
-    if (!currentSection) return;
+    // React Flow에 edge 추가
+    setEdges(eds => addEdge({
+      ...params,
+      id: edgeId,
+      type: 'custom',
+      animated: false,
+      data: { 
+        onDelete: deleteEdgeById
+      },
+      style: {
+        stroke: '#94a3b8',
+        strokeWidth: 2,
+      },
+      markerEnd: {
+        type: MarkerType.ArrowClosed,
+        color: '#94a3b8',
+      },
+    }, eds));
     
-    // UI 즉시 업데이트
-    setEdges((eds) => eds.filter((e) => e.id !== edgeId));
-    
-    // 섹션 업데이트
+    // 섹션 데이터 업데이트
     const updatedSection = {
       ...currentSection,
       nodes: currentSection.nodes.map(n => {
-        if (n.id === edge.source && n.connectedTo) {
-          return { ...n, connectedTo: n.connectedTo.filter(id => id !== edge.target) };
+        if (n.id === params.source) {
+          const currentConnectedTo = n.connectedTo || [];
+          if (!currentConnectedTo.includes(params.target!)) {
+            return { ...n, connectedTo: [...currentConnectedTo, params.target!] };
+          }
         }
-        if (n.id === edge.target && n.connectedFrom) {
-          return { ...n, connectedFrom: n.connectedFrom.filter(id => id !== edge.source) };
+        if (n.id === params.target) {
+          const currentConnectedFrom = n.connectedFrom || [];
+          if (!currentConnectedFrom.includes(params.source!)) {
+            return { ...n, connectedFrom: [...currentConnectedFrom, params.source!] };
+          }
         }
         return n;
       })
     };
     
-    // 백엔드 저장
-    try {
-      await updateSectionInBackend(updatedSection);
-      setSections(prev => prev.map(section => 
-        section.id === currentSection.id ? updatedSection : section
-      ));
-      console.log('Edge deleted successfully');
-    } catch (error) {
-      console.error('Failed to delete edge:', error);
-      // 실패 시 다시 로드
-      await fetchSections();
-    }
-  }, [edges, getCurrentSection, setEdges, updateSectionInBackend, fetchSections]);
+    setSections(prev => prev.map(s => s.id === updatedSection.id ? updatedSection : s));
+    updateSectionInBackend(updatedSection);
+    
+    addLog({
+      nodeId: 'system',
+      nodeLabel: 'System',
+      type: 'info',
+      message: 'Connection created'
+    });
+  }, [getCurrentSection, edges, updateSectionInBackend, addLog, setEdges, deleteEdgeById]);
 
-  // 노드 위치 변경 - 디바운스 적용
-  const handleNodesChange = useCallback((changes: any) => {
+  // 노드 위치 변경
+  const handleNodesChange = useCallback((changes: NodeChange[]) => {
     onNodesChange(changes);
     
-    changes.forEach((change: any) => {
-      if (change.type === 'position' && change.position) {
-        // 로컬 상태만 즉시 업데이트
-        setSections(prev => prev.map(section => ({
-          ...section,
-          nodes: section.nodes.map(n => 
-            n.id === change.id ? { ...n, position: change.position } : n
-          )
-        })));
-        
-        // 드래그가 끝났을 때만 백엔드 업데이트
-        if (!change.dragging) {
-          pendingPositionUpdates.current.set(change.id, change.position);
-          debouncedPositionUpdate();
+    // 드래그 종료 시 위치 저장
+    changes.forEach(change => {
+      if (
+        change.type === 'position' && 
+        !isUpdatingRef.current &&
+        'dragging' in change &&
+        change.dragging === false
+      ) {
+        const currentSection = getCurrentSection();
+        if (currentSection) {
+          const node = nodes.find(n => n.id === change.id);
+          if (node && 'position' in change && change.position) {
+            const updatedSection = {
+              ...currentSection,
+              nodes: currentSection.nodes.map(n => 
+                n.id === node.id ? { ...n, position: change.position! } : n
+              )
+            };
+            updateSectionInBackend(updatedSection);
+          }
         }
       }
     });
-  }, [onNodesChange, debouncedPositionUpdate]);
+  }, [nodes, getCurrentSection, onNodesChange, updateSectionInBackend]);
 
-  // 연결 생성 - 노드 위치 변경 방지
-  const onConnect = useCallback(async (params: FlowConnection) => {
-    const currentSection = getCurrentSection();
-    if (!currentSection) return;
-    
-    // 현재 노드 위치 저장
-    const currentPositions = new Map(
-      currentSection.nodes.map(n => [n.id, { ...n.position }])
-    );
-    
-    // 엣지만 추가
-    setEdges((eds) => addEdge({ ...params, type: 'custom', animated: false }, eds));
-    
-    // 섹션 업데이트 (연결 정보만 변경, 위치는 유지)
-    const updatedSection = {
-      ...currentSection,
-      nodes: currentSection.nodes.map(n => {
-        const updatedNode = { ...n };
-        
-        // 위치는 기존 값 유지
-        updatedNode.position = currentPositions.get(n.id) || n.position;
-        
-        // 연결 정보만 업데이트
-        if (n.id === params.source) {
-          updatedNode.connectedTo = [...(n.connectedTo || []), params.target!];
-        }
-        if (n.id === params.target) {
-          updatedNode.connectedFrom = [...(n.connectedFrom || []), params.source!];
-        }
-        
-        return updatedNode;
-      })
-    };
-    
-    try {
-      await updateSectionInBackend(updatedSection);
-      setSections(prev => prev.map(section => 
-        section.id === currentSection.id ? updatedSection : section
-      ));
-    } catch (error) {
-      console.error('Failed to update connections:', error);
-    }
-  }, [getCurrentSection, setEdges, updateSectionInBackend]);
+  // Edge 변경 핸들러
+  const handleEdgesChange = useCallback((changes: EdgeChange[]) => {
+    onEdgesChange(changes);
+  }, [onEdgesChange]);
 
-  // WebSocket handlers
-  const { isConnected } = useWebSocket({
-    onProgress: (nodeId, progress, message) => {
+  // WebSocket handlers - useCallback으로 감싸서 안정적인 참조 유지
+  const wsHandlers = React.useMemo(() => ({
+    onProgress: (nodeId: string, progress: number) => {
       setNodeProgress(prev => ({ ...prev, [nodeId]: progress }));
       
-      const currentSection = getCurrentSection();
-      const node = currentSection?.nodes.find(n => n.id === nodeId);
-      
+      const section = sections.find(s => s.name === selectedSection);
+      const node = section?.nodes.find(n => n.id === nodeId);
       if (node) {
-        if (progress === 0.1) {
-          setRunningNodes(prev => new Set([...prev, nodeId]));
+        if (progress === 0) {
           addLog({
             nodeId,
-            nodeLabel: node.label,
+            nodeLabel: node.label || node.type,
             type: 'start',
-            message: `Starting ${node.label} execution...`
+            message: `Starting execution...`
           });
-        } else if (progress === 1) {
+        } else if (progress > 0 && progress < 1) {
           addLog({
             nodeId,
-            nodeLabel: node.label,
-            type: 'complete',
-            message: `✓ ${node.label} completed successfully`
+            nodeLabel: node.label || node.type,
+            type: 'processing',
+            message: `Processing... ${Math.round(progress * 100)}%`
           });
+        } else if (progress >= 1) {
+          addLog({
+            nodeId,
+            nodeLabel: node.label || node.type,
+            type: 'complete',
+            message: `Execution completed`
+          });
+          
+          setCompletedNodes(prev => new Set([...prev, nodeId]));
+          
+          const nextNodes = section?.nodes.filter(n => 
+            n.connectedFrom?.includes(nodeId)
+          );
+          
+          if (nextNodes && nextNodes.length > 0) {
+            nextNodes.forEach(nextNode => {
+              setActiveEdges(prev => new Set([...prev, `${nodeId}-${nextNode.id}`]));
+              
+              setTimeout(() => {
+                setActiveEdges(prev => {
+                  const newSet = new Set(prev);
+                  newSet.delete(`${nodeId}-${nextNode.id}`);
+                  return newSet;
+                });
+              }, 500);
+            });
+          }
         } else if (progress < 0) {
           addLog({
             nodeId,
-            nodeLabel: node.label,
+            nodeLabel: node.label || node.type,
             type: 'error',
-            message: `✗ ${node.label} execution failed: ${message || 'Unknown error'}`
+            message: `Execution failed`
           });
         }
       }
@@ -524,50 +592,94 @@ function AIPipelineFlow() {
         }, 2000);
       }
     },
-    onNodeOutputUpdated: (nodeId, output) => {
-      setSections(prev => prev.map(section => ({
-        ...section,
-        nodes: section.nodes.map(n => 
-          n.id === nodeId ? { ...n, output, error: undefined } : n
-        )
-      })));
+    onNodeOutputUpdated: (nodeId: string, output: string) => {
+      const section = sections.find(s => s.name === selectedSection);
+      const node = section?.nodes.find(n => n.id === nodeId);
+      if (node) {
+        handleNodeUpdate({ ...node, output });
+        
+        if (output) {
+          addLog({
+            nodeId,
+            nodeLabel: node.label || node.type,
+            type: 'file_created',
+            message: `Output generated: ${getOutputPreview(output)}`
+          });
+        }
+      }
     },
-    onNodeSupervised: (data) => {
-      setSections(prev => prev.map(section => ({
-        ...section,
-        nodes: section.nodes.map(n => 
-          n.id === data.targetId ? { ...n, aiScore: data.score } : n
-        )
-      })));
+    onNodeExecutionStart: (nodeId: string) => {
+      setRunningNodes(prev => new Set([...prev, nodeId]));
+      const section = sections.find(s => s.name === selectedSection);
+      const node = section?.nodes.find(n => n.id === nodeId);
+      if (node) {
+        addLog({
+          nodeId,
+          nodeLabel: node.label || node.type,
+          type: 'start',
+          message: 'Execution started'
+        });
+      }
+    },
+    onNodeExecutionComplete: (nodeId: string) => {
+      setRunningNodes(prev => {
+        const newSet = new Set(prev);
+        newSet.delete(nodeId);
+        return newSet;
+      });
+      setCompletedNodes(prev => new Set([...prev, nodeId]));
+      
+      const section = sections.find(s => s.name === selectedSection);
+      const node = section?.nodes.find(n => n.id === nodeId);
+      if (node) {
+        addLog({
+          nodeId,
+          nodeLabel: node.label || node.type,
+          type: 'complete',
+          message: 'Execution completed successfully'
+        });
+      }
+    },
+    onNodeExecutionError: (nodeId: string, error: string) => {
+      setRunningNodes(prev => {
+        const newSet = new Set(prev);
+        newSet.delete(nodeId);
+        return newSet;
+      });
+      const section = sections.find(s => s.name === selectedSection);
+      const node = section?.nodes.find(n => n.id === nodeId);
+      if (node) {
+        addLog({
+          nodeId,
+          nodeLabel: node.label || node.type,
+          type: 'error',
+          message: `Error: ${error}`
+        });
+      }
     }
-  });
+  }), [sections, selectedSection, addLog, handleNodeUpdate, getOutputPreview]);
+
+  // WebSocket 연결
+  useWebSocket(wsHandlers);
 
   // 노드 추가
-  const handleNodeAdd = useCallback(async (nodeType: string) => {
+  const handleNodeAdd = async (nodeType: string) => {
     const currentSection = getCurrentSection();
     if (!currentSection) return;
 
-    if ((nodeType === 'supervisor' || nodeType === 'planner') && 
-        currentSection.nodes.some(n => n.type === nodeType)) {
-      alert(`Only one ${nodeType} node allowed per section`);
-      return;
-    }
-
-    const centerX = window.innerWidth / 2;
-    const centerY = (window.innerHeight - 200) / 2;
-    const position = project({ x: centerX, y: centerY });
+    const position = project({ 
+      x: window.innerWidth / 2, 
+      y: window.innerHeight / 2 
+    });
 
     const newNode: Node = {
-      id: `${nodeType}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+      id: `${nodeType}-${Date.now()}`,
       type: nodeType as Node['type'],
       label: nodeType.charAt(0).toUpperCase() + nodeType.slice(1),
-      position: { 
-        x: position.x + (Math.random() - 0.5) * 100,
-        y: position.y + (Math.random() - 0.5) * 100
-      },
+      position,
       isRunning: false,
       tasks: nodeType === 'worker' ? [
-        { id: `task-${Date.now()}-1`, text: '', status: 'pending' }
+        { id: `task-${Date.now()}`, text: '', status: 'pending' }
       ] : undefined
     };
 
@@ -576,119 +688,82 @@ function AIPipelineFlow() {
       nodes: [...currentSection.nodes, newNode]
     };
 
-    try {
-      await updateSectionInBackend(updatedSection);
-      setSections(prev => prev.map(section => 
-        section.id === currentSection.id ? updatedSection : section
-      ));
-    } catch (error) {
-      console.error('Failed to add node:', error);
-      alert('Failed to add node. Please try again.');
-    }
-  }, [getCurrentSection, project, updateSectionInBackend]);
-
-  // Flow 실행
-  const playFlow = useCallback(async () => {
-    const currentSection = getCurrentSection();
-    if (!currentSection) return;
-    
-    setIsExecuting(true);
-    setExecutionLogs([]);
-    setShowLogs(true);
+    setSections(prev => prev.map(s => s.id === updatedSection.id ? updatedSection : s));
+    await updateSectionInBackend(updatedSection);
     
     addLog({
       nodeId: 'system',
       nodeLabel: 'System',
       type: 'info',
-      message: `🚀 Starting flow execution for "${currentSection.name}" section...`
+      message: `Added ${nodeType} node`
     });
+  };
+
+  // Flow 실행
+  const playFlow = async () => {
+    const currentSection = getCurrentSection();
+    if (!currentSection) return;
     
-    try {
-      const response = await apiClient.executeFlow(currentSection.id);
-      
-      addLog({
-        nodeId: 'system',
-        nodeLabel: 'System',
-        type: 'complete',
-        message: `✅ Flow execution completed! Processed ${response.data.results.length} nodes.`
-      });
-    } catch (error) {
+    // 상태 초기화
+    setExecutionLogs([]);
+    setShowLogs(true);
+    setCompletedNodes(new Set());
+    setActiveEdges(new Set());
+    
+    // Input 노드 찾기
+    const inputNode = currentSection.nodes.find(n => n.type === 'input');
+    if (!inputNode) {
       addLog({
         nodeId: 'system',
         nodeLabel: 'System',
         type: 'error',
-        message: `❌ Flow execution failed: ${error}`
+        message: 'No input node found in the current section'
       });
-    } finally {
-      setIsExecuting(false);
+      return;
     }
-  }, [getCurrentSection, addLog]);
-
-  // 노드 클릭
-  const handleNodeClick = useCallback((event: React.MouseEvent, node: FlowNode) => {
-    setSelectedNodeId(node.id);
-  }, []);
-
-  // 로그 패널 리사이즈
-  const handleLogResize = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    const startY = e.clientY;
-    const startHeight = logsHeight;
-
-    const handleMouseMove = (e: MouseEvent) => {
-      const deltaY = startY - e.clientY;
-      setLogsHeight(Math.max(100, Math.min(500, startHeight + deltaY)));
-    };
-
-    const handleMouseUp = () => {
-      document.removeEventListener('mousemove', handleMouseMove);
-      document.removeEventListener('mouseup', handleMouseUp);
-    };
-
-    document.addEventListener('mousemove', handleMouseMove);
-    document.addEventListener('mouseup', handleMouseUp);
-  }, [logsHeight]);
-
-  // 모달 저장 핸들러
-  const handleModalSave = useCallback(async (node: Node) => {
-    const currentSection = getCurrentSection();
-    if (!currentSection) return;
     
-    const updatedSection = {
-      ...currentSection,
-      nodes: currentSection.nodes.map(n => n.id === node.id ? node : n)
-    };
+    addLog({
+      nodeId: 'system',
+      nodeLabel: 'System',
+      type: 'start',
+      message: 'Starting flow execution...'
+    });
     
     try {
-      await updateSectionInBackend(updatedSection);
-      setSections(prev => prev.map(section => 
-        section.id === currentSection.id ? updatedSection : section
-      ));
-    } catch (error) {
-      console.error('Failed to save node:', error);
-    }
-    
-    setEditingNode(null);
-  }, [getCurrentSection, updateSectionInBackend]);
-
-  // Keyboard shortcuts
-  useKeyboardShortcuts({
-    selectedNodeId,
-    getCurrentSection,
-    onNodeEdit: setEditingNode,
-    onNodeDelete: handleNodeDelete,
-    onNodeDeactivate: handleNodeDeactivate
-  });
-
-  // Cleanup on unmount
-  useEffect(() => {
-    return () => {
-      if (updateTimeoutRef.current) {
-        clearTimeout(updateTimeoutRef.current);
+      const response = await axios.post(`${API_URL}/execute-flow`, {
+        sectionId: currentSection.id,
+        startNodeId: inputNode.id
+      });
+      
+      if (response.data) {
+        addLog({
+          nodeId: 'system',
+          nodeLabel: 'System',
+          type: 'info',
+          message: 'Flow execution initiated successfully'
+        });
       }
-    };
-  }, []);
-
+    } catch (error: any) {
+      console.error('Flow execution failed:', error);
+      addLog({
+        nodeId: 'system',
+        nodeLabel: 'System',
+        type: 'error',
+        message: `Failed to start flow execution: ${error.response?.data?.detail || error.message}`
+      });
+    }
+  };
+  
+  // 로그창 토글
+  const toggleLogs = () => {
+    setShowLogs(!showLogs);
+  };
+  
+  // 로그 지우기
+  const clearLogs = () => {
+    setExecutionLogs([]);
+  };
+  
   return (
     <div className="flex flex-col h-screen bg-gray-100">
       {/* Header */}
@@ -702,10 +777,16 @@ function AIPipelineFlow() {
               <button
                 key={group}
                 onClick={() => {
+                  // 실행 상태 초기화
+                  setCompletedNodes(new Set());
+                  setActiveEdges(new Set());
+                  setNodeProgress({});
+                  setRunningNodes(new Set());
+                  
                   setSelectedGroup(group as keyof typeof GROUPS);
-                  const firstSectionInGroup = sections.find(s => s.group === group);
-                  if (firstSectionInGroup) {
-                    setSelectedSection(firstSectionInGroup.name);
+                  const firstSection = sections.find(s => s.group === group);
+                  if (firstSection) {
+                    setSelectedSection(firstSection.name);
                   }
                 }}
                 className={`px-4 py-2 rounded transition-colors ${
@@ -719,14 +800,11 @@ function AIPipelineFlow() {
             ))}
           </div>
           
-          {/* WebSocket 연결 상태 */}
-          <div className="ml-auto mr-4 flex items-center gap-2">
-            <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-green-500' : 'bg-red-500'}`} />
-            <span className="text-sm text-gray-600">{isConnected ? 'Connected' : 'Disconnected'}</span>
+          <div className="ml-auto mr-4">
             <button
               onClick={fetchSections}
-              className="ml-2 p-2 rounded hover:bg-gray-100"
-              title="Refresh sections from server"
+              className="p-2 rounded hover:bg-gray-100"
+              title="Refresh"
             >
               <RefreshCw className="w-4 h-4" />
             </button>
@@ -740,7 +818,15 @@ function AIPipelineFlow() {
             .map(section => (
               <button
                 key={section.id}
-                onClick={() => setSelectedSection(section.name)}
+                onClick={() => {
+                  // 실행 상태 초기화
+                  setCompletedNodes(new Set());
+                  setActiveEdges(new Set());
+                  setNodeProgress({});
+                  setRunningNodes(new Set());
+                  
+                  setSelectedSection(section.name);
+                }}
                 className={`px-3 py-1 rounded text-sm transition-colors ${
                   selectedSection === section.name
                     ? 'bg-gray-800 text-white'
@@ -754,15 +840,10 @@ function AIPipelineFlow() {
           <div className="ml-auto flex gap-2">
             <button
               onClick={playFlow}
-              disabled={isExecuting || isLoading}
-              className={`flex items-center gap-2 px-3 py-1 rounded text-sm transition-colors ${
-                isExecuting || isLoading
-                  ? 'bg-gray-400 text-gray-200 cursor-not-allowed' 
-                  : 'bg-green-500 text-white hover:bg-green-600'
-              }`}
+              className="flex items-center gap-2 px-3 py-1 bg-green-500 text-white rounded text-sm hover:bg-green-600"
             >
               <Play className="w-4 h-4" />
-              {isExecuting ? 'Executing...' : 'Play Flow'}
+              Play Flow
             </button>
             <button
               onClick={() => setShowSettings(true)}
@@ -776,157 +857,96 @@ function AIPipelineFlow() {
       </div>
 
       {/* React Flow Canvas */}
-      <div className="flex-1 relative" style={{ height: showLogs ? `calc(100% - ${logsHeight}px)` : '100%' }}>
+      <div className="flex-1 relative">
         {isLoading ? (
           <div className="flex items-center justify-center h-full">
             <div className="text-gray-500">Loading sections...</div>
+          </div>
+        ) : sections.length === 0 ? (
+          <div className="flex items-center justify-center h-full">
+            <div className="text-gray-500">
+              No sections loaded. Make sure backend is running on http://localhost:8000
+            </div>
           </div>
         ) : (
           <ReactFlow
             nodes={nodes}
             edges={edges}
             onNodesChange={handleNodesChange}
-            onEdgesChange={onEdgesChange}
+            onEdgesChange={handleEdgesChange}
             onConnect={onConnect}
-            onNodeClick={handleNodeClick}
+            onNodeClick={(_, node) => setSelectedNodeId(node.id)}
             nodeTypes={nodeTypes}
             edgeTypes={edgeTypes}
-            attributionPosition="bottom-right"
             defaultViewport={{ x: 100, y: 100, zoom: 0.75 }}
-            minZoom={0.1}
-            maxZoom={4}
+            zoomOnDoubleClick={false}
           >
-            <Background variant={BackgroundVariant.Lines} gap={50} size={1} color="#e5e5e5" />
+            <Background variant={BackgroundVariant.Lines} />
             <Controls />
-            <MiniMap 
-              nodeColor={(node) => {
-                const isRunning = runningNodes.has(node.id);
-                if (isRunning) return '#3b82f6';
-                
-                switch (node.type) {
-                  case 'supervisor': return '#a855f7';
-                  case 'planner': return '#10b981';
-                  case 'input': return '#3b82f6';
-                  case 'output': return '#f97316';
-                  default: return '#6b7280';
-                }
-              }}
-            />
+            <MiniMap />
             
-            {/* Add Node Panel */}
             <Panel position="bottom-center" className="bg-white rounded-lg shadow-lg p-4">
               <div className="flex gap-4">
                 {NODE_TYPES
                   .filter(nodeType => nodeType.type !== 'input' && nodeType.type !== 'output')
-                  .map(nodeType => {
-                  const currentSection = getCurrentSection();
-                  const isDisabled = (nodeType.type === 'supervisor' || nodeType.type === 'planner') &&
-                    currentSection?.nodes.some(n => n.type === nodeType.type);
-                  
-                  return (
+                  .map(nodeType => (
                     <button
                       key={nodeType.type}
                       onClick={() => handleNodeAdd(nodeType.type)}
-                      disabled={isDisabled}
-                      className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-all ${
-                        isDisabled 
-                          ? 'bg-gray-100 text-gray-400 cursor-not-allowed' 
-                          : 'bg-gray-100 hover:bg-gray-200 hover:shadow-md'
-                      }`}
-                      title={isDisabled ? `Only one ${nodeType.type} allowed per section` : `Add ${nodeType.label}`}
+                      className="flex items-center gap-2 px-4 py-2 rounded-lg bg-gray-100 hover:bg-gray-200"
                     >
                       <span className="text-xl">{nodeType.icon}</span>
                       <span>{nodeType.label}</span>
                     </button>
-                  );
-                })}
+                  ))}
               </div>
             </Panel>
           </ReactFlow>
         )}
       </div>
 
-      {/* Execution Logs Panel */}
-      <div 
-        className={`bg-white border-t transition-all duration-300 ${showLogs ? '' : 'hidden'}`}
-        style={{ height: `${logsHeight}px` }}
-      >
-        <div
-          className="h-1 bg-gray-200 hover:bg-gray-300 cursor-ns-resize"
-          onMouseDown={handleLogResize}
-        />
-        
-        <div className="flex items-center justify-between px-4 py-2 border-b bg-gray-50">
-          <h3 className="font-semibold text-sm">Execution Logs</h3>
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => setExecutionLogs([])}
-              className="text-xs text-gray-600 hover:text-gray-800"
-            >
-              Clear
-            </button>
-            <button
-              onClick={() => setShowLogs(!showLogs)}
-              className="text-gray-600 hover:text-gray-800"
-            >
-              {showLogs ? <ChevronDown className="w-4 h-4" /> : <ChevronUp className="w-4 h-4" />}
-            </button>
-          </div>
-        </div>
-        
-        <div className="flex-1 overflow-y-auto p-2" style={{ maxHeight: logsHeight - 40 }}>
-          {executionLogs.length === 0 ? (
-            <div className="text-center text-gray-500 text-sm py-8">
-              No execution logs yet. Click "Play Flow" to start.
-            </div>
-          ) : (
-            <div className="space-y-1">
-              {executionLogs.map(log => (
-                <div key={log.id} className="flex items-start gap-2 text-sm hover:bg-gray-50 px-2 py-1 rounded">
-                  <div className="mt-0.5">{getLogIcon(log.type)}</div>
-                  <div className="text-gray-600 text-xs whitespace-nowrap">
-                    {new Date(log.timestamp).toLocaleTimeString()}
-                  </div>
-                  <div className="flex-1">
-                    <span className="font-medium text-gray-800">[{log.nodeLabel}]</span>
-                    <span className="text-gray-700 ml-1">{log.message}</span>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      </div>
-
       {/* Modals */}
-      {editingNode && editingNode.type === 'worker' && (
-        <WorkerEditModal
-          node={editingNode}
-          section={getCurrentSection()!}
-          allSections={sections}
-          onClose={() => setEditingNode(null)}
-          onSave={handleModalSave}
-        />
-      )}
-
-      {editingNode && (editingNode.type === 'supervisor' || editingNode.type === 'planner') && (
-        <SupervisorEditModal
-          node={editingNode}
-          section={getCurrentSection()!}
-          allSections={sections}
-          onClose={() => setEditingNode(null)}
-          onSave={handleModalSave}
-        />
-      )}
-
-      {editingNode && (editingNode.type === 'input' || editingNode.type === 'output') && (
-        <IOConfigModal
-          node={editingNode}
-          section={getCurrentSection()!}
-          allSections={sections}
-          onClose={() => setEditingNode(null)}
-          onSave={handleModalSave}
-        />
+      {editingNode && (
+        <>
+          {editingNode.type === 'worker' && (
+            <WorkerEditModal
+              node={editingNode}
+              section={getCurrentSection()!}
+              allSections={sections}
+              onClose={() => setEditingNode(null)}
+              onSave={(node) => {
+                handleNodeUpdate(node);
+                setEditingNode(null);
+              }}
+            />
+          )}
+          
+          {(editingNode.type === 'supervisor' || editingNode.type === 'planner') && (
+            <SupervisorEditModal
+              node={editingNode}
+              section={getCurrentSection()!}
+              allSections={sections}
+              onClose={() => setEditingNode(null)}
+              onSave={(node) => {
+                handleNodeUpdate(node);
+                setEditingNode(null);
+              }}
+            />
+          )}
+          
+          {(editingNode.type === 'input' || editingNode.type === 'output') && (
+            <IOConfigModal
+              node={editingNode}
+              section={getCurrentSection()!}
+              allSections={sections}
+              onClose={() => setEditingNode(null)}
+              onSave={(node) => {
+                handleNodeUpdate(node);
+                setEditingNode(null);
+              }}
+            />
+          )}
+        </>
       )}
 
       {showSettings && getCurrentSection() && (
@@ -935,15 +955,103 @@ function AIPipelineFlow() {
           allSections={sections}
           onClose={() => setShowSettings(false)}
           onSave={async (section) => {
-            try {
-              await updateSectionInBackend(section);
-              setSections(prev => prev.map(s => s.id === section.id ? section : s));
-            } catch (error) {
-              console.error('Failed to save section settings:', error);
-            }
+            await updateSectionInBackend(section);
+            setSections(prev => prev.map(s => s.id === section.id ? section : s));
             setShowSettings(false);
           }}
         />
+      )}
+
+      {/* 실행 로그 패널 */}
+      <div className={`fixed bottom-0 left-0 right-0 bg-white border-t shadow-lg transition-all duration-300 ${showLogs ? '' : 'translate-y-full'}`}
+           style={{ height: showLogs ? `${logsHeight}px` : '0px' }}>
+        {/* 로그 헤더 */}
+        <div className="flex items-center justify-between px-4 py-2 border-b bg-gray-50">
+          <div className="flex items-center gap-2">
+            <FileText className="w-4 h-4" />
+            <span className="font-medium">Execution Logs</span>
+            <span className="text-sm text-gray-500">({executionLogs.length})</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={clearLogs}
+              className="text-sm text-gray-600 hover:text-gray-800"
+            >
+              Clear
+            </button>
+            <button
+              onClick={toggleLogs}
+              className="p-1 hover:bg-gray-200 rounded"
+            >
+              <ChevronDown className={`w-4 h-4 transform transition-transform ${showLogs ? '' : 'rotate-180'}`} />
+            </button>
+          </div>
+        </div>
+        
+        {/* 로그 내용 */}
+        <div className="overflow-y-auto" style={{ height: `calc(${logsHeight}px - 40px)` }}>
+          {executionLogs.length === 0 ? (
+            <div className="text-center text-gray-500 py-4">No logs yet</div>
+          ) : (
+            <div className="p-2 space-y-1">
+              {executionLogs.map(log => (
+                <div key={log.id} className="flex items-start gap-2 text-sm">
+                  <span className="text-gray-400 text-xs whitespace-nowrap">
+                    {new Date(log.timestamp).toLocaleTimeString()}
+                  </span>
+                  <span className={`flex-shrink-0 ${
+                    log.type === 'error' ? 'text-red-500' :
+                    log.type === 'complete' ? 'text-green-500' :
+                    log.type === 'start' ? 'text-blue-500' :
+                    log.type === 'file_created' ? 'text-purple-500' :
+                    'text-gray-600'
+                  }`}>
+                    {log.type === 'error' ? <AlertCircle className="w-4 h-4" /> :
+                     log.type === 'complete' ? <CheckCircle className="w-4 h-4" /> :
+                     log.type === 'start' ? <Play className="w-4 h-4" /> :
+                     log.type === 'file_created' ? <FileText className="w-4 h-4" /> :
+                     <Clock className="w-4 h-4" />}
+                  </span>
+                  <span className="font-medium">[{log.nodeLabel}]</span>
+                  <span className="text-gray-700">{log.message}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+        
+        {/* 리사이즈 핸들 */}
+        <div 
+          className="absolute top-0 left-0 right-0 h-1 cursor-ns-resize hover:bg-blue-500 transition-colors"
+          onMouseDown={(e) => {
+            const startY = e.clientY;
+            const startHeight = logsHeight;
+            
+            const handleMouseMove = (e: MouseEvent) => {
+              const newHeight = Math.max(100, Math.min(600, startHeight - (e.clientY - startY)));
+              setLogsHeight(newHeight);
+            };
+            
+            const handleMouseUp = () => {
+              document.removeEventListener('mousemove', handleMouseMove);
+              document.removeEventListener('mouseup', handleMouseUp);
+            };
+            
+            document.addEventListener('mousemove', handleMouseMove);
+            document.addEventListener('mouseup', handleMouseUp);
+          }}
+        />
+      </div>
+      
+      {/* 로그 토글 버튼 (로그창이 닫혀있을 때) */}
+      {!showLogs && executionLogs.length > 0 && (
+        <button
+          onClick={toggleLogs}
+          className="fixed bottom-4 right-4 bg-white border shadow-lg rounded-lg px-3 py-2 flex items-center gap-2 hover:bg-gray-50"
+        >
+          <FileText className="w-4 h-4" />
+          <span>Show Logs ({executionLogs.length})</span>
+        </button>
       )}
     </div>
   );
