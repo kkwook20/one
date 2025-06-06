@@ -1,22 +1,97 @@
-// Related files:
-// - frontend/src/App.tsx
-// - frontend/src/components/*.tsx
-// - frontend/src/types/index.ts
-// Location: frontend/src/constants/index.ts
-
-export const API_URL = 'http://localhost:8000';
-export const WS_URL = 'ws://localhost:8000';
+// frontend/src/constants/index.ts - 정리된 버전
+export const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
+export const WS_URL = process.env.REACT_APP_WS_URL || 'ws://localhost:8000/ws';
 
 export const GROUPS = {
   preproduction: ['Script', 'Storyboard', 'Planning'],
   postproduction: ['Modeling', 'Rigging', 'Texture', 'Animation', 'VFX', 'Lighting & Rendering', 'Sound Design', 'Compositing'],
   director: ['Direction', 'Review']
-};
+} as const;
 
 export const NODE_TYPES = [
-  { type: 'worker', label: 'Worker', icon: '⚙️' },
-  { type: 'supervisor', label: 'Supervisor', icon: '👁️' },
-  { type: 'planner', label: 'Planner', icon: '📋' },
-  { type: 'input', label: 'Input', icon: '➡️' },
-  { type: 'output', label: 'Output', icon: '⬅️' }
-];
+  { type: 'worker', label: 'Worker', icon: '👷', description: 'Executes specific tasks' },
+  { type: 'supervisor', label: 'Supervisor', icon: '👔', description: 'Manages and optimizes worker nodes' },
+  { type: 'planner', label: 'Planner', icon: '📋', description: 'Plans and evaluates section workflow' },
+  { type: 'input', label: 'Input', icon: '➡️', description: 'Data input point' },
+  { type: 'output', label: 'Output', icon: '⬅️', description: 'Data output point' }
+] as const;
+
+// Node 실행 상태
+export const EXECUTION_STATUS = {
+  IDLE: 'idle',
+  RUNNING: 'running',
+  COMPLETED: 'completed',
+  ERROR: 'error'
+} as const;
+
+// Task 상태
+export const TASK_STATUS = {
+  PENDING: 'pending',
+  PARTIAL: 'partial',
+  COMPLETE: 'none' // 'none'은 complete를 의미 (레거시 호환)
+} as const;
+
+// 파일 형식
+export const OUTPUT_FORMATS = {
+  JSON: 'json',
+  YAML: 'yaml',
+  XML: 'xml'
+} as const;
+
+// 기본값들
+export const DEFAULTS = {
+  NODE_POSITION: { x: 400, y: 200 },
+  INPUT_NODE_POSITION: { x: 100, y: 200 },
+  OUTPUT_NODE_POSITION: { x: 700, y: 200 },
+  GRID_SPACING: { x: 200, y: 150 },
+  NODE_OFFSET: 60,
+  AUTO_SAVE_INTERVAL: 300000, // 5분
+  RECONNECT_TIMEOUT: 3000, // 3초
+  EXECUTION_TIMEOUT: 30000, // 30초
+  ANIMATION_DURATION: 300, // 300ms
+  COMPLETE_STATUS_DURATION: 3000, // 3초
+  ACTIVE_EDGE_DURATION: 1000, // 1초
+} as const;
+
+// 색상 테마
+export const COLORS = {
+  PRIMARY: '#3b82f6',
+  SUCCESS: '#10b981',
+  WARNING: '#f59e0b',
+  ERROR: '#ef4444',
+  GRAY: {
+    50: '#f9fafb',
+    100: '#f3f4f6',
+    200: '#e5e7eb',
+    300: '#d1d5db',
+    400: '#9ca3af',
+    500: '#6b7280',
+    600: '#4b5563',
+    700: '#374151',
+    800: '#1f2937',
+    900: '#111827',
+  }
+} as const;
+
+// 로그 타입
+export const LOG_TYPES = {
+  START: 'start',
+  PROCESSING: 'processing',
+  COMPLETE: 'complete',
+  ERROR: 'error',
+  FILE_CREATED: 'file_created',
+  INFO: 'info'
+} as const;
+
+// WebSocket 메시지 타입
+export const WS_MESSAGE_TYPES = {
+  PING: 'ping',
+  PONG: 'pong',
+  PROGRESS: 'progress',
+  NODE_OUTPUT_UPDATED: 'node_output_updated',
+  NODE_EXECUTION_START: 'node_execution_start',
+  NODE_EXECUTION_COMPLETE: 'node_execution_complete',
+  NODE_EXECUTION_ERROR: 'node_execution_error',
+  NODE_EXECUTION_STOPPED: 'node_execution_stopped',
+  FLOW_PROGRESS: 'flow_progress',
+} as const;

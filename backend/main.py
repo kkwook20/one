@@ -1,25 +1,21 @@
-# backend/main.py - 로그 간소화 버전
+# backend/main.py - 중복 제거 및 정리된 버전
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from typing import Dict, List, Optional, Any
+from typing import Dict, Optional
 import asyncio
 import json
 import os
-import sys
 import time
 import random
 from datetime import datetime
 import threading
-from functools import wraps
 
-# 경로 설정
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-
+# Local imports
 from models import Section, Node, ExecuteRequest, Position
-from storage import save_node_data, ensure_directories
+from storage import save_node_data, ensure_directories, sections_db
 from execution import execute_python_code, get_connected_outputs
+from constants import GROUPS
 
 app = FastAPI()
 
@@ -34,9 +30,6 @@ app.add_middleware(
 
 # 데이터 저장 파일 경로
 SECTIONS_DATA_FILE = "data/sections_data.json"
-
-# 메모리 DB
-sections_db: Dict[str, Section] = {}
 
 # WebSocket 연결 관리
 active_connections: Dict[str, WebSocket] = {}
@@ -79,14 +72,12 @@ def save_sections_to_file():
 
 def load_sections_from_file():
     """파일에서 섹션 데이터 로드"""
-    global sections_db
-    
     if os.path.exists(SECTIONS_DATA_FILE):
         try:
             with open(SECTIONS_DATA_FILE, 'r', encoding='utf-8') as f:
                 data = json.load(f)
             
-            sections_db = {}
+            sections_db.clear()
             for section_id, section_data in data.items():
                 # nodes를 처리하여 Position 객체로 변환
                 nodes = []
@@ -123,8 +114,6 @@ def load_sections_from_file():
 
 def create_default_sections():
     """기본 섹션 생성"""
-    from constants import GROUPS
-    
     for group, sections in GROUPS.items():
         for idx, section_name in enumerate(sections):
             section_id = f"{group}-{section_name.lower().replace(' ', '-')}"
@@ -151,27 +140,6 @@ def create_default_sections():
                         )
                     ]
                 )
-
-# 디바운스 데코레이터
-def debounce(wait):
-    def decorator(fn):
-        last_called = {}
-        
-        @wraps(fn)
-        def debounced(*args, **kwargs):
-            key = id(args[0]) if args else 0
-            current_time = time.time()
-            
-            if key in last_called:
-                elapsed = current_time - last_called[key]
-                if elapsed < wait:
-                    return
-            
-            last_called[key] = current_time
-            return fn(*args, **kwargs)
-        
-        return debounced
-    return decorator
 
 @app.on_event("startup")
 async def startup_event():
@@ -229,7 +197,7 @@ async def broadcast_message(message: dict):
 
 @app.get("/sections")
 async def get_sections():
-    # Pydantic 모델을 dict로 변환하여 반환
+    """모든 섹션 조회"""
     sections_list = []
     for section in sections_db.values():
         if hasattr(section, 'model_dump'):
@@ -251,6 +219,7 @@ async def get_sections():
 
 @app.get("/sections/{section_id}")
 async def get_section(section_id: str):
+    """특정 섹션 조회"""
     if section_id not in sections_db:
         raise HTTPException(status_code=404, detail="Section not found")
     
@@ -272,6 +241,7 @@ async def get_section(section_id: str):
 
 @app.put("/sections/{section_id}")
 async def update_section(section_id: str, section_data: dict):
+    """섹션 업데이트"""
     try:
         if section_id not in sections_db:
             raise HTTPException(status_code=404, detail=f"Section {section_id} not found")

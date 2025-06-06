@@ -1,4 +1,4 @@
-// frontend/src/components/modals/WorkerEditModal.tsx
+// frontend/src/components/modals/WorkerEditModal.tsx - 정리된 버전
 import React, { useState, useEffect } from 'react';
 import { Save, Play, Database, Clock, Award, Loader, X } from 'lucide-react';
 import { Node, Section, Version } from '../../types';
@@ -41,13 +41,16 @@ export const WorkerEditModal: React.FC<WorkerEditModalProps> = ({
   }, [selectedInput, node.connectedFrom, section]);
 
   useEffect(() => {
-    // Load version history
+    // Load version history (if API endpoint exists)
     apiClient.getVersions(node.id)
       .then(res => setVersions(res.data))
-      .catch(console.error);
+      .catch(() => {
+        // Silently fail if endpoint doesn't exist yet
+        setVersions([]);
+      });
   }, [node.id]);
 
-  const handleSave = async () => {
+  const handleSave = () => {
     onSave(editedNode);
     onClose();
   };
@@ -76,8 +79,6 @@ export const WorkerEditModal: React.FC<WorkerEditModalProps> = ({
       );
       
       if (response.data.status === 'started') {
-        // 실행이 시작되었으므로 결과를 기다림
-        // WebSocket을 통해 결과가 올 것이므로 일단 성공 메시지만 표시
         setTimeout(() => {
           setIsExecuting(false);
           setExecutionResult({
@@ -103,15 +104,36 @@ export const WorkerEditModal: React.FC<WorkerEditModalProps> = ({
       onClose();
     } catch (error) {
       console.error('Failed to restore version:', error);
+      alert('Failed to restore version');
     }
+  };
+
+  const getDefaultCode = () => {
+    return `# ${node.label} Implementation
+# Access input data via 'inputs' variable or get_connected_outputs()
+# Set results in 'output' variable
+
+import json
+
+# Get connected outputs
+data = get_connected_outputs()
+
+# Your processing logic here
+output = {
+    "result": "processed data",
+    "status": "success"
+}`;
   };
 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
       <div className="bg-white rounded-lg w-full max-w-7xl h-5/6 flex flex-col">
         <div className="p-4 border-b flex justify-between items-center">
-          <h2 className="text-xl font-bold">Edit {node.label}</h2>
-          <button onClick={onClose} className="text-2xl">&times;</button>
+          <h2 className="text-xl font-bold">
+            <span className="text-2xl mr-2">👷</span>
+            Edit {node.label}
+          </h2>
+          <button onClick={onClose} className="text-2xl hover:text-gray-600">&times;</button>
         </div>
 
         <div className="flex flex-1 overflow-hidden">
@@ -124,7 +146,6 @@ export const WorkerEditModal: React.FC<WorkerEditModalProps> = ({
               className="w-full border rounded p-2 mb-4"
             >
               <option value="">No input</option>
-              {/* Only show nodes that are connected to this node */}
               {node.connectedFrom?.map(connNodeId => {
                 const connNode = section.nodes.find(n => n.id === connNodeId);
                 if (!connNode) return null;
@@ -166,21 +187,7 @@ export const WorkerEditModal: React.FC<WorkerEditModalProps> = ({
             <div className="flex-1 overflow-hidden">
               {activeTab === 'code' ? (
                 <CodeEditor
-                  value={editedNode.code || `# ${node.label} Implementation
-# Access input data via 'inputs' variable or get_connected_outputs()
-# Set results in 'output' variable
-
-import json
-
-# Get connected outputs
-data = get_connected_outputs()
-
-# Your processing logic here
-output = {
-    "result": "processed data",
-    "status": "success"
-}
-`}
+                  value={editedNode.code || getDefaultCode()}
                   onChange={(code) => setEditedNode({ ...editedNode, code })}
                 />
               ) : (
@@ -213,7 +220,7 @@ output = {
               )}
             </div>
             
-            {/* Bottom Panel - Execution Result (if any) */}
+            {/* Execution Result */}
             {executionResult && (
               <div className={`p-3 border-t ${executionResult.success ? 'bg-green-50' : 'bg-red-50'}`}>
                 <div className="flex items-start gap-2">
@@ -238,6 +245,7 @@ output = {
               </div>
             )}
             
+            {/* Action Buttons */}
             <div className="p-4 border-t flex gap-2">
               <button
                 onClick={handleSave}
@@ -307,26 +315,31 @@ output = {
               )}
             </div>
             
+            {/* Version History */}
             <div className="border-t p-4">
               <h3 className="font-semibold mb-2 flex items-center gap-2">
                 <Clock className="w-4 h-4" />
                 Version History
               </h3>
               <div className="space-y-2 max-h-48 overflow-y-auto">
-                {versions.map(v => (
-                  <div key={v.id} className="border rounded p-2 text-sm">
-                    <div className="text-gray-600">{new Date(v.timestamp).toLocaleString()}</div>
-                    <div className="flex justify-between items-center">
-                      <span>Model: {v.metadata.modelVersion}</span>
-                      <button 
-                        onClick={() => restoreVersion(v.id)}
-                        className="text-blue-500 hover:underline"
-                      >
-                        Restore
-                      </button>
+                {versions.length > 0 ? (
+                  versions.map(v => (
+                    <div key={v.id} className="border rounded p-2 text-sm">
+                      <div className="text-gray-600">{new Date(v.timestamp).toLocaleString()}</div>
+                      <div className="flex justify-between items-center">
+                        <span>Model: {v.metadata.modelVersion}</span>
+                        <button 
+                          onClick={() => restoreVersion(v.id)}
+                          className="text-blue-500 hover:underline"
+                        >
+                          Restore
+                        </button>
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  ))
+                ) : (
+                  <div className="text-gray-500 text-sm">No version history available</div>
+                )}
               </div>
             </div>
           </div>

@@ -1,63 +1,113 @@
-// frontend/src/api/client.ts
+// frontend/src/api/client.ts - 정리된 버전
 import axios from 'axios';
 import { API_URL } from '../constants';
 import { Section, Node } from '../types';
 
+// Axios 인스턴스 생성
+const axiosInstance = axios.create({
+  baseURL: API_URL,
+  headers: {
+    'Content-Type': 'application/json',
+  },
+});
+
+// Response interceptor for error handling
+axiosInstance.interceptors.response.use(
+  response => response,
+  error => {
+    console.error('API Error:', error.response?.data || error.message);
+    return Promise.reject(error);
+  }
+);
+
 export const apiClient = {
   // Models
-  getModels: () => axios.get(`${API_URL}/models`),
+  getModels: () => 
+    axiosInstance.get('/models'),
 
   // Sections
-  getSections: () => axios.get(`${API_URL}/sections`),
+  getSections: () => 
+    axiosInstance.get<Section[]>('/sections'),
+  
+  getSection: (sectionId: string) =>
+    axiosInstance.get<Section>(`/sections/${sectionId}`),
   
   updateSection: (sectionId: string, data: Section) => 
-    axios.put(`${API_URL}/sections/${sectionId}`, data),
+    axiosInstance.put(`/sections/${sectionId}`, data),
 
   // Nodes
-  executeNode: (nodeId: string, sectionId: string, code: string, inputs: any) =>
-    axios.post(`${API_URL}/execute`, { nodeId, sectionId, code, inputs }),
+  executeNode: (nodeId: string, sectionId: string, code: string, inputs: any = {}) =>
+    axiosInstance.post('/execute', { 
+      nodeId, 
+      sectionId, 
+      code, 
+      inputs 
+    }),
   
   stopNode: (nodeId: string) =>
-    axios.post(`${API_URL}/stop/${nodeId}`),
+    axiosInstance.post(`/stop/${nodeId}`),
   
   deactivateNode: (nodeId: string, sectionId: string) =>
-    axios.post(`${API_URL}/node/${nodeId}/deactivate`, { sectionId }),
-
-  // Supervisor
-  executeSupervisor: (sectionId: string, supervisorId: string, targetNodeId: string) =>
-    axios.post(`${API_URL}/supervisor/execute`, { sectionId, supervisorId, targetNodeId }),
-  
-  acceptModification: (supervisorId: string, modificationId: string) =>
-    axios.post(`${API_URL}/supervisor/accept-modification`, { supervisorId, modificationId }),
-  
-  rejectModification: (supervisorId: string, modificationId: string, targetNodeId: string) =>
-    axios.post(`${API_URL}/supervisor/reject-modification`, { supervisorId, modificationId, targetNodeId }),
-
-  // Planner
-  evaluateSection: (sectionId: string, plannerId: string) =>
-    axios.post(`${API_URL}/planner/evaluate-section`, { sectionId, plannerId }),
-  
-  acceptEvaluation: (plannerId: string, evaluationId: string) =>
-    axios.post(`${API_URL}/planner/accept-evaluation`, { plannerId, evaluationId }),
-  
-  rejectEvaluation: (plannerId: string, evaluationId: string) =>
-    axios.post(`${API_URL}/planner/reject-evaluation`, { plannerId, evaluationId }),
-
-  // Version
-  getVersions: (nodeId: string) =>
-    axios.get(`${API_URL}/versions/${nodeId}`),
-  
-  restoreVersion: (nodeId: string, versionId: string) =>
-    axios.post(`${API_URL}/restore-version`, { nodeId, versionId }),
+    axiosInstance.post(`/node/${nodeId}/deactivate`, { sectionId }),
 
   // Flow
   executeFlow: (sectionId: string) =>
-    axios.post(`${API_URL}/execute-flow/${sectionId}`),
+    axiosInstance.post('/execute-flow', {
+      sectionId,
+      startNodeId: null // Will be determined by backend
+    }),
 
-  updateOutputNode: (sectionId: string) =>
-    axios.post(`${API_URL}/sections/update-output-node/${sectionId}`),
+  // Supervisor (Future implementation)
+  executeSupervisor: (sectionId: string, supervisorId: string, targetNodeId: string) =>
+    axiosInstance.post('/supervisor/execute', { 
+      sectionId, 
+      supervisorId, 
+      targetNodeId 
+    }),
+  
+  acceptModification: (supervisorId: string, modificationId: string) =>
+    axiosInstance.post('/supervisor/accept-modification', { 
+      supervisorId, 
+      modificationId 
+    }),
+  
+  rejectModification: (supervisorId: string, modificationId: string, targetNodeId: string) =>
+    axiosInstance.post('/supervisor/reject-modification', { 
+      supervisorId, 
+      modificationId, 
+      targetNodeId 
+    }),
 
-  // Export
+  // Planner (Future implementation)
+  evaluateSection: (sectionId: string, plannerId: string) =>
+    axiosInstance.post('/planner/evaluate-section', { 
+      sectionId, 
+      plannerId 
+    }),
+  
+  acceptEvaluation: (plannerId: string, evaluationId: string) =>
+    axiosInstance.post('/planner/accept-evaluation', { 
+      plannerId, 
+      evaluationId 
+    }),
+  
+  rejectEvaluation: (plannerId: string, evaluationId: string) =>
+    axiosInstance.post('/planner/reject-evaluation', { 
+      plannerId, 
+      evaluationId 
+    }),
+
+  // Version (Future implementation)
+  getVersions: (nodeId: string) =>
+    axiosInstance.get(`/versions/${nodeId}`),
+  
+  restoreVersion: (nodeId: string, versionId: string) =>
+    axiosInstance.post('/restore-version', { 
+      nodeId, 
+      versionId 
+    }),
+
+  // Export (Future implementation)
   exportOutput: (sectionId: string) =>
-    axios.post(`${API_URL}/sections/export-output/${sectionId}`)
+    axiosInstance.post(`/sections/export-output/${sectionId}`)
 };

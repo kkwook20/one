@@ -16,7 +16,6 @@
         "isDeactivated": false,
         "tasks": null,
         "connectedTo": [
-          "supervisor-1749213323493",
           "supervisor-1749213369469"
         ],
         "connectedFrom": null,
@@ -45,7 +44,6 @@
         "tasks": null,
         "connectedTo": null,
         "connectedFrom": [
-          "supervisor-1749213323493",
           "supervisor-1749213389309"
         ],
         "code": null,
@@ -65,18 +63,14 @@
         "type": "supervisor",
         "label": "Supervisor",
         "position": {
-          "x": 505.0,
-          "y": 642.0
+          "x": 566.0,
+          "y": 589.0
         },
         "isRunning": false,
         "isDeactivated": false,
         "tasks": null,
-        "connectedTo": [
-          "output-preproduction-script"
-        ],
-        "connectedFrom": [
-          "input-preproduction-script"
-        ],
+        "connectedTo": [],
+        "connectedFrom": [],
         "code": null,
         "output": null,
         "error": null,
@@ -94,8 +88,8 @@
         "type": "worker",
         "label": "Worker",
         "position": {
-          "x": 655.0,
-          "y": 318.0
+          "x": 553.0,
+          "y": 225.0
         },
         "isRunning": false,
         "isDeactivated": false,
@@ -166,6 +160,93 @@
         "connectedFrom": [
           "supervisor-1749213369469"
         ],
+        "code": null,
+        "output": null,
+        "error": null,
+        "model": null,
+        "vectorDB": null,
+        "supervisedNodes": null,
+        "updateHistory": null,
+        "aiScore": null,
+        "modificationHistory": null,
+        "evaluationHistory": null,
+        "plannerRecommendations": null
+      },
+      {
+        "id": "worker-1749218763898",
+        "type": "worker",
+        "label": "Worker",
+        "position": {
+          "x": 1265.0,
+          "y": 909.0
+        },
+        "isRunning": false,
+        "isDeactivated": false,
+        "tasks": [
+          {
+            "id": "task-1749218763898",
+            "text": "",
+            "status": "pending"
+          }
+        ],
+        "connectedTo": null,
+        "connectedFrom": null,
+        "code": null,
+        "output": null,
+        "error": null,
+        "model": null,
+        "vectorDB": null,
+        "supervisedNodes": null,
+        "updateHistory": null,
+        "aiScore": null,
+        "modificationHistory": null,
+        "evaluationHistory": null,
+        "plannerRecommendations": null
+      },
+      {
+        "id": "worker-1749218778694",
+        "type": "worker",
+        "label": "Worker",
+        "position": {
+          "x": 569.0,
+          "y": 666.0
+        },
+        "isRunning": false,
+        "isDeactivated": false,
+        "tasks": [
+          {
+            "id": "task-1749218778695",
+            "text": "",
+            "status": "pending"
+          }
+        ],
+        "connectedTo": null,
+        "connectedFrom": null,
+        "code": null,
+        "output": null,
+        "error": null,
+        "model": null,
+        "vectorDB": null,
+        "supervisedNodes": null,
+        "updateHistory": null,
+        "aiScore": null,
+        "modificationHistory": null,
+        "evaluationHistory": null,
+        "plannerRecommendations": null
+      },
+      {
+        "id": "supervisor-1749218779019",
+        "type": "supervisor",
+        "label": "Supervisor",
+        "position": {
+          "x": 629.0,
+          "y": 726.0
+        },
+        "isRunning": false,
+        "isDeactivated": false,
+        "tasks": null,
+        "connectedTo": null,
+        "connectedFrom": null,
         "code": null,
         "output": null,
         "error": null,

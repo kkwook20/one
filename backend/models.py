@@ -1,49 +1,56 @@
-# ==============================================================================
-# File: backend/models.py
-# Related files: backend/main.py
-# Location: backend/models.py
-# Last Modified: 2025-06-04
-# Description: Pydantic V2 호환성 수정 + error 필드 추가
-# ==============================================================================
-
+# backend/models.py - 정리된 버전
 from pydantic import BaseModel, Field, ConfigDict
 from typing import Dict, List, Optional, Any
 from datetime import datetime
 
 class Position(BaseModel):
+    """노드 위치"""
     x: float
     y: float
 
 class TaskItem(BaseModel):
+    """작업 항목"""
     id: str
     text: str
     status: str  # 'pending' | 'none' | 'partial'
 
+class UpdateHistory(BaseModel):
+    """업데이트 기록"""
+    timestamp: str
+    type: str  # 'execution' | 'supervised'
+    by: Optional[str] = None
+    score: Optional[float] = None
+    output: Optional[Any] = None
+
 class Node(BaseModel):
+    """노드 모델"""
     id: str
     type: str  # 'worker' | 'supervisor' | 'planner' | 'input' | 'output'
     label: str
     position: Position
     isRunning: bool = False
     isDeactivated: bool = False
+    
+    # 노드별 데이터
     tasks: Optional[List[TaskItem]] = None
     connectedTo: Optional[List[str]] = None
     connectedFrom: Optional[List[str]] = None
     code: Optional[str] = None
     output: Optional[Any] = None
-    error: Optional[str] = None  # ← 이 필드가 추가되어야 함!
+    error: Optional[str] = None
     model: Optional[str] = None
     vectorDB: Optional[Dict[str, str]] = None
-    supervisedNodes: Optional[List[str]] = None
-    updateHistory: Optional[List[Dict[str, Any]]] = None
-    aiScore: Optional[float] = None
     
-    # Supervisor/Planner 전용 필드
-    modificationHistory: Optional[List[Dict[str, Any]]] = None  # Supervisor용
-    evaluationHistory: Optional[List[Dict[str, Any]]] = None   # Planner용
-    plannerRecommendations: Optional[List[str]] = None         # Planner 추천사항
+    # Supervisor/Planner 전용
+    supervisedNodes: Optional[List[str]] = None
+    updateHistory: Optional[List[UpdateHistory]] = None
+    aiScore: Optional[float] = None
+    modificationHistory: Optional[List[Dict[str, Any]]] = None
+    evaluationHistory: Optional[List[Dict[str, Any]]] = None
+    plannerRecommendations: Optional[List[str]] = None
 
 class Connection(BaseModel):
+    """연결 정보"""
     from_node: str = Field(default=None, alias='from')
     to: str
 
@@ -52,14 +59,17 @@ class Connection(BaseModel):
     )
 
 class SectionConfig(BaseModel):
+    """섹션 입력 설정"""
     sources: List[str] = []
     selectedItems: List[str] = []
 
 class OutputConfig(BaseModel):
+    """섹션 출력 설정"""
     format: str = "json"
     autoSave: bool = True
 
 class Section(BaseModel):
+    """섹션 모델"""
     id: str
     name: str
     group: str  # 'preproduction' | 'postproduction' | 'director'
@@ -68,17 +78,42 @@ class Section(BaseModel):
     outputConfig: Optional[OutputConfig] = None
 
 class Version(BaseModel):
+    """버전 정보"""
     id: str
     timestamp: str
-    data: Dict[str, Any]  # node 대신 data로 변경 (실제 저장 구조와 일치)
+    data: Dict[str, Any]
     metadata: Dict[str, Any]
 
 class ExecuteRequest(BaseModel):
+    """노드 실행 요청"""
     nodeId: str
     sectionId: str
     code: str
     inputs: Optional[Dict[str, Any]] = None
 
 class RestoreVersionRequest(BaseModel):
+    """버전 복원 요청"""
     nodeId: str
     versionId: str
+
+# API Response Models
+class BaseResponse(BaseModel):
+    """기본 응답"""
+    status: str
+    message: Optional[str] = None
+
+class ExecuteResponse(BaseResponse):
+    """실행 응답"""
+    nodeId: str
+    output: Optional[Any] = None
+    error: Optional[str] = None
+
+class ModelInfo(BaseModel):
+    """AI 모델 정보"""
+    id: str
+    name: Optional[str] = None
+    type: Optional[str] = None
+
+class ModelsResponse(BaseModel):
+    """모델 목록 응답"""
+    data: List[ModelInfo]

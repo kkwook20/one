@@ -30,21 +30,23 @@ export interface Node {
   connectedFrom?: string[];
   code?: string;
   output?: any;
-  error?: string; // 추가
+  error?: string;
   model?: string;
   vectorDB?: { name: string; table: string };
   supervisedNodes?: string[];
   updateHistory?: UpdateHistory[];
   aiScore?: number;
   
-  // React Flow callbacks
-  onEdit?: (node: Node) => void;
-  onUpdate?: (node: Node) => void;
-  onDelete?: (nodeId: string) => void;
-  onDeactivate?: (nodeId: string) => void;
-  onToggleRun?: () => void;
-  progress?: number;
-  isExecuting?: boolean;
+  // Additional fields for modals
+  lmStudioUrl?: string;
+  availableModels?: any[];
+  inputConfig?: any;
+  outputConfig?: any;
+  
+  // Supervisor/Planner specific
+  modificationHistory?: any[];
+  evaluationHistory?: any[];
+  plannerRecommendations?: string[];
 }
 
 export interface Connection {
@@ -72,4 +74,14 @@ export interface Version {
     modelVersion: string;
     modifiedBy: string;
   };
+}
+
+// Execution Log Type
+export interface ExecutionLog {
+  id: string;
+  timestamp: string;
+  nodeId: string;
+  nodeLabel: string;
+  type: 'start' | 'processing' | 'complete' | 'error' | 'file_created' | 'info';
+  message: string;
 }

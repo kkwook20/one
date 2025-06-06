@@ -1,19 +1,32 @@
-// frontend/src/hooks/useWebSocket.ts
-
+// frontend/src/hooks/useWebSocket.ts - 정리된 버전
 import { useEffect, useRef } from 'react';
+import { WS_URL } from '../constants';
+
+// WebSocket 메시지 타입
+interface WebSocketMessage {
+  type: string;
+  nodeId?: string;
+  progress?: number;
+  output?: any;
+  error?: string;
+  sourceId?: string;
+  targetId?: string;
+}
 
 // WebSocket 핸들러 타입 정의
 export interface WebSocketHandlers {
   onProgress?: (nodeId: string, progress: number) => void;
-  onNodeOutputUpdated?: (nodeId: string, output: string) => void;
+  onNodeOutputUpdated?: (nodeId: string, output: any) => void;
   onNodeExecutionStart?: (nodeId: string) => void;
   onNodeExecutionComplete?: (nodeId: string) => void;
   onNodeExecutionError?: (nodeId: string, error: string) => void;
+  onFlowProgress?: (sourceId: string, targetId: string) => void;
 }
 
 // 전역 WebSocket 인스턴스 (싱글톤)
 let globalWs: WebSocket | null = null;
 let connectionCount = 0;
+let reconnectTimeout: NodeJS.Timeout | null = null;
 
 export const useWebSocket = (handlers: WebSocketHandlers) => {
   const handlersRef = useRef(handlers);
@@ -25,40 +38,43 @@ export const useWebSocket = (handlers: WebSocketHandlers) => {
   }, [handlers]);
 
   useEffect(() => {
-    // 이미 연결되어 있으면 스킵
+    // 이미 연결되어 있으면 재사용
     if (globalWs && globalWs.readyState === WebSocket.OPEN) {
-      console.log('WebSocket already connected, reusing existing connection');
       isConnectedRef.current = true;
       return;
     }
 
     // 연결 카운트 증가
     connectionCount++;
-    console.log(`WebSocket connection attempt ${connectionCount}`);
 
-    // 클라이언트 ID 생성 (한 번만)
+    // 클라이언트 ID 생성
     const clientId = `client-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
 
     const connect = () => {
       try {
-        // 기존 연결이 있다면 닫기
+        // 기존 연결이 있다면 정리
         if (globalWs) {
           globalWs.close();
           globalWs = null;
         }
 
-        console.log('Creating new WebSocket connection...');
-        const ws = new WebSocket(`ws://localhost:8000/ws/${clientId}`);
+        // 재연결 타임아웃 정리
+        if (reconnectTimeout) {
+          clearTimeout(reconnectTimeout);
+          reconnectTimeout = null;
+        }
+
+        const ws = new WebSocket(`${WS_URL}/${clientId}`);
         
         ws.onopen = () => {
-          console.log('WebSocket connected successfully');
+          console.log('WebSocket connected');
           isConnectedRef.current = true;
           globalWs = ws;
         };
 
         ws.onmessage = (event) => {
           try {
-            const data = JSON.parse(event.data);
+            const data: WebSocketMessage = JSON.parse(event.data);
             
             // ping 메시지는 무시
             if (data.type === 'ping') {
@@ -76,7 +92,7 @@ export const useWebSocket = (handlers: WebSocketHandlers) => {
                 break;
                 
               case 'node_output_updated':
-                if (currentHandlers.onNodeOutputUpdated && data.nodeId && data.output) {
+                if (currentHandlers.onNodeOutputUpdated && data.nodeId && data.output !== undefined) {
                   currentHandlers.onNodeOutputUpdated(data.nodeId, data.output);
                 }
                 break;
@@ -96,6 +112,12 @@ export const useWebSocket = (handlers: WebSocketHandlers) => {
               case 'node_execution_error':
                 if (currentHandlers.onNodeExecutionError && data.nodeId) {
                   currentHandlers.onNodeExecutionError(data.nodeId, data.error || 'Unknown error');
+                }
+                break;
+                
+              case 'flow_progress':
+                if (currentHandlers.onFlowProgress && data.sourceId && data.targetId) {
+                  currentHandlers.onFlowProgress(data.sourceId, data.targetId);
                 }
                 break;
                 
@@ -120,34 +142,46 @@ export const useWebSocket = (handlers: WebSocketHandlers) => {
           // 비정상 종료 시 재연결
           if (event.code !== 1000 && event.code !== 1001) {
             console.log('Attempting to reconnect in 3 seconds...');
-            setTimeout(connect, 3000);
+            reconnectTimeout = setTimeout(connect, 3000);
           }
         };
         
       } catch (error) {
         console.error('Failed to create WebSocket connection:', error);
-        setTimeout(connect, 3000);
+        reconnectTimeout = setTimeout(connect, 3000);
       }
     };
 
     // 연결 시작
     connect();
 
-    // Cleanup 함수 - 컴포넌트 언마운트 시에만 실행
+    // Cleanup 함수
     return () => {
       connectionCount--;
-      console.log(`Component unmounting, remaining connections: ${connectionCount}`);
       
       // 마지막 컴포넌트가 언마운트될 때만 연결 종료
-      if (connectionCount === 0 && globalWs) {
-        console.log('Closing WebSocket connection...');
-        globalWs.close(1000, 'All components unmounted');
-        globalWs = null;
+      if (connectionCount === 0) {
+        if (reconnectTimeout) {
+          clearTimeout(reconnectTimeout);
+          reconnectTimeout = null;
+        }
+        
+        if (globalWs) {
+          console.log('Closing WebSocket connection...');
+          globalWs.close(1000, 'All components unmounted');
+          globalWs = null;
+        }
       }
     };
   }, []); // 빈 의존성 배열 - 한 번만 실행
 
   return {
-    isConnected: isConnectedRef.current && globalWs?.readyState === WebSocket.OPEN
+    isConnected: isConnectedRef.current && globalWs?.readyState === WebSocket.OPEN,
+    // 수동으로 메시지 전송이 필요한 경우를 위해
+    sendMessage: (message: any) => {
+      if (globalWs && globalWs.readyState === WebSocket.OPEN) {
+        globalWs.send(JSON.stringify(message));
+      }
+    }
   };
 };

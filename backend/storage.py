@@ -1,5 +1,4 @@
-# Related files: backend/main.py, backend/models.py
-# Location: backend/storage.py
+# backend/storage.py - 중복 제거 및 정리된 버전
 
 import os
 import json
@@ -8,7 +7,7 @@ from datetime import datetime
 from typing import Dict, Any, Optional, List
 from models import Section
 
-# Global state storage
+# Global state storage - main.py와 공유
 sections_db: Dict[str, Section] = {}
 
 def ensure_directories():
@@ -16,6 +15,7 @@ def ensure_directories():
     os.makedirs("node-storage", exist_ok=True)
     os.makedirs("versions", exist_ok=True)
     os.makedirs("global-vars", exist_ok=True)
+    os.makedirs("data", exist_ok=True)
 
 def save_node_data(node_id: str, data: Dict[str, Any]):
     """Save node data to file system"""
@@ -89,7 +89,8 @@ def get_global_var(var_path: str) -> Any:
                     elif data_type == "tasks":
                         return [t.dict() for t in node.tasks] if node.tasks else []
                     elif data_type == "files":
-                        return os.listdir(f"node-storage/{node_id}")
+                        node_dir = f"node-storage/{node_id}"
+                        return os.listdir(node_dir) if os.path.exists(node_dir) else []
                     elif data_type == "history":
                         return get_node_versions(node_id, limit=5)
                     elif data_type == "metadata":
@@ -97,50 +98,13 @@ def get_global_var(var_path: str) -> Any:
                         return data.get("metadata", {}) if data else {}
     return None
 
-def create_global_vars_documentation():
-    """Create documentation for global variables system"""
-    doc_content = """# Global Variables System Documentation
-
-## Variable Naming Convention
-Format: {section}.{nodeType}.{nodeId}.{dataType}.{detail}
-
-## Available Data Types:
-- output: Node execution result JSON
-- files: Generated file paths
-- code: Current Python source
-- status: Execution status, progress
-- config: Node configuration values
-- tasks: Task item list (with status)
-- history: Version history (max 5)
-- metadata: Execution time, model used, token usage
-
-## Usage Examples:
-
-### In Python Code:
-```python
-# Get character settings from another section
-character_data = get_global_var("preproduction.planning.node003.output.character_settings")
-
-# Check task status of another node
-task_status = get_global_var("section2.worker.node005.tasks.status_list")
-
-# Access historical version
-old_code = get_global_var("section1.supervisor.node001.history.version_3")
-
-# Get connected node outputs
-connected_outputs = get_connected_outputs()
-```
-
-### Special Functions:
-- get_connected_outputs(): Get all connected node outputs
-- get_section_outputs(section_name): Get all outputs from a section
-- get_supervised_nodes(): For supervisor nodes, get supervised node list
-
-## File Structure:
-- node-storage/{nodeId}/data.json - Current node data
-- node-storage/{nodeId}/version_*.json - Version history
-- global-vars/index.json - Global variable index
-"""
-    
-    with open("global-vars-documentation.txt", "w", encoding="utf-8") as f:
-        f.write(doc_content)
+def get_section_outputs(section_name: str) -> Dict[str, Any]:
+    """Get all outputs from a section"""
+    outputs = {}
+    for section in sections_db.values():
+        if section.name.lower() == section_name.lower():
+            for node in section.nodes:
+                if node.output:
+                    outputs[node.label] = node.output
+            break
+    return outputs

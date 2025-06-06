@@ -1,11 +1,4 @@
-// Related files:
-// - frontend/src/App.tsx
-// - frontend/src/types/index.ts
-// - frontend/src/api/client.ts
-// - frontend/src/components/CodeEditor.tsx
-// - frontend/src/components/modals/index.ts
-// Location: frontend/src/components/modals/SupervisorEditModal.tsx
-
+// frontend/src/components/modals/SupervisorEditModal.tsx - 정리된 버전
 import React, { useState, useEffect } from 'react';
 import { X, Award } from 'lucide-react';
 import { Node, Section, Version } from '../../types';
@@ -30,37 +23,41 @@ export const SupervisorEditModal: React.FC<SupervisorEditModalProps> = ({
   const [editedNode, setEditedNode] = useState(node);
   const [selectedTarget, setSelectedTarget] = useState<string>('');
   const [models, setModels] = useState<string[]>(['none']);
-  const [versions, setVersions] = useState<Version[]>([]);
   const [supervisedNodesList, setSupervisedNodesList] = useState<string[]>(node.supervisedNodes || []);
-  const [modificationHistory, setModificationHistory] = useState<any[]>([]);
-  const [evaluationHistory, setEvaluationHistory] = useState<any[]>([]);
+  const [modificationHistory, setModificationHistory] = useState<any[]>(node.modificationHistory || []);
+  const [evaluationHistory, setEvaluationHistory] = useState<any[]>(node.evaluationHistory || []);
   const [selectedModification, setSelectedModification] = useState<any>(null);
   const [selectedEvaluation, setSelectedEvaluation] = useState<any>(null);
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
 
   useEffect(() => {
     // Load available models
-    apiClient.getModels().then(res => {
-      const modelList = res.data.data.map((m: any) => m.id);
-      setModels(['none', ...modelList]);
-    });
-    
-    // Load modification/evaluation history
-    if (node.type === 'supervisor' && (node as any).modificationHistory) {
-      setModificationHistory((node as any).modificationHistory || []);
-    }
-    if (node.type === 'planner' && (node as any).evaluationHistory) {
-      setEvaluationHistory((node as any).evaluationHistory || []);
-    }
-  }, [node]);
+    apiClient.getModels()
+      .then(res => {
+        const modelList = res.data.data.map((m: any) => m.id);
+        setModels(['none', ...modelList]);
+      })
+      .catch(() => {
+        // Silently fail if API is not available
+        setModels(['none']);
+      });
+  }, []);
 
   const handleSave = () => {
-    onSave({ ...editedNode, supervisedNodes: supervisedNodesList });
+    onSave({ 
+      ...editedNode, 
+      supervisedNodes: supervisedNodesList,
+      modificationHistory,
+      evaluationHistory
+    });
     onClose();
   };
 
   const executeSupervision = async () => {
-    if (!selectedTarget) return;
+    if (!selectedTarget) {
+      alert('Please select a node to supervise');
+      return;
+    }
     
     try {
       const response = await apiClient.executeSupervisor(
@@ -71,7 +68,8 @@ export const SupervisorEditModal: React.FC<SupervisorEditModalProps> = ({
       
       if (response.data.success) {
         alert(`Code modification completed! AI Score: ${response.data.score}/100`);
-        // Reload modification history
+        
+        // Add to modification history
         if (response.data.modificationId) {
           const newMod = {
             id: response.data.modificationId,
@@ -82,6 +80,7 @@ export const SupervisorEditModal: React.FC<SupervisorEditModalProps> = ({
           };
           setModificationHistory([...modificationHistory, newMod]);
         }
+        
         // Add to supervised nodes list
         if (!supervisedNodesList.includes(selectedTarget)) {
           setSupervisedNodesList([...supervisedNodesList, selectedTarget]);
@@ -89,6 +88,7 @@ export const SupervisorEditModal: React.FC<SupervisorEditModalProps> = ({
       }
     } catch (error) {
       console.error('Supervision failed:', error);
+      alert('Supervision is not yet implemented in the backend');
     }
   };
 
@@ -103,50 +103,7 @@ export const SupervisorEditModal: React.FC<SupervisorEditModalProps> = ({
       }
     } catch (error) {
       console.error('Planning failed:', error);
-    }
-  };
-
-  const acceptModification = async (modId: string) => {
-    try {
-      await apiClient.acceptModification(node.id, modId);
-      setModificationHistory(modificationHistory.map(m => 
-        m.id === modId ? { ...m, status: 'accepted' } : m
-      ));
-    } catch (error) {
-      console.error('Failed to accept modification:', error);
-    }
-  };
-
-  const rejectModification = async (mod: any) => {
-    try {
-      await apiClient.rejectModification(node.id, mod.id, mod.targetNodeId);
-      setModificationHistory(modificationHistory.map(m => 
-        m.id === mod.id ? { ...m, status: 'rejected' } : m
-      ));
-    } catch (error) {
-      console.error('Failed to reject modification:', error);
-    }
-  };
-
-  const acceptEvaluation = async (evalId: string) => {
-    try {
-      await apiClient.acceptEvaluation(node.id, evalId);
-      setEvaluationHistory(evaluationHistory.map(e => 
-        e.id === evalId ? { ...e, status: 'accepted' } : e
-      ));
-    } catch (error) {
-      console.error('Failed to accept evaluation:', error);
-    }
-  };
-
-  const rejectEvaluation = async (evalId: string) => {
-    try {
-      await apiClient.rejectEvaluation(node.id, evalId);
-      setEvaluationHistory(evaluationHistory.map(e => 
-        e.id === evalId ? { ...e, status: 'rejected' } : e
-      ));
-    } catch (error) {
-      console.error('Failed to reject evaluation:', error);
+      alert('Planning is not yet implemented in the backend');
     }
   };
 
@@ -177,14 +134,28 @@ export const SupervisorEditModal: React.FC<SupervisorEditModalProps> = ({
       return sortOrder === 'desc' ? dateB - dateA : dateA - dateB;
     });
 
+  const getDefaultCode = () => {
+    return `# ${node.type} logic
+# This code manages other nodes
+# Access planning data via get_global_var()
+
+def ${node.type === 'supervisor' ? 'supervise' : 'plan'}_nodes():
+    # Get planner's guidance
+    plan = get_global_var("${section.name.toLowerCase()}.planner.${node.id}.output")
+    
+    # Implement ${node.type} logic
+    pass`;
+  };
+
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
       <div className="bg-white rounded-lg w-full max-w-7xl h-5/6 flex flex-col">
         <div className="p-4 border-b flex justify-between items-center">
           <h2 className="text-xl font-bold">
+            <span className="text-2xl mr-2">{node.type === 'supervisor' ? '👔' : '📋'}</span>
             {node.type === 'supervisor' ? 'Supervisor' : 'Planner'} - {node.label}
           </h2>
-          <button onClick={onClose} className="text-2xl">&times;</button>
+          <button onClick={onClose} className="text-2xl hover:text-gray-600">&times;</button>
         </div>
 
         <div className="flex flex-1 overflow-hidden">
@@ -197,17 +168,7 @@ export const SupervisorEditModal: React.FC<SupervisorEditModalProps> = ({
             </div>
             <div className="flex-1">
               <CodeEditor
-                value={editedNode.code || `# ${node.type} logic
-# This code manages other nodes
-# Access planning data via get_global_var()
-
-def ${node.type === 'supervisor' ? 'supervise' : 'plan'}_nodes():
-    # Get planner's guidance
-    plan = get_global_var("${section.name.toLowerCase()}.planner.${node.id}.output")
-    
-    # Implement ${node.type} logic
-    pass
-`}
+                value={editedNode.code || getDefaultCode()}
                 onChange={(code) => setEditedNode({ ...editedNode, code })}
               />
             </div>
@@ -340,202 +301,68 @@ def ${node.type === 'supervisor' ? 'supervise' : 'plan'}_nodes():
             </div>
             
             <div className="flex-1 p-4 overflow-y-auto">
-              {node.type === 'supervisor' ? (
+              {sortedHistory.length > 0 ? (
                 <div className="space-y-3">
-                  {sortedHistory.map((mod: any) => (
+                  {sortedHistory.map((item: any) => (
                     <div 
-                      key={mod.id} 
+                      key={item.id} 
                       className={`border rounded p-3 cursor-pointer hover:bg-gray-50 ${
-                        selectedModification?.id === mod.id ? 'border-blue-500' : ''
+                        (node.type === 'supervisor' ? selectedModification?.id : selectedEvaluation?.id) === item.id 
+                          ? 'border-blue-500' 
+                          : ''
                       }`}
-                      onClick={() => setSelectedModification(mod)}
+                      onClick={() => {
+                        if (node.type === 'supervisor') {
+                          setSelectedModification(item);
+                        } else {
+                          setSelectedEvaluation(item);
+                        }
+                      }}
                     >
                       <div className="flex justify-between items-start">
                         <div>
                           <div className="text-sm text-gray-600">
-                            {new Date(mod.timestamp).toLocaleString()}
+                            {new Date(item.timestamp).toLocaleString()}
                           </div>
-                          <div className="font-medium">
-                            Target: {section.nodes.find(n => n.id === mod.targetNodeId)?.label}
-                          </div>
-                          {mod.score !== undefined && (
-                            <div className="flex items-center gap-1 mt-1">
-                              <Award className="w-4 h-4 text-yellow-500" />
-                              <span className="text-sm">AI Score: {mod.score}/100</span>
-                            </div>
+                          {node.type === 'supervisor' ? (
+                            <>
+                              <div className="font-medium">
+                                Target: {section.nodes.find(n => n.id === item.targetNodeId)?.label}
+                              </div>
+                              {item.score !== undefined && (
+                                <div className="flex items-center gap-1 mt-1">
+                                  <Award className="w-4 h-4 text-yellow-500" />
+                                  <span className="text-sm">AI Score: {item.score}/100</span>
+                                </div>
+                              )}
+                            </>
+                          ) : (
+                            <div className="font-medium">Section Evaluation</div>
                           )}
                         </div>
-                        <div className="flex items-center gap-2">
-                          <span className={`text-xs px-2 py-1 rounded ${
-                            mod.status === 'accepted' ? 'bg-green-100 text-green-700' :
-                            mod.status === 'rejected' ? 'bg-red-100 text-red-700' :
-                            'bg-yellow-100 text-yellow-700'
-                          }`}>
-                            {mod.status || 'pending'}
-                          </span>
-                        </div>
+                        <span className={`text-xs px-2 py-1 rounded ${
+                          item.status === 'accepted' ? 'bg-green-100 text-green-700' :
+                          item.status === 'rejected' ? 'bg-red-100 text-red-700' :
+                          'bg-yellow-100 text-yellow-700'
+                        }`}>
+                          {item.status || 'pending'}
+                        </span>
                       </div>
-                      
-                      {mod.changes && (
-                        <div className="mt-2 text-sm text-gray-600">
-                          +{mod.changes.linesAdded} -{mod.changes.linesRemoved} lines
-                        </div>
-                      )}
-                      
-                      {mod.status === 'pending' && (
-                        <div className="mt-2 flex gap-2">
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              acceptModification(mod.id);
-                            }}
-                            className="text-sm bg-green-500 text-white px-3 py-1 rounded"
-                          >
-                            Accept
-                          </button>
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              rejectModification(mod);
-                            }}
-                            className="text-sm bg-red-500 text-white px-3 py-1 rounded"
-                          >
-                            Reject
-                          </button>
-                        </div>
-                      )}
                     </div>
                   ))}
                 </div>
               ) : (
-                <div className="space-y-3">
-                  {sortedHistory.map((evaluation: any) => (
-                    <div 
-                      key={evaluation.id} 
-                      className={`border rounded p-3 cursor-pointer hover:bg-gray-50 ${
-                        selectedEvaluation?.id === evaluation.id ? 'border-blue-500' : ''
-                      }`}
-                      onClick={() => setSelectedEvaluation(evaluation)}
-                    >
-                      <div className="flex justify-between items-start">
-                        <div>
-                          <div className="text-sm text-gray-600">
-                            {new Date(evaluation.timestamp).toLocaleString()}
-                          </div>
-                          <div className="font-medium">
-                            Section Evaluation
-                          </div>
-                        </div>
-                        <span className={`text-xs px-2 py-1 rounded ${
-                          evaluation.status === 'accepted' ? 'bg-green-100 text-green-700' :
-                          evaluation.status === 'rejected' ? 'bg-red-100 text-red-700' :
-                          'bg-yellow-100 text-yellow-700'
-                        }`}>
-                          {evaluation.status || 'pending'}
-                        </span>
-                      </div>
-                      
-                      {evaluation.nodeEvaluations && (
-                        <div className="mt-2 text-sm">
-                          <div className="text-gray-600">
-                            Evaluated {evaluation.nodeEvaluations.length} nodes
-                          </div>
-                          <div className="mt-1">
-                            {evaluation.nodeEvaluations.filter((ne: any) => ne.priority === 'high').length} high priority items
-                          </div>
-                        </div>
-                      )}
-                      
-                      {evaluation.status === 'pending' && (
-                        <div className="mt-2 flex gap-2">
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              acceptEvaluation(evaluation.id);
-                            }}
-                            className="text-sm bg-green-500 text-white px-3 py-1 rounded"
-                          >
-                            Accept
-                          </button>
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              rejectEvaluation(evaluation.id);
-                            }}
-                            className="text-sm bg-red-500 text-white px-3 py-1 rounded"
-                          >
-                            Cancel
-                          </button>
-                        </div>
-                      )}
-                    </div>
-                  ))}
-                </div>
+                <div className="text-gray-500 text-center">No history available</div>
               )}
             </div>
-
-            {/* Detail View */}
-            {(selectedModification || selectedEvaluation) && (
-              <div className="border-t p-4">
-                <h4 className="font-semibold mb-2">Details</h4>
-                {selectedModification && node.type === 'supervisor' && (
-                  <div className="text-sm space-y-2">
-                    <div>
-                      <span className="font-medium">Target Node:</span>{' '}
-                      {section.nodes.find(n => n.id === selectedModification.targetNodeId)?.label}
-                    </div>
-                    <div>
-                      <span className="font-medium">Score:</span> {selectedModification.score}/100
-                    </div>
-                    {selectedModification.tasks && (
-                      <div>
-                        <span className="font-medium">Tasks:</span>
-                        <ul className="ml-4 mt-1">
-                          {selectedModification.tasks.map((t: any) => (
-                            <li key={t.id}>• {t.text}</li>
-                          ))}
-                        </ul>
-                      </div>
-                    )}
-                  </div>
-                )}
-                
-                {selectedEvaluation && node.type === 'planner' && (
-                  <div className="text-sm space-y-2">
-                    <div className="max-h-48 overflow-y-auto">
-                      <div className="font-medium mb-1">Overall Assessment:</div>
-                      <div className="text-gray-600 whitespace-pre-wrap">
-                        {selectedEvaluation.overallAssessment}
-                      </div>
-                    </div>
-                    
-                    {selectedEvaluation.nodeEvaluations && (
-                      <div>
-                        <div className="font-medium mb-1">Node Evaluations:</div>
-                        <div className="space-y-1 max-h-32 overflow-y-auto">
-                          {selectedEvaluation.nodeEvaluations.map((ne: any) => (
-                            <div key={ne.nodeId} className="border rounded p-2">
-                              <div className="font-medium">{ne.nodeLabel}</div>
-                              <div className="text-xs text-gray-600">
-                                Priority: {ne.priority} | Status: {ne.status}
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-            )}
           </div>
         </div>
 
         <div className="p-4 border-t flex gap-2">
-          <button onClick={handleSave} className="flex-1 bg-blue-500 text-white rounded px-4 py-2">
+          <button onClick={handleSave} className="flex-1 bg-blue-500 text-white rounded px-4 py-2 hover:bg-blue-600">
             Save
           </button>
-          <button onClick={onClose} className="flex-1 bg-gray-300 rounded px-4 py-2">
+          <button onClick={onClose} className="flex-1 bg-gray-300 rounded px-4 py-2 hover:bg-gray-400">
             Cancel
           </button>
         </div>
