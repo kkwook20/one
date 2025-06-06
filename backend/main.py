@@ -1,4 +1,4 @@
-# backend/main.py - 파일 저장 기능 수정 버전
+# backend/main.py - 로그 간소화 버전
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -11,6 +11,8 @@ import sys
 import time
 import random
 from datetime import datetime
+import threading
+from functools import wraps
 
 # 경로 설정
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -39,36 +41,41 @@ sections_db: Dict[str, Section] = {}
 # WebSocket 연결 관리
 active_connections: Dict[str, WebSocket] = {}
 
+# 파일 저장 락
+save_lock = threading.Lock()
+
 def save_sections_to_file():
-    """섹션 데이터를 파일로 저장"""
-    try:
-        os.makedirs(os.path.dirname(SECTIONS_DATA_FILE), exist_ok=True)
-        
-        # Pydantic 모델을 dict로 변환
-        data = {}
-        for section_id, section in sections_db.items():
-            # Pydantic v2의 model_dump() 메서드 사용
-            if hasattr(section, 'model_dump'):
-                section_dict = section.model_dump()
-            else:
-                section_dict = section.dict()
+    """섹션 데이터를 파일로 저장 (동기식)"""
+    with save_lock:
+        try:
+            os.makedirs(os.path.dirname(SECTIONS_DATA_FILE), exist_ok=True)
             
-            data[section_id] = section_dict
-        
-        # JSON 저장
-        temp_file = f"{SECTIONS_DATA_FILE}.tmp"
-        with open(temp_file, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
-        
-        if os.path.exists(SECTIONS_DATA_FILE):
-            os.remove(SECTIONS_DATA_FILE)
-        os.rename(temp_file, SECTIONS_DATA_FILE)
-        
-        print(f"Sections saved to {SECTIONS_DATA_FILE}")
-    except Exception as e:
-        print(f"Error saving sections: {e}")
-        import traceback
-        traceback.print_exc()
+            # Pydantic 모델을 JSON으로 직접 변환
+            data = {}
+            for section_id, section in sections_db.items():
+                # model_dump()를 사용하여 중첩된 모델도 모두 dict로 변환
+                section_dict = section.model_dump(mode='python')
+                data[section_id] = section_dict
+            
+            # JSON 저장
+            temp_file = f"{SECTIONS_DATA_FILE}.tmp"
+            with open(temp_file, 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=2, ensure_ascii=False, default=str)
+            
+            # 원자적 파일 교체
+            if os.path.exists(SECTIONS_DATA_FILE):
+                backup_file = f"{SECTIONS_DATA_FILE}.backup"
+                if os.path.exists(backup_file):
+                    os.remove(backup_file)
+                os.rename(SECTIONS_DATA_FILE, backup_file)
+            
+            os.rename(temp_file, SECTIONS_DATA_FILE)
+            
+            return True
+            
+        except Exception as e:
+            print(f"Error saving sections: {e}")
+            return False
 
 def load_sections_from_file():
     """파일에서 섹션 데이터 로드"""
@@ -111,8 +118,6 @@ def load_sections_from_file():
             return True
         except Exception as e:
             print(f"Error loading sections: {e}")
-            import traceback
-            traceback.print_exc()
             return False
     return False
 
@@ -147,6 +152,27 @@ def create_default_sections():
                     ]
                 )
 
+# 디바운스 데코레이터
+def debounce(wait):
+    def decorator(fn):
+        last_called = {}
+        
+        @wraps(fn)
+        def debounced(*args, **kwargs):
+            key = id(args[0]) if args else 0
+            current_time = time.time()
+            
+            if key in last_called:
+                elapsed = current_time - last_called[key]
+                if elapsed < wait:
+                    return
+            
+            last_called[key] = current_time
+            return fn(*args, **kwargs)
+        
+        return debounced
+    return decorator
+
 @app.on_event("startup")
 async def startup_event():
     ensure_directories()
@@ -167,7 +193,6 @@ async def shutdown_event():
 async def websocket_endpoint(websocket: WebSocket, client_id: str):
     await websocket.accept()
     active_connections[client_id] = websocket
-    print(f"Client {client_id} connected")
     
     try:
         while True:
@@ -177,7 +202,6 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
                 
     except WebSocketDisconnect:
         del active_connections[client_id]
-        print(f"Client {client_id} disconnected")
     except Exception as e:
         print(f"WebSocket error: {e}")
         if client_id in active_connections:
@@ -209,9 +233,19 @@ async def get_sections():
     sections_list = []
     for section in sections_db.values():
         if hasattr(section, 'model_dump'):
-            sections_list.append(section.model_dump())
+            section_dict = section.model_dump()
         else:
-            sections_list.append(section.dict())
+            section_dict = section.dict()
+        
+        # Position 객체를 dict로 변환
+        for node in section_dict.get('nodes', []):
+            if 'position' in node and hasattr(node.get('position'), 'x'):
+                node['position'] = {
+                    'x': node['position'].x,
+                    'y': node['position'].y
+                }
+        
+        sections_list.append(section_dict)
     
     return sections_list
 
@@ -222,37 +256,72 @@ async def get_section(section_id: str):
     
     section = sections_db[section_id]
     if hasattr(section, 'model_dump'):
-        return section.model_dump()
+        section_dict = section.model_dump()
     else:
-        return section.dict()
+        section_dict = section.dict()
+    
+    # Position 객체를 dict로 변환
+    for node in section_dict.get('nodes', []):
+        if 'position' in node and hasattr(node.get('position'), 'x'):
+            node['position'] = {
+                'x': node['position'].x,
+                'y': node['position'].y
+            }
+    
+    return section_dict
 
 @app.put("/sections/{section_id}")
 async def update_section(section_id: str, section_data: dict):
     try:
-        # dict로 받은 데이터를 Pydantic 모델로 변환
-        # position dict를 Position 객체로 변환
+        if section_id not in sections_db:
+            raise HTTPException(status_code=404, detail=f"Section {section_id} not found")
+        
+        # 기존 섹션 가져오기
+        existing_section = sections_db[section_id]
+        
+        # nodes를 처리하여 Position 객체로 변환
+        nodes = []
         for node_data in section_data.get('nodes', []):
+            # position 처리
             if 'position' in node_data and isinstance(node_data['position'], dict):
-                node_data['position'] = Position(**node_data['position'])
-        
-        # Section 모델로 변환
-        section = Section(**section_data)
-        sections_db[section_id] = section
-        
-        # 파일에 저장 (비동기로 실행)
-        asyncio.create_task(asyncio.to_thread(save_sections_to_file))
-        
-        # 응답은 dict로 반환
-        if hasattr(section, 'model_dump'):
-            return section.model_dump()
-        else:
-            return section.dict()
+                pos_dict = node_data['position']
+                if 'x' in pos_dict and 'y' in pos_dict:
+                    # Position 객체로 변환
+                    position = Position(
+                        x=float(pos_dict.get('x', 0)),
+                        y=float(pos_dict.get('y', 0))
+                    )
+                    node_data['position'] = position
             
+            # Node 객체 생성
+            try:
+                node = Node(**node_data)
+                nodes.append(node)
+            except Exception as e:
+                continue
+        
+        # 섹션 업데이트
+        existing_section.nodes = nodes
+        if 'name' in section_data:
+            existing_section.name = section_data['name']
+        if 'group' in section_data:
+            existing_section.group = section_data['group']
+        if 'inputConfig' in section_data:
+            existing_section.inputConfig = section_data.get('inputConfig')
+        if 'outputConfig' in section_data:
+            existing_section.outputConfig = section_data.get('outputConfig')
+        
+        # 메모리 DB에 저장
+        sections_db[section_id] = existing_section
+        
+        # 파일에 저장
+        save_sections_to_file()
+        
+        return {"status": "success", "message": "Section updated"}
+        
     except Exception as e:
-        print(f"Error updating section: {e}")
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(status_code=400, detail=str(e))
+        print(f"Error updating section: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/execute")
 async def execute_node_endpoint(request: ExecuteRequest):
@@ -419,7 +488,15 @@ async def toggle_node_deactivation(node_id: str, request: dict):
     
     return {"deactivated": node.isDeactivated}
 
-# 나머지 엔드포인트들은 동일...
+# 주기적 자동 저장 (5분마다)
+async def periodic_save():
+    """5분마다 자동 저장"""
+    while True:
+        await asyncio.sleep(300)  # 5분
+        save_sections_to_file()
+
+# 자동 저장 태스크 시작
+asyncio.create_task(periodic_save())
 
 if __name__ == "__main__":
     import uvicorn

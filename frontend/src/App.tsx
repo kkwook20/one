@@ -1,4 +1,4 @@
-// frontend/src/App.tsx - 노드 위치 유지 버전
+// frontend/src/App.tsx - 노드 위치 저장 개선 버전
 /* eslint-disable react-hooks/exhaustive-deps */
 import React, { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import ReactFlow, {
@@ -235,6 +235,24 @@ const apiCall = async (url: string, options?: RequestInit) => {
   
   return response.json();
 };
+
+// Debounce helper
+// function debounce<T extends (...args: any[]) => any>(
+//   func: T,
+//   wait: number
+// ): (...args: Parameters<T>) => void {
+//   let timeout: NodeJS.Timeout;
+  
+//   return function executedFunction(...args: Parameters<T>) {
+//     const later = () => {
+//       clearTimeout(timeout);
+//       func(...args);
+//     };
+    
+//     clearTimeout(timeout);
+//     timeout = setTimeout(later, wait);
+//   };
+// }
 
 // Execution Log Type
 interface ExecutionLog {
@@ -709,6 +727,7 @@ function AIPipelineFlow() {
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isReactFlowReady, setIsReactFlowReady] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
   
   // React Flow states
   const [nodes, setNodes] = useState<FlowNode[]>([]);
@@ -729,32 +748,11 @@ function AIPipelineFlow() {
   // Refs
   const isUpdatingRef = useRef(false);
   const sectionEdgesRef = useRef<{ [sectionId: string]: Edge[] }>({});
+  const sectionNodesRef = useRef<{ [sectionId: string]: FlowNode[] }>({});  // 섹션별 노드 캐시
+  const pendingUpdatesRef = useRef<{ [sectionId: string]: Section }>({});
+  const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   
   const { project } = useReactFlow();
-
-  // 디버깅을 위한 전역 노출
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      (window as any).debugPipeline = {
-        sections,
-        nodes,
-        currentSection: sections.find(s => s.name === selectedSection),
-        printPositions: () => {
-          const current = sections.find(s => s.name === selectedSection);
-          if (current) {
-            console.log('=== Current Section Node Positions ===');
-            current.nodes.forEach(n => {
-              console.log(`${n.id}: ${JSON.stringify(n.position)}`);
-            });
-            console.log('=== React Flow Node Positions ===');
-            nodes.forEach(n => {
-              console.log(`${n.id}: ${JSON.stringify(n.position)}`);
-            });
-          }
-        }
-      };
-    }
-  }, [sections, nodes, selectedSection]);
 
   // 현재 섹션 가져오기
   const currentSection = useMemo(() => {
@@ -770,33 +768,117 @@ function AIPipelineFlow() {
     }]);
   }, []);
 
-  // 백엔드 업데이트
+  // 백엔드 업데이트 (디바운스 적용)
   const updateSectionInBackend = useCallback(async (section: Section) => {
     if (isUpdatingRef.current) return;
     
-    isUpdatingRef.current = true;
-    try {
-      // position이 제대로 전송되는지 확인
-      console.log('Sending section update to backend:', {
-        id: section.id,
-        nodes: section.nodes.map(n => ({
-          id: n.id,
-          position: n.position
-        }))
-      });
-      
-      await apiCall(`${API_URL}/sections/${section.id}`, {
-        method: 'PUT',
-        body: JSON.stringify(section)
-      });
-    } catch (error) {
-      console.error('Failed to update section:', error);
-    } finally {
-      setTimeout(() => {
-        isUpdatingRef.current = false;
-      }, 100);
+    // 펜딩 업데이트 저장
+    pendingUpdatesRef.current[section.id] = section;
+    
+    // 기존 타임아웃 클리어
+    if (saveTimeoutRef.current) {
+      clearTimeout(saveTimeoutRef.current);
     }
-  }, []);
+    
+    // 500ms 후에 저장 실행
+    saveTimeoutRef.current = setTimeout(async () => {
+      const sectionsToUpdate = { ...pendingUpdatesRef.current };
+      pendingUpdatesRef.current = {};
+      
+      setIsSaving(true);
+      
+      for (const [sectionId, sectionData] of Object.entries(sectionsToUpdate)) {
+        isUpdatingRef.current = true;
+        try {
+          // 전송할 데이터 확인
+          const dataToSend = {
+            ...sectionData,
+            nodes: sectionData.nodes.map(node => ({
+              ...node,
+              position: {
+                x: Number(node.position.x),
+                y: Number(node.position.y)
+              }
+            }))
+          };
+          
+          console.log('Saving section update to backend:', {
+            id: sectionId,
+            name: dataToSend.name,
+            nodes: dataToSend.nodes.map(n => ({
+              id: n.id,
+              label: n.label,
+              position: n.position,
+              type: n.type
+            }))
+          });
+          
+          // 전체 데이터도 확인
+          console.log('Full data being sent:', JSON.stringify(dataToSend, null, 2));
+          
+          await apiCall(`${API_URL}/sections/${sectionId}`, {
+            method: 'PUT',
+            body: JSON.stringify(dataToSend)
+          });
+          
+          console.log('Section saved successfully');
+        } catch (error) {
+          console.error('Failed to update section:', error);
+          addLog({
+            nodeId: 'system',
+            nodeLabel: 'System',
+            type: 'error',
+            message: `Failed to save section ${sectionData.name}`
+          });
+        } finally {
+          isUpdatingRef.current = false;
+        }
+      }
+      
+      setIsSaving(false);
+    }, 500);
+  }, [addLog]);
+
+  // 디버깅을 위한 전역 노출
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      (window as any).debugPipeline = {
+        sections,
+        nodes,
+        currentSection: sections.find(s => s.name === selectedSection),
+        sectionNodesRef: sectionNodesRef.current,
+        sectionEdgesRef: sectionEdgesRef.current,
+        printPositions: () => {
+          const current = sections.find(s => s.name === selectedSection);
+          if (current) {
+            console.log('=== Current Section Node Positions ===');
+            current.nodes.forEach(n => {
+              console.log(`${n.id}: ${JSON.stringify(n.position)}`);
+            });
+            console.log('=== React Flow Node Positions ===');
+            nodes.forEach(n => {
+              console.log(`${n.id}: ${JSON.stringify(n.position)}`);
+            });
+            console.log('=== Cached Node Positions ===');
+            Object.entries(sectionNodesRef.current).forEach(([sectionId, nodes]) => {
+              console.log(`Section ${sectionId}:`);
+              nodes.forEach(n => {
+                console.log(`  ${n.id}: ${JSON.stringify(n.position)}`);
+              });
+            });
+          }
+        },
+        saveNow: async () => {
+          console.log('Forcing save...');
+          // saveCurrentSection이 나중에 정의되므로 직접 호출하지 않음
+          const current = sections.find(s => s.name === selectedSection);
+          if (current) {
+            await updateSectionInBackend(current);
+          }
+        }
+      };
+    }
+  }, [sections, nodes, selectedSection, updateSectionInBackend]);
 
   // Edge 삭제 핸들러
   const handleEdgeDelete = useCallback((edgeId: string) => {
@@ -1007,7 +1089,9 @@ function AIPipelineFlow() {
         if (section.name === selectedSection) {
           const updatedNodes = section.nodes.map(node => {
             if (node.id === nodeId) {
-              console.log(`Updating node ${nodeId} position from`, node.position, 'to', newPosition);
+              console.log(`Updating node ${nodeId} in section ${section.name}`);
+              console.log(`  Old position:`, node.position);
+              console.log(`  New position:`, newPosition);
               return { ...node, position: { ...newPosition } };
             }
             return node;
@@ -1015,7 +1099,7 @@ function AIPipelineFlow() {
           
           const updatedSection = { ...section, nodes: updatedNodes };
           
-          // 백엔드 업데이트 (디바운스 처리 가능)
+          // 백엔드 업데이트 (디바운스 적용됨)
           updateSectionInBackend(updatedSection);
           
           return updatedSection;
@@ -1027,12 +1111,57 @@ function AIPipelineFlow() {
     });
   }, [selectedSection, updateSectionInBackend]);
 
+  // 주기적 자동 저장 (5분마다)
+  useEffect(() => {
+    const interval = setInterval(() => {
+      const current = sections.find(s => s.name === selectedSection);
+      if (current && nodes.length > 0) {
+        // 현재 React Flow 상태를 섹션에 반영
+        const updatedNodes = current.nodes.map(sectionNode => {
+          const flowNode = nodes.find(n => n.id === sectionNode.id);
+          if (flowNode) {
+            return {
+              ...sectionNode,
+              position: {
+                x: flowNode.position.x,
+                y: flowNode.position.y
+              }
+            };
+          }
+          return sectionNode;
+        });
+        
+        const updatedSection = {
+          ...current,
+          nodes: updatedNodes
+        };
+        
+        // 변경사항이 있는지 확인
+        const hasChanges = updatedNodes.some((node, index) => {
+          const originalNode = current.nodes[index];
+          return originalNode && (
+            originalNode.position.x !== node.position.x ||
+            originalNode.position.y !== node.position.y
+          );
+        });
+        
+        if (hasChanges) {
+          console.log('Auto-saving section changes...');
+          updateSectionInBackend(updatedSection);
+        }
+      }
+    }, 300000); // 5분마다
+    
+    return () => clearInterval(interval);
+  }, [sections, selectedSection, nodes, updateSectionInBackend]);
+
   // 노드 변경 핸들러
   const handleNodesChange = useCallback((changes: NodeChange[]) => {
     changes.forEach(change => {
       if (change.type === 'position' && 'position' in change && change.position) {
         if ('dragging' in change && change.dragging === false) {
           // 드래그 완료 시 위치 업데이트
+          console.log(`Node ${change.id} drag completed at position:`, change.position);
           updateNodePosition(change.id, {
             x: Math.round(change.position.x),
             y: Math.round(change.position.y)
@@ -1041,8 +1170,18 @@ function AIPipelineFlow() {
       }
     });
     
-    setNodes(nds => applyNodeChanges(changes, nds));
-  }, [updateNodePosition]);
+    setNodes((currentNodes) => {
+      const updatedNodes = applyNodeChanges(changes, currentNodes);
+      
+      // 캐시 업데이트
+      const currentSection = sections.find(s => s.name === selectedSection);
+      if (currentSection) {
+        sectionNodesRef.current[currentSection.id] = updatedNodes;
+      }
+      
+      return updatedNodes;
+    });
+  }, [updateNodePosition, sections, selectedSection]);
 
   // Edge 변경 핸들러
   const handleEdgesChange = useCallback((changes: EdgeChange[]) => {
@@ -1060,6 +1199,49 @@ function AIPipelineFlow() {
     if (!currentSection) return;
     
     console.log('=== Section changed to:', currentSection.name, '===');
+    
+    // 이전 섹션의 노드 상태 저장
+    const prevSectionId = Object.keys(sectionNodesRef.current).find(id => 
+      sectionNodesRef.current[id].length > 0 && id !== currentSection.id
+    );
+    if (prevSectionId && nodes.length > 0) {
+      sectionNodesRef.current[prevSectionId] = [...nodes];
+    }
+    
+    // 캐시된 노드가 있으면 사용
+    const cachedNodes = sectionNodesRef.current[currentSection.id];
+    if (cachedNodes && cachedNodes.length > 0) {
+      console.log('Using cached nodes for section:', currentSection.id);
+      setNodes(cachedNodes);
+      
+      // 엣지 복원
+      const savedEdges = sectionEdgesRef.current[currentSection.id];
+      if (savedEdges) {
+        setEdges(savedEdges.map(edge => ({
+          ...edge,
+          data: {
+            ...edge.data,
+            onDelete: (edgeId: string) => {
+              handleEdgeDelete(edgeId);
+            },
+            isActive: activeEdges.has(edge.id)
+          },
+          animated: activeEdges.has(edge.id),
+          style: {
+            stroke: activeEdges.has(edge.id) ? '#10b981' : '#94a3b8',
+            strokeWidth: activeEdges.has(edge.id) ? 3 : 2,
+          },
+          markerEnd: {
+            type: MarkerType.ArrowClosed,
+            color: activeEdges.has(edge.id) ? '#10b981' : '#94a3b8',
+          },
+        })));
+      }
+      return;
+    }
+    
+    // 캐시가 없으면 섹션 데이터에서 노드 생성
+    console.log('Creating nodes from section data');
     
     // 노드 위치 검증
     const hasValidPositions = currentSection.nodes.every(node => 
@@ -1081,16 +1263,21 @@ function AIPipelineFlow() {
     const flowNodes: FlowNode[] = currentSection.nodes.map((node, index) => {
       // 안전한 position 처리
       let position = { x: 0, y: 0 };
+      let hasValidPosition = false;
       
-      if (node.position && typeof node.position === 'object') {
-        position = {
-          x: Number(node.position.x) || 0,
-          y: Number(node.position.y) || 0
-        };
+      if (node.position && typeof node.position === 'object' && 'x' in node.position && 'y' in node.position) {
+        const x = Number(node.position.x);
+        const y = Number(node.position.y);
+        
+        // 유효한 position인지 확인 (0,0이 아니고 NaN이 아닌 경우)
+        if (!isNaN(x) && !isNaN(y) && (x !== 0 || y !== 0)) {
+          position = { x, y };
+          hasValidPosition = true;
+        }
       }
       
-      // position이 0,0이면 기본 위치 할당
-      if (position.x === 0 && position.y === 0) {
+      // position이 없거나 유효하지 않은 경우에만 기본 위치 할당
+      if (!hasValidPosition) {
         if (node.type === 'input') {
           position = { x: 100, y: 200 };
         } else if (node.type === 'output') {
@@ -1105,7 +1292,16 @@ function AIPipelineFlow() {
           };
         }
         
-        console.warn(`Node ${node.id} has invalid position, using default:`, position);
+        console.warn(`Node ${node.id} has no valid position, using default:`, position);
+        
+        // 기본 위치가 할당된 경우, 섹션 데이터도 업데이트
+        const updatedSection = {
+          ...currentSection,
+          nodes: currentSection.nodes.map(n => 
+            n.id === node.id ? { ...n, position } : n
+          )
+        };
+        updateSectionInBackend(updatedSection);
       }
       
       const flowNode: FlowNode = {
@@ -1144,7 +1340,9 @@ function AIPipelineFlow() {
         ...edge,
         data: {
           ...edge.data,
-          onDelete: handleEdgeDelete,
+          onDelete: (edgeId: string) => {
+            handleEdgeDelete(edgeId);
+          },
           isActive: activeEdges.has(edge.id)
         },
         animated: activeEdges.has(edge.id),
@@ -1170,7 +1368,9 @@ function AIPipelineFlow() {
               type: 'custom',
               animated: activeEdges.has(edgeId),
               data: { 
-                onDelete: handleEdgeDelete,
+                onDelete: (edgeId: string) => {
+                  handleEdgeDelete(edgeId);
+                },
                 isActive: activeEdges.has(edgeId)
               },
               style: {
@@ -1192,7 +1392,10 @@ function AIPipelineFlow() {
     
     console.log('Setting flow nodes:', flowNodes);
     setNodes(flowNodes);
-  }, [currentSection?.id, selectedSection]); // 섹션이 변경될 때만 실행
+    
+    // 캐시에 저장
+    sectionNodesRef.current[currentSection.id] = flowNodes;
+  }, [currentSection?.id, selectedSection]); // 최소한의 dependencies만 사용
 
   // 동적 상태 업데이트를 위한 별도 effect (position 제외)
   useEffect(() => {
@@ -1232,7 +1435,9 @@ function AIPipelineFlow() {
       animated: activeEdges.has(edge.id),
       data: {
         ...edge.data,
-        onDelete: handleEdgeDelete,
+        onDelete: (edgeId: string) => {
+          handleEdgeDelete(edgeId);
+        },
         isActive: activeEdges.has(edge.id)
       },
       style: {
@@ -1270,7 +1475,9 @@ function AIPipelineFlow() {
       type: 'custom',
       animated: false,
       data: { 
-        onDelete: handleEdgeDelete
+        onDelete: (edgeId: string) => {
+          handleEdgeDelete(edgeId);
+        }
       },
       style: {
         stroke: '#94a3b8',
@@ -1423,10 +1630,34 @@ function AIPipelineFlow() {
   const handleNodeAdd = useCallback(async (nodeType: string) => {
     if (!currentSection) return;
 
-    const position = project({ 
+    // 기존 노드들의 위치를 확인하여 겹치지 않는 위치 찾기
+    const existingPositions = nodes.map(n => n.position);
+    
+    // 화면 중앙 위치
+    const centerPosition = project({ 
       x: window.innerWidth / 2, 
       y: window.innerHeight / 2 
     });
+    
+    // 겹치지 않는 위치 찾기
+    let position = { ...centerPosition };
+    let offset = 0;
+    
+    // 같은 위치에 노드가 있는지 확인
+    const isPositionOccupied = (pos: { x: number; y: number }) => {
+      return existingPositions.some(p => 
+        Math.abs(p.x - pos.x) < 50 && Math.abs(p.y - pos.y) < 50
+      );
+    };
+    
+    // 겹치는 경우 오프셋 적용
+    while (isPositionOccupied(position) && offset < 10) {
+      offset++;
+      position = {
+        x: centerPosition.x + (offset * 60),
+        y: centerPosition.y + (offset * 60)
+      };
+    }
 
     const newNode: Node = {
       id: `${nodeType}-${Date.now()}`,
@@ -1469,17 +1700,37 @@ function AIPipelineFlow() {
       targetPosition: FlowPosition.Left,
     };
     
-    setNodes(prev => [...prev, flowNode]);
+    setNodes(prev => {
+      const newNodes = [...prev, flowNode];
+      // 캐시 업데이트
+      sectionNodesRef.current[updatedSection.id] = newNodes;
+      return newNodes;
+    });
     
-    await updateSectionInBackend(updatedSection);
+    // 백엔드에 즉시 저장 (디바운스 없이)
+    try {
+      const response = await apiCall(`${API_URL}/sections/${updatedSection.id}`, {
+        method: 'PUT',
+        body: JSON.stringify(updatedSection)
+      });
+      console.log('Node added and saved:', response);
+    } catch (error) {
+      console.error('Failed to save new node:', error);
+      addLog({
+        nodeId: 'system',
+        nodeLabel: 'System',
+        type: 'error',
+        message: 'Failed to save new node'
+      });
+    }
     
     addLog({
       nodeId: 'system',
       nodeLabel: 'System',
       type: 'info',
-      message: `Added ${nodeType} node`
+      message: `Added ${nodeType} node at position (${newNode.position.x}, ${newNode.position.y})`
     });
-  }, [currentSection, project, updateSectionInBackend, addLog, nodeCallbacks]);
+  }, [currentSection, nodes, project, updateSectionInBackend, addLog, nodeCallbacks]);
 
   // Flow 실행
   const playFlow = useCallback(async () => {
@@ -1536,18 +1787,215 @@ function AIPipelineFlow() {
       });
     }
   }, [currentSection, addLog]);
+
+  // 수동 저장 함수
+  const handleManualSave = useCallback(async () => {
+    const current = sections.find(s => s.name === selectedSection);
+    if (!current) return;
+    
+    setIsSaving(true);
+    
+    try {
+      // 현재 React Flow 상태를 섹션에 반영
+      const updatedNodes = current.nodes.map(sectionNode => {
+        const flowNode = nodes.find(n => n.id === sectionNode.id);
+        if (flowNode) {
+          return {
+            ...sectionNode,
+            position: {
+              x: flowNode.position.x,
+              y: flowNode.position.y
+            }
+          };
+        }
+        return sectionNode;
+      });
+      
+      const updatedSection = {
+        ...current,
+        nodes: updatedNodes
+      };
+      
+      await apiCall(`${API_URL}/sections/${updatedSection.id}`, {
+        method: 'PUT',
+        body: JSON.stringify(updatedSection)
+      });
+      
+      addLog({
+        nodeId: 'system',
+        nodeLabel: 'System',
+        type: 'info',
+        message: 'Section saved successfully'
+      });
+    } catch (error) {
+      console.error('Failed to save section:', error);
+      addLog({
+        nodeId: 'system',
+        nodeLabel: 'System',
+        type: 'error',
+        message: 'Failed to save section'
+      });
+    } finally {
+      setIsSaving(false);
+    }
+  }, [sections, selectedSection, nodes, addLog]);
+
+  // 섹션 변경 전에 현재 섹션 저장
+  const saveCurrentSection = useCallback(async () => {
+    const current = sections.find(s => s.name === selectedSection);
+    if (!current) return;
+    
+    // 현재 React Flow 상태를 섹션에 반영
+    const updatedNodes = current.nodes.map(sectionNode => {
+      const flowNode = nodes.find(n => n.id === sectionNode.id);
+      if (flowNode) {
+        return {
+          ...sectionNode,
+          position: {
+            x: flowNode.position.x,
+            y: flowNode.position.y
+          }
+        };
+      }
+      return sectionNode;
+    });
+    
+    const updatedSection = {
+      ...current,
+      nodes: updatedNodes
+    };
+    
+    // 섹션 업데이트
+    setSections(prev => prev.map(s => 
+      s.id === updatedSection.id ? updatedSection : s
+    ));
+    
+    // 백엔드에 저장
+    await updateSectionInBackend(updatedSection);
+    
+    // 펜딩 업데이트가 있으면 즉시 저장
+    if (Object.keys(pendingUpdatesRef.current).length > 0) {
+      if (saveTimeoutRef.current) {
+        clearTimeout(saveTimeoutRef.current);
+      }
+      
+      const sectionsToUpdate = { ...pendingUpdatesRef.current };
+      pendingUpdatesRef.current = {};
+      
+      setIsSaving(true);
+      
+      for (const [sectionId, sectionData] of Object.entries(sectionsToUpdate)) {
+        try {
+          await apiCall(`${API_URL}/sections/${sectionId}`, {
+            method: 'PUT',
+            body: JSON.stringify(sectionData)
+          });
+        } catch (error) {
+          console.error('Failed to save section:', error);
+        }
+      }
+      
+      setIsSaving(false);
+    }
+  }, [sections, selectedSection, nodes, updateSectionInBackend]);
   
   // 섹션 변경 핸들러
-  const handleSectionChange = useCallback((sectionName: string) => {
+  const handleSectionChange = useCallback(async (sectionName: string) => {
+    console.log(`Changing section from ${selectedSection} to ${sectionName}`);
+    
+    // 현재 섹션 저장 (React Flow 상태 포함)
+    const current = sections.find(s => s.name === selectedSection);
+    if (current && nodes.length > 0) {
+      // 현재 React Flow 상태를 섹션에 반영
+      const updatedNodes = current.nodes.map(sectionNode => {
+        const flowNode = nodes.find(n => n.id === sectionNode.id);
+        if (flowNode) {
+          return {
+            ...sectionNode,
+            position: {
+              x: flowNode.position.x,
+              y: flowNode.position.y
+            }
+          };
+        }
+        return sectionNode;
+      });
+      
+      const updatedSection = {
+        ...current,
+        nodes: updatedNodes
+      };
+      
+      // 섹션 업데이트
+      setSections(prev => prev.map(s => 
+        s.id === updatedSection.id ? updatedSection : s
+      ));
+      
+      // 백엔드에 즉시 저장 (디바운스 없이)
+      try {
+        console.log('Saving current section before switching...');
+        await apiCall(`${API_URL}/sections/${updatedSection.id}`, {
+          method: 'PUT',
+          body: JSON.stringify(updatedSection)
+        });
+        console.log('Section saved successfully');
+      } catch (error) {
+        console.error('Failed to save section:', error);
+      }
+    }
+    
+    // 상태 초기화
     setCompletedNodes(new Set());
     setActiveEdges(new Set());
     setNodeProgress({});
     setRunningNodes(new Set());
     setSelectedSection(sectionName);
-  }, []);
+  }, [selectedSection, sections, nodes]);
 
   // 그룹 변경 핸들러
-  const handleGroupChange = useCallback((group: keyof typeof GROUPS) => {
+  const handleGroupChange = useCallback(async (group: keyof typeof GROUPS) => {
+    // 현재 섹션 저장 (React Flow 상태 포함)
+    const current = sections.find(s => s.name === selectedSection);
+    if (current && nodes.length > 0) {
+      // 현재 React Flow 상태를 섹션에 반영
+      const updatedNodes = current.nodes.map(sectionNode => {
+        const flowNode = nodes.find(n => n.id === sectionNode.id);
+        if (flowNode) {
+          return {
+            ...sectionNode,
+            position: {
+              x: flowNode.position.x,
+              y: flowNode.position.y
+            }
+          };
+        }
+        return sectionNode;
+      });
+      
+      const updatedSection = {
+        ...current,
+        nodes: updatedNodes
+      };
+      
+      // 섹션 업데이트
+      setSections(prev => prev.map(s => 
+        s.id === updatedSection.id ? updatedSection : s
+      ));
+      
+      // 백엔드에 즉시 저장
+      try {
+        console.log('Saving current section before changing group...');
+        await apiCall(`${API_URL}/sections/${updatedSection.id}`, {
+          method: 'PUT',
+          body: JSON.stringify(updatedSection)
+        });
+        console.log('Section saved successfully');
+      } catch (error) {
+        console.error('Failed to save section:', error);
+      }
+    }
+    
+    // 상태 초기화
     setCompletedNodes(new Set());
     setActiveEdges(new Set());
     setNodeProgress({});
@@ -1558,7 +2006,50 @@ function AIPipelineFlow() {
     if (firstSection) {
       setSelectedSection(firstSection.name);
     }
-  }, [sections]);
+  }, [sections, selectedSection, nodes]);
+
+  // 페이지 언로드 시 저장
+  useEffect(() => {
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      // 현재 섹션 저장
+      const current = sections.find(s => s.name === selectedSection);
+      if (current && nodes.length > 0) {
+        // 현재 React Flow 상태를 섹션에 반영
+        const updatedNodes = current.nodes.map(sectionNode => {
+          const flowNode = nodes.find(n => n.id === sectionNode.id);
+          if (flowNode) {
+            return {
+              ...sectionNode,
+              position: {
+                x: flowNode.position.x,
+                y: flowNode.position.y
+              }
+            };
+          }
+          return sectionNode;
+        });
+        
+        const updatedSection = {
+          ...current,
+          nodes: updatedNodes
+        };
+        
+        // 펜딩 업데이트에 추가
+        pendingUpdatesRef.current[current.id] = updatedSection;
+      }
+      
+      if (Object.keys(pendingUpdatesRef.current).length > 0) {
+        e.preventDefault();
+        e.returnValue = '';
+      }
+    };
+    
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+    };
+  }, [sections, selectedSection, nodes]);
   
   // 초기 로드
   useEffect(() => {
@@ -1585,19 +2076,24 @@ function AIPipelineFlow() {
                 ...section,
                 nodes: section.nodes.map((node: any, index: number) => {
                   // position 데이터 확인
-                  let finalPosition = { x: 100, y: 100 };
+                  let finalPosition = { x: 0, y: 0 };
+                  let hasValidPosition = false;
                   
-                  if (node.position) {
-                    if (typeof node.position === 'object' && 'x' in node.position && 'y' in node.position) {
-                      finalPosition = {
-                        x: Number(node.position.x),
-                        y: Number(node.position.y)
-                      };
+                  console.log(`Processing node ${node.id}, raw position:`, node.position);
+                  
+                  if (node.position && typeof node.position === 'object' && 'x' in node.position && 'y' in node.position) {
+                    const x = Number(node.position.x);
+                    const y = Number(node.position.y);
+                    
+                    // 유효한 position인지 확인 (0,0이 아니고 NaN이 아닌 경우)
+                    if (!isNaN(x) && !isNaN(y) && (x !== 0 || y !== 0)) {
+                      finalPosition = { x, y };
+                      hasValidPosition = true;
                     }
                   }
                   
-                  // 기본 위치 설정
-                  if (finalPosition.x === 100 && finalPosition.y === 100) {
+                  // position이 없거나 유효하지 않은 경우에만 기본 위치 설정
+                  if (!hasValidPosition) {
                     if (node.type === 'input') {
                       finalPosition = { x: 100, y: 200 };
                     } else if (node.type === 'output') {
@@ -1610,6 +2106,7 @@ function AIPipelineFlow() {
                         y: 100 + row * 150
                       };
                     }
+                    console.warn(`Node ${node.id} has no valid position, assigning default:`, finalPosition);
                   }
                   
                   return {
@@ -1626,7 +2123,7 @@ function AIPipelineFlow() {
             cleanedSections.forEach((section: any) => {
               console.log(`Section ${section.name}:`);
               section.nodes.forEach((node: any) => {
-                console.log(`  - ${node.id}: ${JSON.stringify(node.position)}`);
+                console.log(`  - ${node.id} (${node.type}): position=${JSON.stringify(node.position)}`);
               });
             });
             
@@ -1675,7 +2172,13 @@ function AIPipelineFlow() {
             ))}
           </div>
           
-          <div className="ml-auto mr-4">
+          <div className="ml-auto mr-4 flex items-center gap-2">
+            {isSaving && (
+              <div className="flex items-center gap-2 text-sm text-gray-600">
+                <Loader2 className="w-4 h-4 animate-spin" />
+                Saving...
+              </div>
+            )}
             <button
               onClick={() => window.location.reload()}
               className="p-2 rounded hover:bg-gray-100"
@@ -1705,6 +2208,23 @@ function AIPipelineFlow() {
             ))}
           
           <div className="ml-auto flex gap-2">
+            <button
+              onClick={handleManualSave}
+              disabled={isSaving}
+              className="flex items-center gap-2 px-3 py-1 bg-blue-500 text-white rounded text-sm hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {isSaving ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  Saving...
+                </>
+              ) : (
+                <>
+                  <CheckCircle className="w-4 h-4" />
+                  Save
+                </>
+              )}
+            </button>
             <button
               onClick={playFlow}
               className="flex items-center gap-2 px-3 py-1 bg-green-500 text-white rounded text-sm hover:bg-green-600"
