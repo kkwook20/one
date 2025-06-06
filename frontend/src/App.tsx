@@ -403,6 +403,21 @@ function AIPipelineFlow() {
       const section = sections.find(s => s.name === selectedSection);
       if (!section) return;
       
+      // 삭제하려는 노드 찾기
+      const nodeToDelete = section.nodes.find(n => n.id === nodeId);
+      if (!nodeToDelete) return;
+      
+      // input/output 노드는 삭제 불가
+      if (nodeToDelete.type === 'input' || nodeToDelete.type === 'output') {
+        addLog({
+          nodeId: 'system',
+          nodeLabel: 'System',
+          type: 'error',
+          message: `${nodeToDelete.type} nodes cannot be deleted`
+        });
+        return;
+      }
+      
       // React Flow 상태 즉시 업데이트
       setNodes(prev => prev.filter(n => n.id !== nodeId));
       setEdges(prev => {
@@ -981,6 +996,18 @@ function AIPipelineFlow() {
   const handleNodeAdd = useCallback(async (nodeType: string) => {
     if (!currentSection) return;
 
+    // supervisor와 planner는 섹션당 하나만 허용
+    if ((nodeType === 'supervisor' || nodeType === 'planner') && 
+        currentSection.nodes.some(n => n.type === nodeType)) {
+      addLog({
+        nodeId: 'system',
+        nodeLabel: 'System',
+        type: 'error',
+        message: `Only one ${nodeType} is allowed per section`
+      });
+      return;
+    }
+
     // 기존 노드들의 위치를 확인하여 겹치지 않는 위치 찾기
     const existingPositions = nodes.map(n => n.position);
     
@@ -1010,10 +1037,32 @@ function AIPipelineFlow() {
       };
     }
 
+    // 고유한 라벨 생성 - 같은 타입의 노드 중 사용 가능한 가장 작은 번호 찾기
+    const baseLabel = nodeType.charAt(0).toUpperCase() + nodeType.slice(1);
+    let nodeLabel = baseLabel;
+    
+    // supervisor와 planner는 번호를 붙이지 않음 (섹션당 하나만 허용)
+    if (nodeType !== 'supervisor' && nodeType !== 'planner') {
+      // 현재 섹션에서 같은 타입의 노드들의 라벨 확인
+      const existingLabels = currentSection.nodes
+        .filter(n => n.type === nodeType)
+        .map(n => n.label);
+      
+      // 번호가 없는 기본 라벨이 이미 존재하는지 확인
+      if (existingLabels.includes(baseLabel)) {
+        // 사용 가능한 가장 작은 번호 찾기
+        let num = 1;
+        while (existingLabels.includes(`${baseLabel} ${num}`)) {
+          num++;
+        }
+        nodeLabel = `${baseLabel} ${num}`;
+      }
+    }
+
     const newNode: Node = {
       id: `${nodeType}-${Date.now()}`,
       type: nodeType as Node['type'],
-      label: nodeType.charAt(0).toUpperCase() + nodeType.slice(1),
+      label: nodeLabel,
       position: { x: Math.round(position.x), y: Math.round(position.y) },
       isRunning: false,
       tasks: nodeType === 'worker' ? [
@@ -1076,7 +1125,7 @@ function AIPipelineFlow() {
       nodeId: 'system',
       nodeLabel: 'System',
       type: 'info',
-      message: `Added ${nodeType} node at position (${newNode.position.x}, ${newNode.position.y})`
+      message: `Added ${newNode.label} at position (${newNode.position.x}, ${newNode.position.y})`
     });
   }, [currentSection, nodes, project, updateSectionInBackend, addLog, nodeCallbacks]);
 
@@ -1541,16 +1590,28 @@ function AIPipelineFlow() {
               <div className="flex gap-4">
                 {NODE_TYPES
                   .filter(nodeType => nodeType.type !== 'input' && nodeType.type !== 'output')
-                  .map(nodeType => (
-                    <button
-                      key={nodeType.type}
-                      onClick={() => handleNodeAdd(nodeType.type)}
-                      className="flex items-center gap-2 px-4 py-2 rounded-lg bg-gray-100 hover:bg-gray-200"
-                    >
-                      <span className="text-xl">{nodeType.icon}</span>
-                      <span>{nodeType.label}</span>
-                    </button>
-                  ))}
+                  .map(nodeType => {
+                    // supervisor와 planner는 섹션당 하나만 허용
+                    const isDisabled = (nodeType.type === 'supervisor' || nodeType.type === 'planner') &&
+                      currentSection?.nodes.some(n => n.type === nodeType.type);
+                    
+                    return (
+                      <button
+                        key={nodeType.type}
+                        onClick={() => handleNodeAdd(nodeType.type)}
+                        disabled={isDisabled}
+                        className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-colors ${
+                          isDisabled 
+                            ? 'bg-gray-200 text-gray-400 cursor-not-allowed' 
+                            : 'bg-gray-100 hover:bg-gray-200 cursor-pointer'
+                        }`}
+                        title={isDisabled ? `Only one ${nodeType.label} allowed per section` : `Add ${nodeType.label}`}
+                      >
+                        <span className="text-xl">{nodeType.icon}</span>
+                        <span>{nodeType.label}</span>
+                      </button>
+                    );
+                  })}
               </div>
             </Panel>
           </ReactFlow>

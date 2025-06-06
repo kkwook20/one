@@ -179,16 +179,19 @@ export const CustomNode: React.FC<NodeProps<CustomNodeData>> = ({ data, id, sele
             <Settings className="w-4 h-4" />
           </button>
           
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              data.onDelete?.(id);
-            }}
-            className="p-1 rounded hover:bg-gray-100 transition-colors text-red-500"
-            title="Delete"
-          >
-            <Trash2 className="w-4 h-4" />
-          </button>
+          {/* Input/Output 노드는 삭제 버튼 표시하지 않음 */}
+          {data.type !== 'input' && data.type !== 'output' && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                data.onDelete?.(id);
+              }}
+              className="p-1 rounded hover:bg-gray-100 transition-colors text-red-500"
+              title="Delete"
+            >
+              <Trash2 className="w-4 h-4" />
+            </button>
+          )}
         </div>
       </div>
 

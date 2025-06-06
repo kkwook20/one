@@ -1,6 +1,6 @@
 // frontend/src/components/modals/SupervisorEditModal.tsx - 정리된 버전
 import React, { useState, useEffect } from 'react';
-import { X, Award } from 'lucide-react';
+import { X, Award, Pencil, Save, Play, FileText, Loader } from 'lucide-react';
 import { Node, Section } from '../../types';
 import { apiClient } from '../../api/client';
 import { CodeEditor } from '../CodeEditor';
@@ -29,6 +29,11 @@ export const SupervisorEditModal: React.FC<SupervisorEditModalProps> = ({
   const [selectedModification, setSelectedModification] = useState<any>(null);
   const [selectedEvaluation, setSelectedEvaluation] = useState<any>(null);
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
+  const [isEditingName, setIsEditingName] = useState(false);
+  const [tempName, setTempName] = useState(editedNode.label);
+  const [showJsonViewer, setShowJsonViewer] = useState(false);
+  const [isExecuting, setIsExecuting] = useState(false);
+  const [executionResult, setExecutionResult] = useState<{ success: boolean; output?: any; error?: string } | null>(null);
 
   useEffect(() => {
     // Load available models
@@ -51,6 +56,47 @@ export const SupervisorEditModal: React.FC<SupervisorEditModalProps> = ({
       evaluationHistory
     });
     onClose();
+  };
+
+  const handleRename = () => {
+    setEditedNode({ ...editedNode, label: tempName });
+    setIsEditingName(false);
+  };
+
+  const handleCancelRename = () => {
+    setTempName(editedNode.label);
+    setIsEditingName(false);
+  };
+
+  const executeCode = async () => {
+    setIsExecuting(true);
+    setExecutionResult(null);
+    
+    try {
+      const response = await apiClient.executeNode(
+        node.id,
+        section.id,
+        editedNode.code || '',
+        {}
+      );
+      
+      if (response.data.status === 'started') {
+        setTimeout(() => {
+          setIsExecuting(false);
+          setExecutionResult({
+            success: true,
+            output: "Code execution started. Check the node for results."
+          });
+        }, 1000);
+      }
+    } catch (error: any) {
+      console.error('Execution failed:', error);
+      setIsExecuting(false);
+      setExecutionResult({
+        success: false,
+        error: error.response?.data?.detail || error.message || 'Execution failed'
+      });
+    }
   };
 
   const executeSupervision = async () => {
@@ -149,12 +195,60 @@ def ${node.type === 'supervisor' ? 'supervise' : 'plan'}_nodes():
 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-      <div className="bg-white rounded-lg w-full max-w-7xl h-5/6 flex flex-col">
+      <div className="bg-white rounded-lg w-[90%] max-w-7xl h-[90%] flex flex-col">
         <div className="p-4 border-b flex justify-between items-center">
-          <h2 className="text-xl font-bold">
-            <span className="text-2xl mr-2">{node.type === 'supervisor' ? '👔' : '📋'}</span>
-            {node.type === 'supervisor' ? 'Supervisor' : 'Planner'} - {node.label}
-          </h2>
+          <div className="flex items-center gap-2">
+            <span className="text-2xl">{node.type === 'supervisor' ? '👔' : '📋'}</span>
+            {isEditingName ? (
+              <div className="flex items-center gap-2">
+                <input
+                  type="text"
+                  value={tempName}
+                  onChange={(e) => setTempName(e.target.value)}
+                  className="px-2 py-1 border rounded focus:outline-none focus:border-blue-500"
+                  autoFocus
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') handleRename();
+                    if (e.key === 'Escape') handleCancelRename();
+                  }}
+                />
+                <button
+                  onClick={handleRename}
+                  className="px-3 py-1 bg-blue-500 text-white rounded text-sm hover:bg-blue-600"
+                >
+                  Rename
+                </button>
+                <button
+                  onClick={handleCancelRename}
+                  className="px-3 py-1 bg-gray-300 text-gray-700 rounded text-sm hover:bg-gray-400"
+                >
+                  Cancel
+                </button>
+              </div>
+            ) : (
+              <h2 className="text-xl font-bold group flex items-center gap-1">
+                <span>{node.type === 'supervisor' ? 'Supervisor' : 'Planner'} - </span>
+                <span 
+                  onClick={() => {
+                    setIsEditingName(true);
+                    setTempName(editedNode.label);
+                  }}
+                  className="cursor-pointer hover:text-blue-600"
+                >
+                  {editedNode.label}
+                </span>
+                <button
+                  onClick={() => {
+                    setIsEditingName(true);
+                    setTempName(editedNode.label);
+                  }}
+                  className="invisible group-hover:visible p-1 hover:bg-gray-100 rounded"
+                >
+                  <Pencil className="w-4 h-4 text-gray-600" />
+                </button>
+              </h2>
+            )}
+          </div>
           <button onClick={onClose} className="text-2xl hover:text-gray-600">&times;</button>
         </div>
 
@@ -172,6 +266,32 @@ def ${node.type === 'supervisor' ? 'supervise' : 'plan'}_nodes():
                 onChange={(code) => setEditedNode({ ...editedNode, code })}
               />
             </div>
+            
+            {/* Execution Result */}
+            {executionResult && (
+              <div className={`p-3 ${executionResult.success ? 'bg-green-50' : 'bg-red-50'}`}>
+                <div className="flex items-start gap-2">
+                  <div className="flex-1">
+                    {executionResult.success ? (
+                      <div className="text-green-700">
+                        <strong>Success:</strong> {typeof executionResult.output === 'string' ? executionResult.output : JSON.stringify(executionResult.output)}
+                      </div>
+                    ) : (
+                      <div className="text-red-700">
+                        <strong>Error:</strong> {executionResult.error}
+                      </div>
+                    )}
+                  </div>
+                  <button
+                    onClick={() => setExecutionResult(null)}
+                    className="text-gray-500 hover:text-gray-700"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+            )}
+            
             <div className="p-3 border-t">
               <select
                 value={editedNode.model || 'none'}
@@ -359,14 +479,91 @@ def ${node.type === 'supervisor' ? 'supervise' : 'plan'}_nodes():
         </div>
 
         <div className="p-4 border-t flex gap-2">
-          <button onClick={handleSave} className="flex-1 bg-blue-500 text-white rounded px-4 py-2 hover:bg-blue-600">
+          <button 
+            onClick={handleSave} 
+            className="flex items-center gap-2 bg-blue-500 text-white rounded px-4 py-2 hover:bg-blue-600"
+          >
+            <Save className="w-4 h-4" />
             Save
           </button>
-          <button onClick={onClose} className="flex-1 bg-gray-300 rounded px-4 py-2 hover:bg-gray-400">
+          <button
+            onClick={executeCode}
+            disabled={isExecuting}
+            className={`flex items-center gap-2 rounded px-4 py-2 ${
+              isExecuting 
+                ? 'bg-gray-400 text-gray-200 cursor-not-allowed' 
+                : 'bg-green-500 text-white hover:bg-green-600'
+            }`}
+          >
+            {isExecuting ? (
+              <>
+                <Loader className="w-4 h-4 animate-spin" />
+                Running...
+              </>
+            ) : (
+              <>
+                <Play className="w-4 h-4" />
+                Run Code
+              </>
+            )}
+          </button>
+          <button
+            onClick={() => setShowJsonViewer(true)}
+            className="flex items-center gap-2 bg-gray-600 text-white rounded px-4 py-2 hover:bg-gray-700"
+          >
+            <FileText className="w-4 h-4" />
+            View JSON
+          </button>
+          <button 
+            onClick={onClose} 
+            className="ml-auto bg-gray-300 rounded px-4 py-2 hover:bg-gray-400"
+          >
             Cancel
           </button>
         </div>
       </div>
+
+      {/* JSON Viewer Modal */}
+      {showJsonViewer && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[60]">
+          <div className="bg-white rounded-lg w-[60%] max-w-3xl h-[90%] flex flex-col">
+            <div className="p-4 border-b flex justify-between items-center">
+              <h2 className="text-xl font-bold flex items-center gap-2">
+                <FileText className="w-5 h-5" />
+                JSON Source - {editedNode.label}
+              </h2>
+              <button 
+                onClick={() => setShowJsonViewer(false)} 
+                className="text-2xl hover:text-gray-600"
+              >&times;</button>
+            </div>
+            
+            <div className="flex-1 p-4 overflow-auto">
+              <pre className="bg-gray-900 text-gray-100 p-4 rounded font-mono text-sm">
+                {JSON.stringify(editedNode, null, 2)}
+              </pre>
+            </div>
+            
+            <div className="p-4 border-t flex gap-2">
+              <button
+                onClick={() => {
+                  navigator.clipboard.writeText(JSON.stringify(editedNode, null, 2));
+                  alert('JSON copied to clipboard');
+                }}
+                className="flex-1 bg-blue-500 text-white rounded px-4 py-2 hover:bg-blue-600"
+              >
+                Copy to Clipboard
+              </button>
+              <button
+                onClick={() => setShowJsonViewer(false)}
+                className="flex-1 bg-gray-300 rounded px-4 py-2 hover:bg-gray-400"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
