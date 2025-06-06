@@ -1,7 +1,7 @@
 // frontend/src/components/modals/SupervisorEditModal.tsx - 정리된 버전
 import React, { useState, useEffect } from 'react';
 import { X, Award } from 'lucide-react';
-import { Node, Section, Version } from '../../types';
+import { Node, Section } from '../../types';
 import { apiClient } from '../../api/client';
 import { CodeEditor } from '../CodeEditor';
 

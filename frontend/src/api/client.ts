@@ -1,7 +1,7 @@
 // frontend/src/api/client.ts - 정리된 버전
 import axios from 'axios';
 import { API_URL } from '../constants';
-import { Section, Node } from '../types';
+import { Section } from '../types';
 
 // Axios 인스턴스 생성
 const axiosInstance = axios.create({

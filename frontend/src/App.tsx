@@ -31,17 +31,11 @@ import {
   AlertCircle, 
   Clock, 
   RefreshCw,
-  Square, 
-  Trash2, 
-  Power, 
-  FileInput, 
-  FileOutput,
   Loader2,
-  X
 } from 'lucide-react';
 
 // Types
-import { Node, Section, Position, ExecutionLog } from './types';
+import { Node, Section, ExecutionLog } from './types';
 
 // Components
 import { CustomNode } from './components/flow/CustomNode';
@@ -56,7 +50,7 @@ import { useWebSocket } from './hooks/useWebSocket';
 
 // API & Constants
 import { apiClient } from './api/client';
-import { API_URL, GROUPS, NODE_TYPES } from './constants';
+import { GROUPS, NODE_TYPES } from './constants';
 
 // ResizeObserver 에러 방지
 if (typeof window !== 'undefined') {
@@ -1184,63 +1178,6 @@ function AIPipelineFlow() {
       setIsSaving(false);
     }
   }, [sections, selectedSection, nodes, addLog]);
-
-  // 섹션 변경 전에 현재 섹션 저장
-  const saveCurrentSection = useCallback(async () => {
-    const current = sections.find(s => s.name === selectedSection);
-    if (!current) return;
-    
-    // 현재 React Flow 상태를 섹션에 반영
-    const updatedNodes = current.nodes.map(sectionNode => {
-      const flowNode = nodes.find(n => n.id === sectionNode.id);
-      if (flowNode) {
-        return {
-          ...sectionNode,
-          position: {
-            x: flowNode.position.x,
-            y: flowNode.position.y
-          }
-        };
-      }
-      return sectionNode;
-    });
-    
-    const updatedSection = {
-      ...current,
-      nodes: updatedNodes
-    };
-    
-    // 섹션 업데이트
-    setSections(prev => prev.map(s => 
-      s.id === updatedSection.id ? updatedSection : s
-    ));
-    
-    // 백엔드에 저장
-    await updateSectionInBackend(updatedSection);
-    
-    // 펜딩 업데이트가 있으면 즉시 저장
-    if (Object.keys(pendingUpdatesRef.current).length > 0) {
-      if (saveTimeoutRef.current) {
-        clearTimeout(saveTimeoutRef.current);
-      }
-      
-      const sectionsToUpdate = { ...pendingUpdatesRef.current };
-      pendingUpdatesRef.current = {};
-      
-      setIsSaving(true);
-      
-      for (const [sectionId, sectionData] of Object.entries(sectionsToUpdate)) {
-        try {
-          await apiClient.updateSection(sectionId, sectionData);
-        } catch (error) {
-          console.error('Failed to save section:', error);
-        }
-      }
-      
-      setIsSaving(false);
-    }
-  }, [sections, selectedSection, nodes, updateSectionInBackend]);
-  
   // 섹션 변경 핸들러
   const handleSectionChange = useCallback(async (sectionName: string) => {
     // 현재 섹션 저장 (React Flow 상태 포함)

@@ -59,31 +59,6 @@
         "plannerRecommendations": null
       },
       {
-        "id": "supervisor-1749213323493",
-        "type": "supervisor",
-        "label": "Supervisor",
-        "position": {
-          "x": 566.0,
-          "y": 589.0
-        },
-        "isRunning": false,
-        "isDeactivated": false,
-        "tasks": null,
-        "connectedTo": [],
-        "connectedFrom": [],
-        "code": null,
-        "output": null,
-        "error": null,
-        "model": null,
-        "vectorDB": null,
-        "supervisedNodes": null,
-        "updateHistory": null,
-        "aiScore": null,
-        "modificationHistory": null,
-        "evaluationHistory": null,
-        "plannerRecommendations": null
-      },
-      {
         "id": "worker-1749213323805",
         "type": "worker",
         "label": "Worker",
