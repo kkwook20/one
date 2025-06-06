@@ -41,3 +41,9 @@ qdrant_storage/
 # Environment variables
 .env
 .env.local
+backend/__pycache__/models.cpython-310.pyc
+backend/__pycache__/models.cpython-310.pyc
+*.pyc
+*.pyc
+*.pyc
+*.pyc
