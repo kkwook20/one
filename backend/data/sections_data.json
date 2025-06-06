@@ -1,0 +1,881 @@
+{
+  "preproduction-script": {
+    "id": "preproduction-script",
+    "name": "Script",
+    "group": "preproduction",
+    "nodes": [
+      {
+        "id": "input-preproduction-script",
+        "type": "input",
+        "label": "Input",
+        "position": {
+          "x": 100.0,
+          "y": 200.0
+        },
+        "isRunning": false,
+        "isDeactivated": false,
+        "tasks": null,
+        "connectedTo": [],
+        "connectedFrom": null,
+        "code": null,
+        "output": null,
+        "error": null,
+        "model": null,
+        "vectorDB": null,
+        "supervisedNodes": null,
+        "updateHistory": null,
+        "aiScore": null,
+        "modificationHistory": null,
+        "evaluationHistory": null,
+        "plannerRecommendations": null
+      },
+      {
+        "id": "output-preproduction-script",
+        "type": "output",
+        "label": "Output",
+        "position": {
+          "x": 700.0,
+          "y": 200.0
+        },
+        "isRunning": false,
+        "isDeactivated": false,
+        "tasks": null,
+        "connectedTo": null,
+        "connectedFrom": [],
+        "code": null,
+        "output": null,
+        "error": null,
+        "model": null,
+        "vectorDB": null,
+        "supervisedNodes": null,
+        "updateHistory": null,
+        "aiScore": null,
+        "modificationHistory": null,
+        "evaluationHistory": null,
+        "plannerRecommendations": null
+      },
+      {
+        "id": "worker-1749204357008",
+        "type": "worker",
+        "label": "Worker",
+        "position": {
+          "x": 902.0,
+          "y": 829.0
+        },
+        "isRunning": false,
+        "isDeactivated": false,
+        "tasks": [
+          {
+            "id": "task-1749204357008",
+            "text": "",
+            "status": "pending"
+          }
+        ],
+        "connectedTo": null,
+        "connectedFrom": null,
+        "code": null,
+        "output": null,
+        "error": null,
+        "model": null,
+        "vectorDB": null,
+        "supervisedNodes": null,
+        "updateHistory": null,
+        "aiScore": null,
+        "modificationHistory": null,
+        "evaluationHistory": null,
+        "plannerRecommendations": null
+      },
+      {
+        "id": "supervisor-1749204357297",
+        "type": "supervisor",
+        "label": "Supervisor",
+        "position": {
+          "x": 902.0,
+          "y": 829.0
+        },
+        "isRunning": false,
+        "isDeactivated": false,
+        "tasks": null,
+        "connectedTo": null,
+        "connectedFrom": null,
+        "code": null,
+        "output": null,
+        "error": null,
+        "model": null,
+        "vectorDB": null,
+        "supervisedNodes": null,
+        "updateHistory": null,
+        "aiScore": null,
+        "modificationHistory": null,
+        "evaluationHistory": null,
+        "plannerRecommendations": null
+      },
+      {
+        "id": "planner-1749204357611",
+        "type": "planner",
+        "label": "Planner",
+        "position": {
+          "x": 902.0,
+          "y": 829.0
+        },
+        "isRunning": false,
+        "isDeactivated": false,
+        "tasks": null,
+        "connectedTo": null,
+        "connectedFrom": null,
+        "code": null,
+        "output": null,
+        "error": null,
+        "model": null,
+        "vectorDB": null,
+        "supervisedNodes": null,
+        "updateHistory": null,
+        "aiScore": null,
+        "modificationHistory": null,
+        "evaluationHistory": null,
+        "plannerRecommendations": null
+      },
+      {
+        "id": "worker-1749204360098",
+        "type": "worker",
+        "label": "Worker",
+        "position": {
+          "x": 902.0,
+          "y": 829.0
+        },
+        "isRunning": false,
+        "isDeactivated": false,
+        "tasks": [
+          {
+            "id": "task-1749204360098",
+            "text": "",
+            "status": "pending"
+          }
+        ],
+        "connectedTo": null,
+        "connectedFrom": null,
+        "code": null,
+        "output": null,
+        "error": null,
+        "model": null,
+        "vectorDB": null,
+        "supervisedNodes": null,
+        "updateHistory": null,
+        "aiScore": null,
+        "modificationHistory": null,
+        "evaluationHistory": null,
+        "plannerRecommendations": null
+      }
+    ],
+    "inputConfig": null,
+    "outputConfig": null
+  },
+  "preproduction-storyboard": {
+    "id": "preproduction-storyboard",
+    "name": "Storyboard",
+    "group": "preproduction",
+    "nodes": [
+      {
+        "id": "input-preproduction-storyboard",
+        "type": "input",
+        "label": "Input",
+        "position": {
+          "x": 100.0,
+          "y": 200.0
+        },
+        "isRunning": false,
+        "isDeactivated": false,
+        "tasks": null,
+        "connectedTo": null,
+        "connectedFrom": null,
+        "code": null,
+        "output": null,
+        "error": null,
+        "model": null,
+        "vectorDB": null,
+        "supervisedNodes": null,
+        "updateHistory": null,
+        "aiScore": null,
+        "modificationHistory": null,
+        "evaluationHistory": null,
+        "plannerRecommendations": null
+      },
+      {
+        "id": "output-preproduction-storyboard",
+        "type": "output",
+        "label": "Output",
+        "position": {
+          "x": 700.0,
+          "y": 200.0
+        },
+        "isRunning": false,
+        "isDeactivated": false,
+        "tasks": null,
+        "connectedTo": null,
+        "connectedFrom": [],
+        "code": null,
+        "output": null,
+        "error": null,
+        "model": null,
+        "vectorDB": null,
+        "supervisedNodes": null,
+        "updateHistory": null,
+        "aiScore": null,
+        "modificationHistory": null,
+        "evaluationHistory": null,
+        "plannerRecommendations": null
+      }
+    ],
+    "inputConfig": null,
+    "outputConfig": null
+  },
+  "preproduction-planning": {
+    "id": "preproduction-planning",
+    "name": "Planning",
+    "group": "preproduction",
+    "nodes": [
+      {
+        "id": "input-preproduction-planning",
+        "type": "input",
+        "label": "Input",
+        "position": {
+          "x": 100.0,
+          "y": 200.0
+        },
+        "isRunning": false,
+        "isDeactivated": false,
+        "tasks": null,
+        "connectedTo": null,
+        "connectedFrom": null,
+        "code": null,
+        "output": null,
+        "error": null,
+        "model": null,
+        "vectorDB": null,
+        "supervisedNodes": null,
+        "updateHistory": null,
+        "aiScore": null,
+        "modificationHistory": null,
+        "evaluationHistory": null,
+        "plannerRecommendations": null
+      },
+      {
+        "id": "output-preproduction-planning",
+        "type": "output",
+        "label": "Output",
+        "position": {
+          "x": 700.0,
+          "y": 200.0
+        },
+        "isRunning": false,
+        "isDeactivated": false,
+        "tasks": null,
+        "connectedTo": null,
+        "connectedFrom": [],
+        "code": null,
+        "output": null,
+        "error": null,
+        "model": null,
+        "vectorDB": null,
+        "supervisedNodes": null,
+        "updateHistory": null,
+        "aiScore": null,
+        "modificationHistory": null,
+        "evaluationHistory": null,
+        "plannerRecommendations": null
+      }
+    ],
+    "inputConfig": null,
+    "outputConfig": null
+  },
+  "postproduction-modeling": {
+    "id": "postproduction-modeling",
+    "name": "Modeling",
+    "group": "postproduction",
+    "nodes": [
+      {
+        "id": "input-postproduction-modeling",
+        "type": "input",
+        "label": "Input",
+        "position": {
+          "x": 100.0,
+          "y": 200.0
+        },
+        "isRunning": false,
+        "isDeactivated": false,
+        "tasks": null,
+        "connectedTo": null,
+        "connectedFrom": null,
+        "code": null,
+        "output": null,
+        "error": null,
+        "model": null,
+        "vectorDB": null,
+        "supervisedNodes": null,
+        "updateHistory": null,
+        "aiScore": null,
+        "modificationHistory": null,
+        "evaluationHistory": null,
+        "plannerRecommendations": null
+      },
+      {
+        "id": "output-postproduction-modeling",
+        "type": "output",
+        "label": "Output",
+        "position": {
+          "x": 700.0,
+          "y": 200.0
+        },
+        "isRunning": false,
+        "isDeactivated": false,
+        "tasks": null,
+        "connectedTo": null,
+        "connectedFrom": [],
+        "code": null,
+        "output": null,
+        "error": null,
+        "model": null,
+        "vectorDB": null,
+        "supervisedNodes": null,
+        "updateHistory": null,
+        "aiScore": null,
+        "modificationHistory": null,
+        "evaluationHistory": null,
+        "plannerRecommendations": null
+      }
+    ],
+    "inputConfig": null,
+    "outputConfig": null
+  },
+  "postproduction-rigging": {
+    "id": "postproduction-rigging",
+    "name": "Rigging",
+    "group": "postproduction",
+    "nodes": [
+      {
+        "id": "input-postproduction-rigging",
+        "type": "input",
+        "label": "Input",
+        "position": {
+          "x": 100.0,
+          "y": 200.0
+        },
+        "isRunning": false,
+        "isDeactivated": false,
+        "tasks": null,
+        "connectedTo": null,
+        "connectedFrom": null,
+        "code": null,
+        "output": null,
+        "error": null,
+        "model": null,
+        "vectorDB": null,
+        "supervisedNodes": null,
+        "updateHistory": null,
+        "aiScore": null,
+        "modificationHistory": null,
+        "evaluationHistory": null,
+        "plannerRecommendations": null
+      },
+      {
+        "id": "output-postproduction-rigging",
+        "type": "output",
+        "label": "Output",
+        "position": {
+          "x": 700.0,
+          "y": 200.0
+        },
+        "isRunning": false,
+        "isDeactivated": false,
+        "tasks": null,
+        "connectedTo": null,
+        "connectedFrom": [],
+        "code": null,
+        "output": null,
+        "error": null,
+        "model": null,
+        "vectorDB": null,
+        "supervisedNodes": null,
+        "updateHistory": null,
+        "aiScore": null,
+        "modificationHistory": null,
+        "evaluationHistory": null,
+        "plannerRecommendations": null
+      }
+    ],
+    "inputConfig": null,
+    "outputConfig": null
+  },
+  "postproduction-texture": {
+    "id": "postproduction-texture",
+    "name": "Texture",
+    "group": "postproduction",
+    "nodes": [
+      {
+        "id": "input-postproduction-texture",
+        "type": "input",
+        "label": "Input",
+        "position": {
+          "x": 100.0,
+          "y": 200.0
+        },
+        "isRunning": false,
+        "isDeactivated": false,
+        "tasks": null,
+        "connectedTo": null,
+        "connectedFrom": null,
+        "code": null,
+        "output": null,
+        "error": null,
+        "model": null,
+        "vectorDB": null,
+        "supervisedNodes": null,
+        "updateHistory": null,
+        "aiScore": null,
+        "modificationHistory": null,
+        "evaluationHistory": null,
+        "plannerRecommendations": null
+      },
+      {
+        "id": "output-postproduction-texture",
+        "type": "output",
+        "label": "Output",
+        "position": {
+          "x": 700.0,
+          "y": 200.0
+        },
+        "isRunning": false,
+        "isDeactivated": false,
+        "tasks": null,
+        "connectedTo": null,
+        "connectedFrom": [],
+        "code": null,
+        "output": null,
+        "error": null,
+        "model": null,
+        "vectorDB": null,
+        "supervisedNodes": null,
+        "updateHistory": null,
+        "aiScore": null,
+        "modificationHistory": null,
+        "evaluationHistory": null,
+        "plannerRecommendations": null
+      }
+    ],
+    "inputConfig": null,
+    "outputConfig": null
+  },
+  "postproduction-animation": {
+    "id": "postproduction-animation",
+    "name": "Animation",
+    "group": "postproduction",
+    "nodes": [
+      {
+        "id": "input-postproduction-animation",
+        "type": "input",
+        "label": "Input",
+        "position": {
+          "x": 100.0,
+          "y": 200.0
+        },
+        "isRunning": false,
+        "isDeactivated": false,
+        "tasks": null,
+        "connectedTo": null,
+        "connectedFrom": null,
+        "code": null,
+        "output": null,
+        "error": null,
+        "model": null,
+        "vectorDB": null,
+        "supervisedNodes": null,
+        "updateHistory": null,
+        "aiScore": null,
+        "modificationHistory": null,
+        "evaluationHistory": null,
+        "plannerRecommendations": null
+      },
+      {
+        "id": "output-postproduction-animation",
+        "type": "output",
+        "label": "Output",
+        "position": {
+          "x": 700.0,
+          "y": 200.0
+        },
+        "isRunning": false,
+        "isDeactivated": false,
+        "tasks": null,
+        "connectedTo": null,
+        "connectedFrom": [],
+        "code": null,
+        "output": null,
+        "error": null,
+        "model": null,
+        "vectorDB": null,
+        "supervisedNodes": null,
+        "updateHistory": null,
+        "aiScore": null,
+        "modificationHistory": null,
+        "evaluationHistory": null,
+        "plannerRecommendations": null
+      }
+    ],
+    "inputConfig": null,
+    "outputConfig": null
+  },
+  "postproduction-vfx": {
+    "id": "postproduction-vfx",
+    "name": "VFX",
+    "group": "postproduction",
+    "nodes": [
+      {
+        "id": "input-postproduction-vfx",
+        "type": "input",
+        "label": "Input",
+        "position": {
+          "x": 100.0,
+          "y": 200.0
+        },
+        "isRunning": false,
+        "isDeactivated": false,
+        "tasks": null,
+        "connectedTo": null,
+        "connectedFrom": null,
+        "code": null,
+        "output": null,
+        "error": null,
+        "model": null,
+        "vectorDB": null,
+        "supervisedNodes": null,
+        "updateHistory": null,
+        "aiScore": null,
+        "modificationHistory": null,
+        "evaluationHistory": null,
+        "plannerRecommendations": null
+      },
+      {
+        "id": "output-postproduction-vfx",
+        "type": "output",
+        "label": "Output",
+        "position": {
+          "x": 700.0,
+          "y": 200.0
+        },
+        "isRunning": false,
+        "isDeactivated": false,
+        "tasks": null,
+        "connectedTo": null,
+        "connectedFrom": [],
+        "code": null,
+        "output": null,
+        "error": null,
+        "model": null,
+        "vectorDB": null,
+        "supervisedNodes": null,
+        "updateHistory": null,
+        "aiScore": null,
+        "modificationHistory": null,
+        "evaluationHistory": null,
+        "plannerRecommendations": null
+      }
+    ],
+    "inputConfig": null,
+    "outputConfig": null
+  },
+  "postproduction-lighting-&-rendering": {
+    "id": "postproduction-lighting-&-rendering",
+    "name": "Lighting & Rendering",
+    "group": "postproduction",
+    "nodes": [
+      {
+        "id": "input-postproduction-lighting-&-rendering",
+        "type": "input",
+        "label": "Input",
+        "position": {
+          "x": 100.0,
+          "y": 200.0
+        },
+        "isRunning": false,
+        "isDeactivated": false,
+        "tasks": null,
+        "connectedTo": null,
+        "connectedFrom": null,
+        "code": null,
+        "output": null,
+        "error": null,
+        "model": null,
+        "vectorDB": null,
+        "supervisedNodes": null,
+        "updateHistory": null,
+        "aiScore": null,
+        "modificationHistory": null,
+        "evaluationHistory": null,
+        "plannerRecommendations": null
+      },
+      {
+        "id": "output-postproduction-lighting-&-rendering",
+        "type": "output",
+        "label": "Output",
+        "position": {
+          "x": 700.0,
+          "y": 200.0
+        },
+        "isRunning": false,
+        "isDeactivated": false,
+        "tasks": null,
+        "connectedTo": null,
+        "connectedFrom": [],
+        "code": null,
+        "output": null,
+        "error": null,
+        "model": null,
+        "vectorDB": null,
+        "supervisedNodes": null,
+        "updateHistory": null,
+        "aiScore": null,
+        "modificationHistory": null,
+        "evaluationHistory": null,
+        "plannerRecommendations": null
+      }
+    ],
+    "inputConfig": null,
+    "outputConfig": null
+  },
+  "postproduction-sound-design": {
+    "id": "postproduction-sound-design",
+    "name": "Sound Design",
+    "group": "postproduction",
+    "nodes": [
+      {
+        "id": "input-postproduction-sound-design",
+        "type": "input",
+        "label": "Input",
+        "position": {
+          "x": 100.0,
+          "y": 200.0
+        },
+        "isRunning": false,
+        "isDeactivated": false,
+        "tasks": null,
+        "connectedTo": null,
+        "connectedFrom": null,
+        "code": null,
+        "output": null,
+        "error": null,
+        "model": null,
+        "vectorDB": null,
+        "supervisedNodes": null,
+        "updateHistory": null,
+        "aiScore": null,
+        "modificationHistory": null,
+        "evaluationHistory": null,
+        "plannerRecommendations": null
+      },
+      {
+        "id": "output-postproduction-sound-design",
+        "type": "output",
+        "label": "Output",
+        "position": {
+          "x": 700.0,
+          "y": 200.0
+        },
+        "isRunning": false,
+        "isDeactivated": false,
+        "tasks": null,
+        "connectedTo": null,
+        "connectedFrom": [],
+        "code": null,
+        "output": null,
+        "error": null,
+        "model": null,
+        "vectorDB": null,
+        "supervisedNodes": null,
+        "updateHistory": null,
+        "aiScore": null,
+        "modificationHistory": null,
+        "evaluationHistory": null,
+        "plannerRecommendations": null
+      }
+    ],
+    "inputConfig": null,
+    "outputConfig": null
+  },
+  "postproduction-compositing": {
+    "id": "postproduction-compositing",
+    "name": "Compositing",
+    "group": "postproduction",
+    "nodes": [
+      {
+        "id": "input-postproduction-compositing",
+        "type": "input",
+        "label": "Input",
+        "position": {
+          "x": 100.0,
+          "y": 200.0
+        },
+        "isRunning": false,
+        "isDeactivated": false,
+        "tasks": null,
+        "connectedTo": null,
+        "connectedFrom": null,
+        "code": null,
+        "output": null,
+        "error": null,
+        "model": null,
+        "vectorDB": null,
+        "supervisedNodes": null,
+        "updateHistory": null,
+        "aiScore": null,
+        "modificationHistory": null,
+        "evaluationHistory": null,
+        "plannerRecommendations": null
+      },
+      {
+        "id": "output-postproduction-compositing",
+        "type": "output",
+        "label": "Output",
+        "position": {
+          "x": 700.0,
+          "y": 200.0
+        },
+        "isRunning": false,
+        "isDeactivated": false,
+        "tasks": null,
+        "connectedTo": null,
+        "connectedFrom": [],
+        "code": null,
+        "output": null,
+        "error": null,
+        "model": null,
+        "vectorDB": null,
+        "supervisedNodes": null,
+        "updateHistory": null,
+        "aiScore": null,
+        "modificationHistory": null,
+        "evaluationHistory": null,
+        "plannerRecommendations": null
+      }
+    ],
+    "inputConfig": null,
+    "outputConfig": null
+  },
+  "director-direction": {
+    "id": "director-direction",
+    "name": "Direction",
+    "group": "director",
+    "nodes": [
+      {
+        "id": "input-director-direction",
+        "type": "input",
+        "label": "Input",
+        "position": {
+          "x": 100.0,
+          "y": 200.0
+        },
+        "isRunning": false,
+        "isDeactivated": false,
+        "tasks": null,
+        "connectedTo": null,
+        "connectedFrom": null,
+        "code": null,
+        "output": null,
+        "error": null,
+        "model": null,
+        "vectorDB": null,
+        "supervisedNodes": null,
+        "updateHistory": null,
+        "aiScore": null,
+        "modificationHistory": null,
+        "evaluationHistory": null,
+        "plannerRecommendations": null
+      },
+      {
+        "id": "output-director-direction",
+        "type": "output",
+        "label": "Output",
+        "position": {
+          "x": 700.0,
+          "y": 200.0
+        },
+        "isRunning": false,
+        "isDeactivated": false,
+        "tasks": null,
+        "connectedTo": null,
+        "connectedFrom": [],
+        "code": null,
+        "output": null,
+        "error": null,
+        "model": null,
+        "vectorDB": null,
+        "supervisedNodes": null,
+        "updateHistory": null,
+        "aiScore": null,
+        "modificationHistory": null,
+        "evaluationHistory": null,
+        "plannerRecommendations": null
+      }
+    ],
+    "inputConfig": null,
+    "outputConfig": null
+  },
+  "director-review": {
+    "id": "director-review",
+    "name": "Review",
+    "group": "director",
+    "nodes": [
+      {
+        "id": "input-director-review",
+        "type": "input",
+        "label": "Input",
+        "position": {
+          "x": 100.0,
+          "y": 200.0
+        },
+        "isRunning": false,
+        "isDeactivated": false,
+        "tasks": null,
+        "connectedTo": null,
+        "connectedFrom": null,
+        "code": null,
+        "output": null,
+        "error": null,
+        "model": null,
+        "vectorDB": null,
+        "supervisedNodes": null,
+        "updateHistory": null,
+        "aiScore": null,
+        "modificationHistory": null,
+        "evaluationHistory": null,
+        "plannerRecommendations": null
+      },
+      {
+        "id": "output-director-review",
+        "type": "output",
+        "label": "Output",
+        "position": {
+          "x": 700.0,
+          "y": 200.0
+        },
+        "isRunning": false,
+        "isDeactivated": false,
+        "tasks": null,
+        "connectedTo": null,
+        "connectedFrom": [],
+        "code": null,
+        "output": null,
+        "error": null,
+        "model": null,
+        "vectorDB": null,
+        "supervisedNodes": null,
+        "updateHistory": null,
+        "aiScore": null,
+        "modificationHistory": null,
+        "evaluationHistory": null,
+        "plannerRecommendations": null
+      }
+    ],
+    "inputConfig": null,
+    "outputConfig": null
+  }
+}
