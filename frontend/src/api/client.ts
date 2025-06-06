@@ -7,7 +7,7 @@ export const apiClient = {
   // Models
   getModels: () => axios.get(`${API_URL}/models`),
 
-  // Sections - getSections 추가!
+  // Sections
   getSections: () => axios.get(`${API_URL}/sections`),
   
   updateSection: (sectionId: string, data: Section) => 
@@ -59,5 +59,5 @@ export const apiClient = {
 
   // Export
   exportOutput: (sectionId: string) =>
-    axios.post(`${API_URL}/export-output/${sectionId}`)
+    axios.post(`${API_URL}/sections/export-output/${sectionId}`)
 };

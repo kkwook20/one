@@ -1,5 +1,5 @@
-// frontend/src/App.tsx - 완전히 수정된 버전
-import React, { useState, useCallback, useEffect, useRef, useMemo } from 'react';
+// frontend/src/App.tsx - 통합 및 개선된 버전
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import ReactFlow, {
   Node as FlowNode,
   Edge,
@@ -7,8 +7,6 @@ import ReactFlow, {
   MiniMap,
   Background,
   BackgroundVariant,
-  useNodesState,
-  useEdgesState,
   addEdge,
   Connection as FlowConnection,
   NodeTypes,
@@ -20,9 +18,11 @@ import ReactFlow, {
   EdgeChange,
   NodeChange,
   Position,
+  applyNodeChanges,
+  applyEdgeChanges,
 } from 'reactflow';
 import 'reactflow/dist/style.css';
-import { Play, Settings, ChevronUp, ChevronDown, FileText, CheckCircle, AlertCircle, Clock, RefreshCw, Loader2 } from 'lucide-react';
+import { Play, Settings, ChevronDown, FileText, CheckCircle, AlertCircle, Clock, RefreshCw } from 'lucide-react';
 import axios from 'axios';
 
 import { Node, Section } from './types';
@@ -68,9 +68,9 @@ function AIPipelineFlow() {
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   
-  // React Flow states
-  const [nodes, setNodes, onNodesChange] = useNodesState([]);
-  const [edges, setEdges, onEdgesChange] = useEdgesState([]);
+  // React Flow states - 직접 관리
+  const [nodes, setNodes] = useState<FlowNode[]>([]);
+  const [edges, setEdges] = useState<Edge[]>([]);
   
   // UI states
   const [editingNode, setEditingNode] = useState<Node | null>(null);
@@ -84,13 +84,13 @@ function AIPipelineFlow() {
   const [activeEdges, setActiveEdges] = useState<Set<string>>(new Set());
   
   // Refs
-  const lastSelectedSectionRef = useRef<string | null>(null);
+  const nodePositionsRef = useRef<{ [sectionId: string]: { [nodeId: string]: { x: number; y: number } } }>({});
   const isUpdatingRef = useRef(false);
   
   const { project } = useReactFlow();
 
   // 안전한 문자열 변환 함수
-  const getOutputPreview = (output: any): string => {
+  const getOutputPreview = useCallback((output: any): string => {
     if (!output) return '';
     
     let str = '';
@@ -107,7 +107,7 @@ function AIPipelineFlow() {
     }
     
     return str.length > 50 ? str.substring(0, 50) + '...' : str;
-  };
+  }, []);
 
   // 현재 섹션 가져오기
   const getCurrentSection = useCallback(() => {
@@ -148,6 +148,15 @@ function AIPipelineFlow() {
   // 초기 로드
   useEffect(() => {
     fetchSections();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // 노드 위치 저장
+  const saveNodePosition = useCallback((sectionId: string, nodeId: string, position: { x: number; y: number }) => {
+    if (!nodePositionsRef.current[sectionId]) {
+      nodePositionsRef.current[sectionId] = {};
+    }
+    nodePositionsRef.current[sectionId][nodeId] = position;
   }, []);
 
   // 백엔드 업데이트
@@ -296,23 +305,25 @@ function AIPipelineFlow() {
       type: 'info',
       message: `Node deleted: ${nodeId}`
     });
-  }, [getCurrentSection, setNodes, setEdges, updateSectionInBackend, addLog]);
+  }, [getCurrentSection, updateSectionInBackend, addLog]);
 
-  // Edge 삭제 함수
-  const deleteEdgeById = useCallback((edgeId: string) => {
+  // Edge 삭제 - 수정된 버전
+  const handleEdgeDelete = useCallback((edgeId: string) => {
     console.log('Deleting edge:', edgeId);
+    
+    const currentSection = getCurrentSection();
+    if (!currentSection) return;
+    
+    // edge에서 source와 target 추출
+    const edge = edges.find(e => e.id === edgeId);
+    if (!edge) return;
+    
+    const { source: sourceId, target: targetId } = edge;
     
     // React Flow에서 즉시 제거
     setEdges(prev => prev.filter(e => e.id !== edgeId));
     
     // 섹션 데이터 업데이트
-    const currentSection = getCurrentSection();
-    if (!currentSection) return;
-    
-    // ID 파싱
-    const [sourceId, targetId] = edgeId.split('-').filter(Boolean);
-    if (!sourceId || !targetId) return;
-    
     const updatedSection = {
       ...currentSection,
       nodes: currentSection.nodes.map(node => {
@@ -344,21 +355,57 @@ function AIPipelineFlow() {
       type: 'info',
       message: `Connection removed: ${sourceId} → ${targetId}`
     });
-  }, [getCurrentSection, setEdges, updateSectionInBackend, addLog]);
+  }, [edges, getCurrentSection, updateSectionInBackend, addLog]);
 
-  // 섹션 변경 시 React Flow 업데이트
-  useEffect(() => {
+  // 노드 변경 핸들러 - 위치 저장 개선
+  const handleNodesChange = useCallback((changes: NodeChange[]) => {
     const currentSection = getCurrentSection();
     
-    if (!currentSection || lastSelectedSectionRef.current === currentSection.id) return;
+    changes.forEach(change => {
+      if (change.type === 'position' && 'position' in change && change.position && currentSection) {
+        // 위치 변경 시 저장
+        saveNodePosition(currentSection.id, change.id, change.position);
+        
+        // 드래그 종료 시에만 백엔드 업데이트
+        if ('dragging' in change && change.dragging === false) {
+          const node = currentSection.nodes.find(n => n.id === change.id);
+          if (node) {
+            const updatedSection = {
+              ...currentSection,
+              nodes: currentSection.nodes.map(n => 
+                n.id === change.id ? { ...n, position: change.position! } : n
+              )
+            };
+            updateSectionInBackend(updatedSection);
+          }
+        }
+      }
+    });
+    
+    // React Flow 상태 업데이트
+    setNodes(nds => applyNodeChanges(changes, nds));
+  }, [getCurrentSection, saveNodePosition, updateSectionInBackend]);
+
+  // Edge 변경 핸들러
+  const handleEdgesChange = useCallback((changes: EdgeChange[]) => {
+    setEdges(eds => applyEdgeChanges(changes, eds));
+  }, []);
+
+  // 섹션 변경 시 React Flow 업데이트 - 위치 복원 개선
+  useEffect(() => {
+    const currentSection = getCurrentSection();
+    if (!currentSection) return;
     
     console.log('Updating React Flow for section:', currentSection.name);
     
-    // 노드 변환 - 좌우 연결을 위한 핸들 위치 설정
+    // 저장된 위치가 있으면 사용, 없으면 원래 위치 사용
+    const savedPositions = nodePositionsRef.current[currentSection.id] || {};
+    
+    // 노드 변환
     const flowNodes: FlowNode[] = currentSection.nodes.map(node => ({
       id: node.id,
       type: node.type,
-      position: { ...node.position },
+      position: savedPositions[node.id] || { ...node.position },
       data: {
         ...node,
         onEdit: () => setEditingNode(node),
@@ -374,7 +421,6 @@ function AIPipelineFlow() {
       style: {
         opacity: node.isDeactivated ? 0.5 : 1,
       },
-      // 핸들 위치 설정
       sourcePosition: Position.Right,
       targetPosition: Position.Left,
     }));
@@ -392,7 +438,7 @@ function AIPipelineFlow() {
             type: 'custom',
             animated: activeEdges.has(edgeId),
             data: { 
-              onDelete: deleteEdgeById,
+              onDelete: handleEdgeDelete,
               isActive: activeEdges.has(edgeId)
             },
             style: {
@@ -410,11 +456,9 @@ function AIPipelineFlow() {
     
     setNodes(flowNodes);
     setEdges(flowEdges);
-    
-    lastSelectedSectionRef.current = currentSection.id;
   }, [selectedSection, sections, selectedNodeId, nodeProgress, runningNodes, completedNodes, activeEdges, 
       getCurrentSection, handleNodeDelete, handleNodeUpdate, handleNodeDeactivate, handleNodeRun, 
-      deleteEdgeById, setNodes, setEdges]);
+      handleEdgeDelete]);
 
   // 연결 생성
   const onConnect = useCallback((params: FlowConnection) => {
@@ -441,7 +485,7 @@ function AIPipelineFlow() {
       type: 'custom',
       animated: false,
       data: { 
-        onDelete: deleteEdgeById
+        onDelete: handleEdgeDelete
       },
       style: {
         stroke: '#94a3b8',
@@ -482,43 +526,9 @@ function AIPipelineFlow() {
       type: 'info',
       message: 'Connection created'
     });
-  }, [getCurrentSection, edges, updateSectionInBackend, addLog, setEdges, deleteEdgeById]);
+  }, [getCurrentSection, edges, updateSectionInBackend, addLog, handleEdgeDelete]);
 
-  // 노드 위치 변경
-  const handleNodesChange = useCallback((changes: NodeChange[]) => {
-    onNodesChange(changes);
-    
-    // 드래그 종료 시 위치 저장
-    changes.forEach(change => {
-      if (
-        change.type === 'position' && 
-        !isUpdatingRef.current &&
-        'dragging' in change &&
-        change.dragging === false
-      ) {
-        const currentSection = getCurrentSection();
-        if (currentSection) {
-          const node = nodes.find(n => n.id === change.id);
-          if (node && 'position' in change && change.position) {
-            const updatedSection = {
-              ...currentSection,
-              nodes: currentSection.nodes.map(n => 
-                n.id === node.id ? { ...n, position: change.position! } : n
-              )
-            };
-            updateSectionInBackend(updatedSection);
-          }
-        }
-      }
-    });
-  }, [nodes, getCurrentSection, onNodesChange, updateSectionInBackend]);
-
-  // Edge 변경 핸들러
-  const handleEdgesChange = useCallback((changes: EdgeChange[]) => {
-    onEdgesChange(changes);
-  }, [onEdgesChange]);
-
-  // WebSocket handlers - useCallback으로 감싸서 안정적인 참조 유지
+  // WebSocket handlers
   const wsHandlers = React.useMemo(() => ({
     onProgress: (nodeId: string, progress: number) => {
       setNodeProgress(prev => ({ ...prev, [nodeId]: progress }));
@@ -550,6 +560,7 @@ function AIPipelineFlow() {
           
           setCompletedNodes(prev => new Set([...prev, nodeId]));
           
+          // 다음 노드들의 엣지 애니메이션
           const nextNodes = section?.nodes.filter(n => 
             n.connectedFrom?.includes(nodeId)
           );
@@ -610,16 +621,6 @@ function AIPipelineFlow() {
     },
     onNodeExecutionStart: (nodeId: string) => {
       setRunningNodes(prev => new Set([...prev, nodeId]));
-      const section = sections.find(s => s.name === selectedSection);
-      const node = section?.nodes.find(n => n.id === nodeId);
-      if (node) {
-        addLog({
-          nodeId,
-          nodeLabel: node.label || node.type,
-          type: 'start',
-          message: 'Execution started'
-        });
-      }
     },
     onNodeExecutionComplete: (nodeId: string) => {
       setRunningNodes(prev => {
@@ -628,17 +629,6 @@ function AIPipelineFlow() {
         return newSet;
       });
       setCompletedNodes(prev => new Set([...prev, nodeId]));
-      
-      const section = sections.find(s => s.name === selectedSection);
-      const node = section?.nodes.find(n => n.id === nodeId);
-      if (node) {
-        addLog({
-          nodeId,
-          nodeLabel: node.label || node.type,
-          type: 'complete',
-          message: 'Execution completed successfully'
-        });
-      }
     },
     onNodeExecutionError: (nodeId: string, error: string) => {
       setRunningNodes(prev => {
@@ -646,16 +636,6 @@ function AIPipelineFlow() {
         newSet.delete(nodeId);
         return newSet;
       });
-      const section = sections.find(s => s.name === selectedSection);
-      const node = section?.nodes.find(n => n.id === nodeId);
-      if (node) {
-        addLog({
-          nodeId,
-          nodeLabel: node.label || node.type,
-          type: 'error',
-          message: `Error: ${error}`
-        });
-      }
     }
   }), [sections, selectedSection, addLog, handleNodeUpdate, getOutputPreview]);
 
@@ -690,6 +670,9 @@ function AIPipelineFlow() {
 
     setSections(prev => prev.map(s => s.id === updatedSection.id ? updatedSection : s));
     await updateSectionInBackend(updatedSection);
+    
+    // 새 노드의 위치 저장
+    saveNodePosition(currentSection.id, newNode.id, position);
     
     addLog({
       nodeId: 'system',
