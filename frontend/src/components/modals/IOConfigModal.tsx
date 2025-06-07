@@ -241,8 +241,8 @@ Scene 2:
                     .filter(n => node.connectedFrom?.includes(n.id))
                     .map(n => (
                       <div key={n.id} className="flex justify-between items-center bg-white p-2 rounded">
-                        <span className="font-medium">{n.label}</span>
-                        <span className="text-sm text-gray-600">{n.type}</span>
+                        <span className="font-medium truncate flex-1">{n.label}</span>
+                        <span className="text-sm text-gray-600 ml-2">{n.type}</span>
                       </div>
                     ))
                 ) : (

@@ -553,11 +553,25 @@ output = {
                 </select>
 
                 {connectedNodeData && (
-                  <div className="bg-gray-50 rounded-md p-3">
-                    <h4 className="font-medium mb-2">Input Data:</h4>
-                    <pre className="text-xs overflow-x-auto">
-                      {JSON.stringify(connectedNodeData, null, 2)}
-                    </pre>
+                  <div className="bg-gray-50 rounded-md p-3 flex flex-col h-full max-h-[400px]">
+                    <h4 className="font-medium mb-2 flex justify-between items-center flex-shrink-0">
+                      <span>Input Data:</span>
+                      <button
+                        onClick={() => {
+                          const jsonStr = JSON.stringify(connectedNodeData, null, 2);
+                          navigator.clipboard.writeText(jsonStr);
+                          alert('Copied to clipboard!');
+                        }}
+                        className="text-xs text-indigo-600 hover:text-indigo-800"
+                      >
+                        Copy
+                      </button>
+                    </h4>
+                    <div className="flex-1 overflow-auto min-h-0">
+                      <pre className="text-xs p-2 bg-white rounded border border-gray-200 whitespace-pre-wrap break-words">
+                        {JSON.stringify(connectedNodeData, null, 2)}
+                      </pre>
+                    </div>
                   </div>
                 )}
               </div>
@@ -880,11 +894,27 @@ output = {
               {/* Right Panel - Output & History */}
               <div className="w-1/3 border-l flex flex-col">
                 <div className="flex-1 p-4 overflow-y-auto">
-                  <h3 className="font-semibold mb-2">Output</h3>
+                  <h3 className="font-semibold mb-2 flex justify-between items-center">
+                    <span>Output</span>
+                    {editedNode.output && (
+                      <button
+                        onClick={() => {
+                          const jsonStr = JSON.stringify(editedNode.output, null, 2);
+                          navigator.clipboard.writeText(jsonStr);
+                          alert('Output copied to clipboard!');
+                        }}
+                        className="text-xs text-indigo-600 hover:text-indigo-800"
+                      >
+                        Copy
+                      </button>
+                    )}
+                  </h3>
                   {editedNode.output ? (
-                    <pre className="bg-gray-50 rounded-md p-3 text-xs overflow-x-auto">
-                      {JSON.stringify(editedNode.output, null, 2)}
-                    </pre>
+                    <div className="bg-gray-50 rounded-md p-3 max-h-[400px] overflow-auto">
+                      <pre className="text-xs whitespace-pre-wrap break-words">
+                        {JSON.stringify(editedNode.output, null, 2)}
+                      </pre>
+                    </div>
                   ) : (
                     <div className="text-gray-500">No output yet</div>
                   )}

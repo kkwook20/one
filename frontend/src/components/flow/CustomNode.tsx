@@ -51,7 +51,8 @@ export const CustomNode: React.FC<NodeProps<CustomNodeData>> = ({ data, id, sele
       str = String(output);
     }
     
-    return str.length > 50 ? str.substring(0, 50) + '...' : str;
+    // 줄바꿈 제거하고 50자로 제한
+    return str.replace(/\n/g, ' ').length > 50 ? str.replace(/\n/g, ' ').substring(0, 50) + '...' : str.replace(/\n/g, ' ');
   };
 
   const getNodeIcon = () => {
@@ -285,8 +286,8 @@ export const CustomNode: React.FC<NodeProps<CustomNodeData>> = ({ data, id, sele
         
         {/* Output preview */}
         {data.output && (
-          <div className="mt-2 p-2 bg-gray-50 rounded text-xs text-gray-600">
-            Output: {getOutputPreview(data.output)}
+          <div className="mt-2 p-2 bg-gray-50 rounded text-xs text-gray-600 overflow-hidden">
+            <div className="truncate">Output: {getOutputPreview(data.output)}</div>
           </div>
         )}
       </div>

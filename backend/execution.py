@@ -60,20 +60,25 @@ async def execute_python_code(node_id: str, code: str, context: Dict[str, Any] =
     with tempfile.TemporaryDirectory() as temp_dir:
         code_file = os.path.join(temp_dir, "node_code.py")
         
-        # 코드 래핑
-        wrapped_code = f"""
+        # 코드 래핑 - UTF-8 인코딩 설정 추가
+        wrapped_code = f"""# -*- coding: utf-8 -*-
 import json
 import sys
 
+# UTF-8 인코딩 설정
+import io
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
+
 # 입력 데이터
-inputs = {json.dumps(inputs)}
+inputs = {json.dumps(inputs, ensure_ascii=False)}
 
 # AI 모델 설정
 model_name = "{model_name}"
 lm_studio_url = "{lm_studio_url}"
 
 # 현재 노드 정보
-current_node = {json.dumps(current_node_data)}
+current_node = {json.dumps(current_node_data, ensure_ascii=False)}
 
 # 노드 목적
 node_purpose = '''{node_purpose}'''
@@ -82,7 +87,7 @@ node_purpose = '''{node_purpose}'''
 output_format_description = '''{output_format_description}'''
 
 # 미리 로드된 global variables
-_global_vars = {json.dumps(global_vars_data)}
+_global_vars = {json.dumps(global_vars_data, ensure_ascii=False)}
 
 # 글로벌 변수 접근 함수
 def get_global_var(var_path):
@@ -117,31 +122,41 @@ try:
 {chr(10).join('    ' + line for line in code.split(chr(10)))}
 except Exception as e:
     output = {{"error": str(e), "type": str(type(e).__name__)}}
+    import traceback
+    traceback.print_exc()
 
 # 결과 출력
 if output is not None:
-    print(json.dumps({{"success": True, "output": output}}))
+    print(json.dumps({{"success": True, "output": output}}, ensure_ascii=False))
 else:
-    print(json.dumps({{"success": True, "output": {{"message": "Code executed successfully"}}}}))
+    print(json.dumps({{"success": True, "output": {{"message": "Code executed successfully"}}}}, ensure_ascii=False))
 """
         
+        # UTF-8로 파일 저장
         with open(code_file, "w", encoding='utf-8') as f:
             f.write(wrapped_code)
         
-        # 코드 실행
+        # 코드 실행 - UTF-8 인코딩 명시
         try:
+            # Windows에서 UTF-8 사용을 위한 환경 변수 설정
+            env = os.environ.copy()
+            env['PYTHONIOENCODING'] = 'utf-8'
+            
             result = subprocess.run(
                 [sys.executable, code_file],
                 capture_output=True,
                 text=True,
                 timeout=30,  # 30초 타임아웃
-                cwd=temp_dir
+                cwd=temp_dir,
+                encoding='utf-8',  # UTF-8 인코딩 명시
+                env=env  # 환경 변수 전달
             )
             
             if result.returncode == 0:
                 try:
                     return json.loads(result.stdout)
                 except json.JSONDecodeError:
+                    # stdout이 비어있거나 JSON이 아닌 경우
                     return {"success": True, "output": result.stdout.strip() or "No output"}
             else:
                 return {"success": False, "error": result.stderr or "Unknown error"}

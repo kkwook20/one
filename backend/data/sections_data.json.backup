@@ -9,8 +9,8 @@
         "type": "input",
         "label": "Input",
         "position": {
-          "x": 73.0,
-          "y": 250.0
+          "x": 100.0,
+          "y": 200.0
         },
         "isRunning": false,
         "isDeactivated": false,
@@ -43,8 +43,8 @@
         "type": "output",
         "label": "Output",
         "position": {
-          "x": 1464.0,
-          "y": 248.0
+          "x": 1038.0,
+          "y": 207.0
         },
         "isRunning": false,
         "isDeactivated": false,
@@ -74,8 +74,8 @@
         "type": "worker",
         "label": "Worker",
         "position": {
-          "x": 596.0,
-          "y": 467.0
+          "x": 436.0,
+          "y": 418.0
         },
         "isRunning": false,
         "isDeactivated": false,
@@ -103,7 +103,8 @@
           }
         ],
         "connectedTo": [
-          "output-preproduction-script"
+          "output-preproduction-script",
+          "worker-1749290036136"
         ],
         "connectedFrom": [
           "input-preproduction-script"
@@ -116,7 +117,46 @@
         "purpose": "스토리를 해석하여 구조를 분해하여 각 항목들을 만들어낸다\n만들어낸 항목을 정의된 내용으로 분류한다.",
         "outputFormat": "1 . chr (character, detailed, face, 성격, 외모, 성장배경등)\n2.  environment (building, trees, foliage)\n3.  asset\n4.  prop \n\n",
         "lmStudioUrl": "http://localhost:1234/",
-        "lmStudioConnectionId": "conn_1749287528",
+        "lmStudioConnectionId": "conn_1749292759",
+        "supervisedNodes": null,
+        "updateHistory": null,
+        "aiScore": null,
+        "modificationHistory": null,
+        "evaluationHistory": null,
+        "plannerRecommendations": null
+      },
+      {
+        "id": "worker-1749290036136",
+        "type": "worker",
+        "label": "Worker 1",
+        "position": {
+          "x": 871.0,
+          "y": 715.0
+        },
+        "isRunning": false,
+        "isDeactivated": false,
+        "tasks": [
+          {
+            "id": "task-1749290036136",
+            "text": "",
+            "status": "pending",
+            "taskStatus": "editable",
+            "aiScore": null
+          }
+        ],
+        "connectedTo": null,
+        "connectedFrom": [
+          "worker-1749286886724"
+        ],
+        "code": null,
+        "output": null,
+        "error": null,
+        "model": null,
+        "vectorDB": null,
+        "purpose": null,
+        "outputFormat": null,
+        "lmStudioUrl": null,
+        "lmStudioConnectionId": null,
         "supervisedNodes": null,
         "updateHistory": null,
         "aiScore": null,
