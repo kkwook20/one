@@ -1,6 +1,6 @@
-// frontend/src/components/modals/WorkerEditModal.tsx - 원래 레이아웃 복원 + 연결 노드 패널 + AI 모델 선택 + Tasks 탭 (개선된 UI)
+// frontend/src/components/modals/WorkerEditModal.tsx - 정리된 버전
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Save, Play, Database, Clock, Award, Loader, X, Pencil, FileText, FileInput, FileOutput, Plus, Trash2, GripVertical, Lock, Circle, Triangle, Target, FileJson, CheckCircle } from 'lucide-react';
+import { Save, Play, Database, Clock, Award, Loader, X, Pencil, FileText, FileInput, FileOutput, Plus, Trash2, GripVertical, Lock, Circle, Triangle, Target, FileJson, CheckCircle, Square } from 'lucide-react';
 import { Node, Section, Version, TaskItem } from '../../types';
 import { apiClient } from '../../api/client';
 import { CodeEditor } from '../CodeEditor';
@@ -18,7 +18,7 @@ interface WorkerEditModalProps {
 // 실행 로그 타입 추가
 interface ExecutionLog {
   timestamp: string;
-  type: 'start' | 'ai_request' | 'ai_response' | 'complete' | 'error';
+  type: 'start' | 'ai_request' | 'ai_response' | 'complete' | 'error' | 'info';
   message: string;
   details?: any;
 }
@@ -31,19 +31,40 @@ export const WorkerEditModal: React.FC<WorkerEditModalProps> = ({
   onSave,
   onUpdate
 }) => {
-  const [editedNode, setEditedNode] = useState(node);
+  const [editedNode, setEditedNode] = useState<Node & { executionHistory?: ExecutionLog[]; currentExecutionStartTime?: string | null }>({
+    ...node,
+    executionHistory: (node as any).executionHistory || [],
+    currentExecutionStartTime: (node as any).currentExecutionStartTime || null
+  });
   const [selectedInput, setSelectedInput] = useState<string>(node.connectedFrom?.[0] || '');
   const [connectedNodeData, setConnectedNodeData] = useState<any>(null);
   const [versions, setVersions] = useState<Version[]>([]);
   const [activeTab, setActiveTab] = useState<'code' | 'tasks' | 'history'>('code');
-  const [isExecuting, setIsExecuting] = useState(false);
+  
+  // 노드가 실행 중인지 확인하고 초기 상태 설정
+  const [isExecuting, setIsExecuting] = useState(node.isRunning || false);
+  const isExecutingRef = useRef(node.isRunning || false);
+  
+  const executionTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const lastStreamLogTimeRef = useRef<number>(0);
   const [executionResult, setExecutionResult] = useState<{ success: boolean; output?: any; error?: string } | null>(null);
   const [isEditingName, setIsEditingName] = useState(false);
   const [tempName, setTempName] = useState(editedNode.label);
   const [showJsonViewer, setShowJsonViewer] = useState(false);
   const [selectedNodeForEdit, setSelectedNodeForEdit] = useState<Node | null>(null);
-  const [executionLogs, setExecutionLogs] = useState<ExecutionLog[]>([]);
+  const [executionLogs, setExecutionLogs] = useState<ExecutionLog[]>(() => {
+    // 노드에 저장된 실행 이력 불러오기
+    return (node as any).executionHistory || editedNode.executionHistory || [];
+  });
   const [lastExecutionTime, setLastExecutionTime] = useState<string | null>(null);
+  const [lastOutputUpdateTime, setLastOutputUpdateTime] = useState<string | null>(
+    editedNode.output ? new Date().toISOString() : null
+  );
+  const [currentExecutionStartTime, setCurrentExecutionStartTime] = useState<string | null>(
+    (node as any).currentExecutionStartTime || null
+  );
+  const [executionElapsedTime, setExecutionElapsedTime] = useState<number>(0);
+  const messageCheckIntervalRef = useRef<NodeJS.Timeout | null>(null);
   
   // Tasks 관련 상태
   const [tasks, setTasks] = useState<TaskItem[]>(() => {
@@ -56,7 +77,6 @@ export const WorkerEditModal: React.FC<WorkerEditModalProps> = ({
   });
   const [draggedTask, setDraggedTask] = useState<number | null>(null);
   const [dropPosition, setDropPosition] = useState<number | null>(null);
-  const [isDraggingHandle, setIsDraggingHandle] = useState<boolean>(false);
   
   // Purpose와 Output Format 상태
   const [purpose, setPurpose] = useState<string>(editedNode.purpose || '');
@@ -65,29 +85,614 @@ export const WorkerEditModal: React.FC<WorkerEditModalProps> = ({
   // Task 자동 저장을 위한 ref
   const taskSaveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   
+  const addExecutionLog = useCallback((type: ExecutionLog['type'], message: string, details?: any) => {
+    const newLog: ExecutionLog = {
+      timestamp: new Date().toISOString(),
+      type,
+      message,
+      details
+    };
+    
+    setExecutionLogs(prev => {
+      // 최대 50개의 로그만 유지
+      const updatedLogs = [...prev, newLog];
+      if (updatedLogs.length > 50) {
+        return updatedLogs.slice(-50);
+      }
+      return updatedLogs;
+    });
+    
+    // 실행 로그를 노드의 executionHistory에도 저장
+    setEditedNode(prev => {
+      const updatedNode = {
+        ...prev,
+        executionHistory: [
+          ...(prev.executionHistory || []),
+          newLog
+        ].slice(-50) // 최대 50개만 유지
+      };
+      
+      // 자동 저장 (중요한 로그만)
+      if (type === 'complete' || type === 'error') {
+        if (onUpdate) {
+          onUpdate(updatedNode as Node);
+        }
+      }
+      
+      return updatedNode;
+    });
+  }, [onUpdate]);
+
+  const handleClearLogs = () => {
+    setExecutionLogs([]);
+    // editedNode의 executionHistory도 초기화
+    setEditedNode(prev => ({
+      ...prev,
+      executionHistory: []
+    }));
+  };
+
+  const resetExecutionTimeout = useCallback((timeoutDuration: number = 300000) => {
+    // 이전 타임아웃 취소
+    if (executionTimeoutRef.current) {
+      clearTimeout(executionTimeoutRef.current);
+    }
+    
+    // 새로운 타임아웃 설정 (기본 5분)
+    executionTimeoutRef.current = setTimeout(() => {
+      if (isExecutingRef.current) {
+        setIsExecuting(false);
+        isExecutingRef.current = false;
+        setCurrentExecutionStartTime(null);
+        
+        // interval 정리
+        if (messageCheckIntervalRef.current) {
+          clearInterval(messageCheckIntervalRef.current);
+          messageCheckIntervalRef.current = null;
+        }
+        
+        setExecutionResult({
+          success: false,
+          error: `No response from server for ${timeoutDuration / 1000} seconds`
+        });
+        addExecutionLog('error', `❌ Timeout: No activity for ${timeoutDuration / 1000} seconds`);
+        
+        // 타임아웃 시 노드 실행 상태 해제
+        setEditedNode(prev => {
+          const stoppedNode = {
+            ...prev,
+            isRunning: false,
+            currentExecutionStartTime: null
+          };
+          
+          // 원본 node 객체도 업데이트
+          node.isRunning = false;
+          (node as any).currentExecutionStartTime = null;
+          
+          if (onUpdate) {
+            onUpdate(stoppedNode);
+          }
+          return stoppedNode;
+        });
+      }
+    }, timeoutDuration);
+  }, [addExecutionLog, node, onUpdate, messageCheckIntervalRef]);
+
+  // 실행 상태 초기화를 위한 ref
+  const hasInitializedRef = useRef(false);
+  
+  // 컴포넌트 마운트 시 실행 상태 복원 (한 번만 실행)
+  useEffect(() => {
+    // 이미 초기화했으면 다시 실행하지 않음
+    if (hasInitializedRef.current) return;
+    hasInitializedRef.current = true;
+    
+    // 노드가 실행 중이라면
+    if (node.isRunning) {
+      // 실행 시작 시간 확인
+      const startTime = (node as any).currentExecutionStartTime;
+      
+      // 실행 시작한지 10분이 지났으면 실행 상태 해제
+      if (startTime) {
+        const elapsedMinutes = (Date.now() - new Date(startTime).getTime()) / 1000 / 60;
+        if (elapsedMinutes > 10) {
+          // 10분이 지났으면 자동으로 실행 상태 해제
+          const clearedNode = {
+            ...node,
+            isRunning: false,
+            currentExecutionStartTime: null
+          };
+          setEditedNode(clearedNode);
+          
+          // 원본 node 객체도 업데이트
+          node.isRunning = false;
+          (node as any).currentExecutionStartTime = null;
+          
+          if (onUpdate) {
+            onUpdate(clearedNode);
+          }
+          setIsExecuting(false);
+          isExecutingRef.current = false;
+          
+          // 로그 추가
+          setTimeout(() => {
+            addExecutionLog('error', '❌ Execution timeout - cleared stale execution state');
+          }, 100);
+          return;
+        }
+      }
+      
+      setIsExecuting(true);
+      isExecutingRef.current = true;
+      
+      // 실행 시작 시간 복원
+      if (startTime) {
+        setCurrentExecutionStartTime(startTime);
+      } else {
+        // 실행 중이지만 시작 시간이 없으면 현재 시간으로 설정
+        setCurrentExecutionStartTime(new Date().toISOString());
+      }
+      
+      // 실행 중임을 Activity Log에 표시
+      setTimeout(() => {
+        addExecutionLog('info', '⏳ Execution in progress (resumed from workspace)');
+      }, 100);
+      
+      // 타임아웃 재설정 - 짧게 설정 (1분)
+      setTimeout(() => {
+        resetExecutionTimeout(60000); // 1분 후 타임아웃
+      }, 200);
+    }
+    
+    // 저장된 실행 로그가 있다면 복원
+    if ((node as any).executionHistory && (node as any).executionHistory.length > 0) {
+      setExecutionLogs((node as any).executionHistory);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // 의도적으로 빈 의존성 배열 사용 - 마운트 시 한 번만 실행
+
   // WebSocket handler 등록
   useEffect(() => {
     const handleWebSocketMessage = (event: any) => {
       const data = event.detail;
-      if (data.nodeId !== node.id) return;
+      
+      // 중요한 메시지만 로깅 (디버깅용)
+      if (data.type === 'node_output_updated' || data.type === 'node_execution_complete' || 
+          (data.type && data.output !== undefined)) {
+        console.log('[WebSocket] Important message:', data.type, 'nodeId:', data.nodeId);
+      }
+      
+      // nodeId 체크를 더 유연하게
+      if (data.nodeId && data.nodeId !== node.id) {
+        // output이 있고 실행 중이면 예외 처리
+        if (isExecutingRef.current && (data.output !== undefined || data.type?.includes('complete') || data.type?.includes('done'))) {
+          // nodeId가 다르더라도 output이 있으면 처리 계속
+        } else {
+          return;
+        }
+      }
+      
+      // output이 포함된 메시지 처리
+      if (isExecutingRef.current && data.output !== undefined) {
+        // nodeId가 없거나 일치하면 처리
+        if (!data.nodeId || data.nodeId === node.id) {
+          const updatedNodeWithOutput = { 
+            ...editedNode, 
+            output: data.output,
+            isRunning: false,
+            currentExecutionStartTime: null
+          };
+          setEditedNode(updatedNodeWithOutput);
+          setLastOutputUpdateTime(new Date().toISOString());
+          setLastExecutionTime(new Date().toISOString());
+          
+          // 원본 node 객체도 업데이트
+          node.isRunning = false;
+          (node as any).currentExecutionStartTime = null;
+          node.output = data.output;
+          
+          if (onUpdate) {
+            onUpdate(updatedNodeWithOutput);
+          }
+          
+          // 중복 로그 제거 - 한 번만 완료 메시지 표시
+          if (isExecutingRef.current) {
+            addExecutionLog('complete', '✅ Execution completed successfully');
+          }
+          
+          // 실행 종료
+          setTimeout(() => {
+            setIsExecuting(false);
+            isExecutingRef.current = false;
+            setCurrentExecutionStartTime(null);
+            if (executionTimeoutRef.current) {
+              clearTimeout(executionTimeoutRef.current);
+            }
+            if (messageCheckIntervalRef.current) {
+              clearInterval(messageCheckIntervalRef.current);
+              messageCheckIntervalRef.current = null;
+            }
+            setExecutionResult({
+              success: true,
+              output: "Output received successfully"
+            });
+          }, 500);
+          
+          return; // 더 이상 처리하지 않음
+        }
+      }
+      
+      // 실행 중일 때 완료 관련 메시지 확인
+      if (isExecutingRef.current && data.type) {
+        const completionTypes = ['complete', 'done', 'finished', 'success', 'end', 'ai_complete', 'ai_done'];
+        const isCompletionMessage = completionTypes.some(type => 
+          data.type.toLowerCase().includes(type.toLowerCase())
+        );
+        
+        if (isCompletionMessage) {
+          // nodeId가 없거나 일치하면 실행 종료 처리 - 로그는 생략
+          if (!data.nodeId || data.nodeId === node.id) {
+            // 로그 생략하고 바로 처리
+          }
+        }
+      }
       
       switch (data.type) {
         case 'node_execution_start':
+          setIsExecuting(true);
+          isExecutingRef.current = true;
+          resetExecutionTimeout(600000);
           addExecutionLog('start', '🚀 Code execution started');
           break;
+          
         case 'progress':
-          if (data.progress === 0.2) {
-            addExecutionLog('ai_request', '📤 Sending request to AI model...');
-          } else if (data.progress === 0.6) {
-            addExecutionLog('ai_response', '📥 Receiving response from AI model...');
+          // AI 작업 진행 상황에 따라 다른 타임아웃 설정
+          if (data.progress >= 0.3 && data.progress <= 0.7) {
+            resetExecutionTimeout(600000);
+          } else {
+            resetExecutionTimeout(300000);
+          }
+          
+          // 주요 진행 상황만 로그
+          if (data.progress === 0.1) {
+            addExecutionLog('start', '📋 Preparing execution environment...');
+          } else if (data.progress === 0.3) {
+            addExecutionLog('ai_request', '🤖 Sending prompt to AI model...');
+            if (data.prompt_size) {
+              addExecutionLog('info', '📊 Prompt size: ' + data.prompt_size);
+            }
+          } else if (data.progress === 0.5) {
+            addExecutionLog('ai_response', '⏳ AI is processing your request...');
+          } else if (data.progress === 0.7) {
+            addExecutionLog('ai_response', '📥 Receiving AI response...');
+          } else if (data.progress === 1.0) {
+            addExecutionLog('complete', '✅ Processing complete');
+            // Progress 1.0일 때도 실행 종료 처리
+            setTimeout(() => {
+              if (isExecutingRef.current) {
+                setIsExecuting(false);
+                isExecutingRef.current = false;
+                setCurrentExecutionStartTime(null);
+                if (executionTimeoutRef.current) {
+                  clearTimeout(executionTimeoutRef.current);
+                }
+                
+                // 노드 상태 업데이트
+                const completedNode = {
+                  ...editedNode,
+                  isRunning: false,
+                  currentExecutionStartTime: null
+                };
+                setEditedNode(completedNode);
+                
+                // 원본 node 객체도 업데이트
+                node.isRunning = false;
+                (node as any).currentExecutionStartTime = null;
+                
+                if (onUpdate) {
+                  onUpdate(completedNode);
+                }
+              }
+            }, 1000);
           }
           break;
-        case 'node_output_updated':
-          addExecutionLog('complete', '✅ Output successfully updated', data.output);
-          setLastExecutionTime(new Date().toISOString());
+          
+        case 'ai_request':
+          resetExecutionTimeout(600000);
+          addExecutionLog('ai_request', `📤 ${data.message || 'Sending request to AI model'}`);
           break;
+          
+        case 'ai_response':
+          resetExecutionTimeout(600000);
+          addExecutionLog('ai_response', `📥 ${data.message || 'Received AI response'}`);
+          break;
+          
+        case 'ai_complete':
+        case 'ai_finished':
+        case 'ai_done':
+          // AI 완료 시 output이 업데이트되었는지 확인
+          if (data.output !== undefined) {
+            // output이 함께 전달된 경우 바로 업데이트
+            const updatedNode = { 
+              ...editedNode, 
+              output: data.output,
+              isRunning: false,
+              currentExecutionStartTime: null
+            };
+            setEditedNode(updatedNode);
+            setLastOutputUpdateTime(new Date().toISOString());
+            setLastExecutionTime(new Date().toISOString());
+            
+            // 원본 node 객체도 업데이트
+            node.isRunning = false;
+            (node as any).currentExecutionStartTime = null;
+            node.output = data.output;
+            
+            if (onUpdate) {
+              onUpdate(updatedNode);
+            }
+            
+            addExecutionLog('complete', '✅ AI processing completed successfully');
+            setExecutionResult({
+              success: true,
+              output: "AI processing completed successfully"
+            });
+          } else if (isExecutingRef.current) {
+            // output이 없는 경우에만 간단한 메시지
+            addExecutionLog('complete', '✅ AI processing completed');
+          }
+          
+          // 실행 종료 처리
+          setTimeout(() => {
+            if (isExecutingRef.current) {
+              setIsExecuting(false);
+              isExecutingRef.current = false;
+              setCurrentExecutionStartTime(null);
+              if (executionTimeoutRef.current) {
+                clearTimeout(executionTimeoutRef.current);
+              }
+            }
+          }, 500);
+          break;
+          
+        case 'node_output_updated':
+          // 타임아웃 취소
+          if (executionTimeoutRef.current) {
+            clearTimeout(executionTimeoutRef.current);
+          }
+          
+          setLastExecutionTime(new Date().toISOString());
+          setLastOutputUpdateTime(new Date().toISOString());
+          
+          // 노드 output 업데이트 및 isRunning을 false로 설정
+          const updatedNode = { 
+            ...editedNode, 
+            output: data.output,
+            isRunning: false,
+            currentExecutionStartTime: null
+          };
+          setEditedNode(updatedNode);
+          
+          // 원본 node 객체도 업데이트
+          node.isRunning = false;
+          (node as any).currentExecutionStartTime = null;
+          node.output = data.output;
+          
+          // 즉시 저장
+          if (onUpdate) {
+            onUpdate(updatedNode);
+          } else {
+            onSave(updatedNode);
+          }
+          
+          // 한 번만 로그
+          addExecutionLog('complete', '✅ Output successfully updated');
+          
+          // 실행 완료 처리
+          setTimeout(() => {
+            setIsExecuting(false);
+            isExecutingRef.current = false;
+            setCurrentExecutionStartTime(null);
+            setExecutionResult({
+              success: true,
+              output: "Output successfully updated"
+            });
+          }, 100);
+          break;
+          
         case 'node_execution_error':
+          // 타임아웃 취소
+          if (executionTimeoutRef.current) {
+            clearTimeout(executionTimeoutRef.current);
+          }
+          
           addExecutionLog('error', `❌ Execution failed: ${data.error}`);
+          setIsExecuting(false);
+          isExecutingRef.current = false;
+          setCurrentExecutionStartTime(null);
+          setExecutionResult({
+            success: false,
+            error: data.error
+          });
+          
+          // 에러 시 실행 상태 해제
+          const errorNode = {
+            ...editedNode,
+            isRunning: false,
+            currentExecutionStartTime: null
+          };
+          setEditedNode(errorNode);
+          
+          // 원본 node 객체도 업데이트
+          node.isRunning = false;
+          (node as any).currentExecutionStartTime = null;
+          
+          if (onUpdate) {
+            onUpdate(errorNode);
+          }
+          break;
+          
+        case 'node_execution_complete':
+        case 'node_execution_end':
+        case 'execution_end':
+        case 'execution_complete':
+        case 'done':
+        case 'finished':
+        case 'complete':
+          // 다양한 완료 메시지 타입 처리 - 중복 방지
+          if (executionTimeoutRef.current) {
+            clearTimeout(executionTimeoutRef.current);
+          }
+          
+          // 이미 완료 상태가 아닐 때만 로그 추가
+          if (isExecutingRef.current) {
+            addExecutionLog('complete', '✅ Execution completed');
+            
+            // 실행 상태 해제
+            setIsExecuting(false);
+            isExecutingRef.current = false;
+            setCurrentExecutionStartTime(null);
+            
+            if (!executionResult) {
+              setExecutionResult({
+                success: true,
+                output: "Execution completed successfully"
+              });
+            }
+            
+            // 완료 시 실행 상태 해제
+            const completedNode = {
+              ...editedNode,
+              isRunning: false,
+              currentExecutionStartTime: null
+            };
+            setEditedNode(completedNode);
+            
+            // 원본 node 객체도 업데이트
+            node.isRunning = false;
+            (node as any).currentExecutionStartTime = null;
+            
+            if (onUpdate) {
+              onUpdate(completedNode);
+            }
+          }
+          break;
+          
+        case 'ai_streaming':
+          resetExecutionTimeout(600000);
+          if (data.chunk) {
+            const now = Date.now();
+            if (!lastStreamLogTimeRef.current || now - lastStreamLogTimeRef.current > 10000) {
+              addExecutionLog('info', `💬 AI is generating response...`);
+              lastStreamLogTimeRef.current = now;
+            }
+          }
+          break;
+          
+        case 'ai_thinking':
+        case 'processing':
+        case 'ai_working':
+          resetExecutionTimeout(600000);
+          if (data.message) {
+            addExecutionLog('info', `🤔 ${data.message}`);
+          } else {
+            const now = Date.now();
+            if (!lastStreamLogTimeRef.current || now - lastStreamLogTimeRef.current > 20000) {
+              addExecutionLog('info', `🤔 AI is processing...`);
+              lastStreamLogTimeRef.current = now;
+            }
+          }
+          break;
+          
+        case 'heartbeat':
+        case 'keep_alive':
+          if (isExecutingRef.current) {
+            resetExecutionTimeout(300000);
+          }
+          break;
+          
+        case 'output':
+        case 'result':
+        case 'response':
+          // output 메시지를 받았을 때 처리
+          if (data.output !== undefined || data.result !== undefined || data.response !== undefined) {
+            const outputData = data.output || data.result || data.response;
+            
+            const updatedNodeWithOutput = { 
+              ...editedNode, 
+              output: outputData,
+              isRunning: false,
+              currentExecutionStartTime: null
+            };
+            setEditedNode(updatedNodeWithOutput);
+            setLastOutputUpdateTime(new Date().toISOString());
+            setLastExecutionTime(new Date().toISOString());
+            
+            // 원본 node 객체도 업데이트
+            node.isRunning = false;
+            (node as any).currentExecutionStartTime = null;
+            node.output = outputData;
+            
+            if (onUpdate) {
+              onUpdate(updatedNodeWithOutput);
+            }
+            
+            // 실행 종료
+            setTimeout(() => {
+              setIsExecuting(false);
+              isExecutingRef.current = false;
+              setCurrentExecutionStartTime(null);
+              if (executionTimeoutRef.current) {
+                clearTimeout(executionTimeoutRef.current);
+              }
+              setExecutionResult({
+                success: true,
+                output: "Output received successfully"
+              });
+            }, 500);
+          }
+          break;
+          
+        default:
+          // 알 수 없는 메시지 타입 처리
+          if (data.type && isExecutingRef.current) {
+            // output 필드가 있는 경우 처리
+            if (data.output !== undefined) {
+              const updatedNodeWithData = { 
+                ...editedNode, 
+                output: data.output,
+                isRunning: false,
+                currentExecutionStartTime: null
+              };
+              setEditedNode(updatedNodeWithData);
+              setLastOutputUpdateTime(new Date().toISOString());
+              setLastExecutionTime(new Date().toISOString());
+              
+              // 원본 node 객체도 업데이트
+              node.isRunning = false;
+              (node as any).currentExecutionStartTime = null;
+              node.output = data.output;
+              
+              if (onUpdate) {
+                onUpdate(updatedNodeWithData);
+              }
+              
+              // 실행 종료
+              setTimeout(() => {
+                setIsExecuting(false);
+                isExecutingRef.current = false;
+                setCurrentExecutionStartTime(null);
+                if (executionTimeoutRef.current) {
+                  clearTimeout(executionTimeoutRef.current);
+                }
+                setExecutionResult({
+                  success: true,
+                  output: "Processing completed"
+                });
+              }, 500);
+            }
+            resetExecutionTimeout(300000);
+          }
           break;
       }
     };
@@ -96,16 +701,7 @@ export const WorkerEditModal: React.FC<WorkerEditModalProps> = ({
     return () => {
       window.removeEventListener('websocket_message', handleWebSocketMessage);
     };
-  }, [node.id]);
-
-  const addExecutionLog = (type: ExecutionLog['type'], message: string, details?: any) => {
-    setExecutionLogs(prev => [...prev, {
-      timestamp: new Date().toISOString(),
-      type,
-      message,
-      details
-    }]);
-  };
+  }, [node, node.id, editedNode, onUpdate, onSave, addExecutionLog, resetExecutionTimeout, executionResult]); // node 의존성 추가
 
   useEffect(() => {
     // Load connected node data
@@ -127,7 +723,7 @@ export const WorkerEditModal: React.FC<WorkerEditModalProps> = ({
         // Silently fail if endpoint doesn't exist yet
         setVersions([]);
       });
-  }, [node.id]);
+  }, [node.id]); // node.id 의존성 추가
 
   // Task 자동 저장 함수
   const autoSaveTasks = useCallback((updatedTasks: TaskItem[], updatedPurpose?: string, updatedOutputFormat?: string) => {
@@ -149,18 +745,58 @@ export const WorkerEditModal: React.FC<WorkerEditModalProps> = ({
       } else {
         onSave(updatedNode);
       }
-      console.log('Node data auto-saved');
     }, 300);
   }, [editedNode, onUpdate, onSave, purpose, outputFormat]);
 
-  // 컴포넌트 언마운트 시 타임아웃 정리
+  // 실행 시간 표시를 위한 interval
+  useEffect(() => {
+    let interval: NodeJS.Timeout | null = null;
+    if (isExecuting && currentExecutionStartTime) {
+      interval = setInterval(() => {
+        setExecutionElapsedTime(Math.floor((Date.now() - new Date(currentExecutionStartTime).getTime()) / 1000));
+      }, 1000);
+    } else {
+      setExecutionElapsedTime(0);
+    }
+    
+    return () => {
+      if (interval) clearInterval(interval);
+    };
+  }, [isExecuting, currentExecutionStartTime]);
+
+  // Activity log 자동 스크롤을 위한 ref
+  const activityLogRef = useRef<HTMLDivElement>(null);
+  
+  // 새로운 로그가 추가될 때 자동 스크롤
+  useEffect(() => {
+    if (activityLogRef.current) {
+      activityLogRef.current.scrollTop = activityLogRef.current.scrollHeight;
+    }
+  }, [executionLogs]);
+
+  // 컴포넌트 언마운트 시 실행 로그 저장 및 타임아웃 정리
   useEffect(() => {
     return () => {
+      // 실행 로그를 노드에 저장
+      if (executionLogs.length > 0 && onUpdate) {
+        const nodeWithLogs = {
+          ...editedNode,
+          executionHistory: executionLogs
+        };
+        onUpdate(nodeWithLogs);
+      }
+      
       if (taskSaveTimeoutRef.current) {
         clearTimeout(taskSaveTimeoutRef.current);
       }
+      if (executionTimeoutRef.current) {
+        clearTimeout(executionTimeoutRef.current);
+      }
+      if (messageCheckIntervalRef.current) {
+        clearInterval(messageCheckIntervalRef.current);
+      }
     };
-  }, []);
+  }, [executionLogs, editedNode, onUpdate]);
 
   const handleSave = () => {
     // Code 저장 시에만 사용
@@ -169,7 +805,7 @@ export const WorkerEditModal: React.FC<WorkerEditModalProps> = ({
       tasks,
       purpose,
       outputFormat
-    });
+    } as Node);
     onClose();
   };
 
@@ -204,7 +840,6 @@ export const WorkerEditModal: React.FC<WorkerEditModalProps> = ({
     } else {
       onSave(nodeToSave);
     }
-    console.log('Model settings auto-saved');
   };
 
   const handlePurposeChange = (newPurpose: string) => {
@@ -217,10 +852,104 @@ export const WorkerEditModal: React.FC<WorkerEditModalProps> = ({
     autoSaveTasks(tasks, undefined, newFormat);
   };
 
+  // 수동으로 노드 상태를 확인하는 함수
+  const checkNodeStatus = useCallback(() => {
+    // 부모 컴포넌트에서 최신 노드 정보 가져오기
+    const currentNode = section.nodes.find(n => n.id === node.id);
+    if (!currentNode) return;
+    
+    console.log('[Check Status] Node output exists:', !!currentNode.output, 'isRunning:', currentNode.isRunning);
+    
+    // output이 있고 현재 실행 중이면 완료 처리
+    if (currentNode.output && isExecuting) {
+      const outputChanged = JSON.stringify(currentNode.output) !== JSON.stringify(editedNode.output);
+      
+      if (outputChanged) {
+        console.log('[Check Status] Output changed - completing execution');
+        
+        // 상태 업데이트
+        const updatedNode = {
+          ...editedNode,
+          output: currentNode.output,
+          isRunning: false,
+          currentExecutionStartTime: null
+        };
+        setEditedNode(updatedNode);
+        setLastOutputUpdateTime(new Date().toISOString());
+        setLastExecutionTime(new Date().toISOString());
+        
+        // 원본 node 객체도 업데이트
+        node.isRunning = false;
+        (node as any).currentExecutionStartTime = null;
+        node.output = currentNode.output;
+        
+        if (onUpdate) {
+          onUpdate(updatedNode);
+        }
+        
+        // 실행 종료
+        setIsExecuting(false);
+        isExecutingRef.current = false;
+        setCurrentExecutionStartTime(null);
+        if (executionTimeoutRef.current) {
+          clearTimeout(executionTimeoutRef.current);
+        }
+        if (messageCheckIntervalRef.current) {
+          clearInterval(messageCheckIntervalRef.current);
+          messageCheckIntervalRef.current = null;
+        }
+        
+        addExecutionLog('complete', '✅ Execution completed');
+        setExecutionResult({
+          success: true,
+          output: "Execution completed successfully"
+        });
+      }
+    }
+    
+    // isRunning이 false이면 실행 종료
+    if (!currentNode.isRunning && isExecuting) {
+      setIsExecuting(false);
+      isExecutingRef.current = false;
+      setCurrentExecutionStartTime(null);
+      if (executionTimeoutRef.current) {
+        clearTimeout(executionTimeoutRef.current);
+      }
+      if (messageCheckIntervalRef.current) {
+        clearInterval(messageCheckIntervalRef.current);
+        messageCheckIntervalRef.current = null;
+      }
+    }
+  }, [node, section.nodes, isExecuting, editedNode, onUpdate, addExecutionLog]); // node.id 제거
+
   const executeCode = async () => {
+    // 이미 실행 중이면 중지
+    if (isExecuting) {
+      return;
+    }
+    
     setIsExecuting(true);
+    isExecutingRef.current = true;
     setExecutionResult(null);
-    setExecutionLogs([]); // 이전 로그 초기화
+    const executionStartTime = new Date().toISOString();
+    setCurrentExecutionStartTime(executionStartTime);
+    
+    // 노드의 실행 상태를 업데이트
+    const runningNode = {
+      ...editedNode,
+      isRunning: true,
+      currentExecutionStartTime: executionStartTime
+    };
+    setEditedNode(runningNode);
+    
+    // 원본 node 객체도 업데이트
+    node.isRunning = true;
+    (node as any).currentExecutionStartTime = executionStartTime;
+    
+    // 실행 상태를 즉시 저장
+    if (onUpdate) {
+      onUpdate(runningNode);
+    }
     
     try {
       // Get connected outputs for execution
@@ -235,31 +964,125 @@ export const WorkerEditModal: React.FC<WorkerEditModalProps> = ({
       }
 
       addExecutionLog('start', '🚀 Starting code execution...');
+      addExecutionLog('start', `🤖 Using AI model: ${editedNode.model || 'none'}`);
 
       const response = await apiClient.executeNode(
         node.id,
         section.id,
-        editedNode.code || '',
+        editedNode.code || node.code || '',  // 저장된 코드 우선 사용
         connectedOutputs
       );
       
+      console.log('[Execute] Response status:', response.data.status); // 최소한의 디버그 로그
+      
       if (response.data.status === 'started') {
+        // AI가 작업 중임을 명확하게 표시
+        addExecutionLog('info', '⏳ Waiting for AI response...');
+        
+        // 초기 타임아웃 설정 (실행 시작 시 10분, WebSocket 메시지가 오면 리셋됨)
+        resetExecutionTimeout(600000);
+        
+        // 즉시 완료되는 경우를 대비한 체크 (2초 후)
         setTimeout(() => {
-          setIsExecuting(false);
-          setExecutionResult({
-            success: true,
-            output: "Code execution started. Check the output panel for results."
-          });
-        }, 1000);
+          if (isExecutingRef.current) {
+            checkNodeStatus();
+          }
+        }, 2000);
+        
+        // WebSocket 메시지 대기 중임을 표시
+        let messageCheckCount = 0;
+        
+        messageCheckIntervalRef.current = setInterval(() => {
+          if (!isExecutingRef.current) {
+            if (messageCheckIntervalRef.current) {
+              clearInterval(messageCheckIntervalRef.current);
+              messageCheckIntervalRef.current = null;
+            }
+            return;
+          }
+          
+          messageCheckCount++;
+          
+          // 10초마다 자동으로 상태 체크
+          if (messageCheckCount % 2 === 0) {
+            console.log(`[Auto Check] Checking status after ${messageCheckCount * 5}s...`);
+            checkNodeStatus();
+          }
+          
+          if (messageCheckCount % 12 === 0) { // 60초마다
+            addExecutionLog('info', `⏱️ Still waiting for response... (${messageCheckCount * 5}s elapsed)`);
+          }
+        }, 5000); // 5초마다 체크
+      } else {
+        // 실행이 시작되지 않은 경우
+        if (executionTimeoutRef.current) {
+          clearTimeout(executionTimeoutRef.current);
+        }
+        setIsExecuting(false);
+        isExecutingRef.current = false;
+        setCurrentExecutionStartTime(null);
+        setExecutionResult({
+          success: false,
+          error: 'Failed to start execution'
+        });
+        
+        // interval 정리
+        if (messageCheckIntervalRef.current) {
+          clearInterval(messageCheckIntervalRef.current);
+          messageCheckIntervalRef.current = null;
+        }
+        
+        // 실행 상태 해제
+        const stoppedNode = {
+          ...editedNode,
+          isRunning: false,
+          currentExecutionStartTime: null
+        };
+        setEditedNode(stoppedNode);
+        
+        // 원본 node 객체도 업데이트
+        node.isRunning = false;
+        (node as any).currentExecutionStartTime = null;
+        
+        if (onUpdate) {
+          onUpdate(stoppedNode);
+        }
       }
     } catch (error: any) {
       console.error('Execution failed:', error);
+      if (executionTimeoutRef.current) {
+        clearTimeout(executionTimeoutRef.current);
+      }
       setIsExecuting(false);
+      isExecutingRef.current = false;
+      setCurrentExecutionStartTime(null);
       setExecutionResult({
         success: false,
         error: error.response?.data?.detail || error.message || 'Execution failed'
       });
       addExecutionLog('error', `❌ ${error.response?.data?.detail || error.message || 'Execution failed'}`);
+      
+      // interval 정리
+      if (messageCheckIntervalRef.current) {
+        clearInterval(messageCheckIntervalRef.current);
+        messageCheckIntervalRef.current = null;
+      }
+      
+      // 에러 시 실행 상태 해제
+      const stoppedNode = {
+        ...editedNode,
+        isRunning: false,
+        currentExecutionStartTime: null
+      };
+      setEditedNode(stoppedNode);
+      
+      // 원본 node 객체도 업데이트
+      node.isRunning = false;
+      (node as any).currentExecutionStartTime = null;
+      
+      if (onUpdate) {
+        onUpdate(stoppedNode);
+      }
     }
   };
 
@@ -281,41 +1104,129 @@ export const WorkerEditModal: React.FC<WorkerEditModalProps> = ({
 # AI model is available via: model_name = "${editedNode.model || 'none'}"
 
 import json
+import time
 
 # Get connected outputs
 data = get_connected_outputs()
+print("Connected inputs:", json.dumps(data, ensure_ascii=False, indent=2))
 
 # Get AI model configuration
 model_name = "${editedNode.model || 'none'}"
 lm_studio_url = "${editedNode.lmStudioUrl || ''}"
 
 # Get current node information
-# current_node contains all settings for this node including:
-# - id, type, label
-# - purpose: the node's purpose
-# - outputFormat: output format description
-# - tasks: list of detailed tasks
-# - model: AI model configuration
-print("Current node:", json.dumps(current_node, indent=2))
+print("Current node:", json.dumps(current_node, ensure_ascii=False, indent=2))
+print("Node purpose:", node_purpose)
+print("Output format:", output_format_description)
 
-# Get node purpose (what this node should accomplish)
-node_purpose = """${purpose || 'No purpose defined'}"""
+# ========================================================================
+# AI 모델을 활용한 자동 처리
+# ========================================================================
 
-# Get expected output format description
-output_format_description = """${outputFormat || 'No output format defined'}"""
+# 입력 데이터 가져오기
+input_text = ""
+for key, value in data.items():
+    if isinstance(value, dict) and 'text' in value:
+        input_text += value['text'] + "\\n"
+    elif isinstance(value, str):
+        input_text += value + "\\n"
 
-# Access tasks if needed
-tasks = current_node.get('tasks', [])
-for task in tasks:
-    print(f"Task: {task['text']} - Status: {task['status']}")
+# Tasks 기반 처리를 위한 프롬프트 구성
+tasks_prompt = ""
+if 'tasks' in current_node:
+    tasks_list = []
+    for i, task in enumerate(current_node['tasks'], 1):
+        tasks_list.append(f"{i}. {task['text']}")
+    tasks_prompt = "\\n다음 작업들을 순서대로 수행하세요:\\n" + "\\n".join(tasks_list)
 
-# Your processing logic here
-# Use the output_format_description to guide how you structure the output
-output = {
-    "result": "processed data",
-    "status": "success",
-    "model_used": model_name
-}`;
+# 기본 AI 프롬프트 구성 (Node Purpose + Output Format + Tasks)
+base_prompt = f"""
+목적: {node_purpose}
+
+입력 텍스트:
+{input_text}
+
+{tasks_prompt}
+
+출력 형식:
+{output_format_description}
+
+위의 목적과 출력 형식에 따라 입력 텍스트를 분석하고 결과를 JSON 형식으로 반환하세요.
+"""
+
+# ========================================================================
+# AI 모델 호출 및 자동 output 설정
+# ========================================================================
+
+if model_name != 'none':
+    print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Calling AI model: {model_name}")
+    
+    try:
+        # AI 모델 호출
+        ai_response = call_ai_model(base_prompt)
+        print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] AI response received")
+        
+        # AI 응답 처리 및 자동으로 output 설정
+        if isinstance(ai_response, dict) and 'error' in ai_response:
+            # AI 호출 에러
+            output = ai_response
+        elif isinstance(ai_response, str):
+            # 문자열 응답 처리
+            # JSON 형식 찾기
+            json_start = ai_response.find('{')
+            json_end = ai_response.rfind('}') + 1
+            
+            if json_start != -1 and json_end > json_start:
+                try:
+                    # JSON 파싱 시도
+                    output = json.loads(ai_response[json_start:json_end])
+                except json.JSONDecodeError:
+                    # JSON 파싱 실패 시 텍스트 그대로 반환
+                    output = {"result": ai_response, "type": "text"}
+            else:
+                # JSON이 없으면 텍스트로 반환
+                output = {"result": ai_response, "type": "text"}
+        else:
+            # 이미 딕셔너리나 다른 형태인 경우
+            output = ai_response
+            
+        print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Output automatically set from AI response")
+        
+    except Exception as e:
+        print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Error during AI processing: {e}")
+        output = {
+            "error": f"AI processing failed: {str(e)}",
+            "type": "error",
+            "timestamp": time.strftime('%Y-%m-%d %H:%M:%S')
+        }
+else:
+    # AI 모델이 설정되지 않은 경우
+    output = {
+        "error": "No AI model configured",
+        "hint": "Please connect to LM Studio and select a model",
+        "timestamp": time.strftime('%Y-%m-%d %H:%M:%S')
+    }
+
+# ========================================================================
+# 추가 처리 로직 (필요한 경우)
+# ========================================================================
+
+# 여기에 AI 응답을 추가로 가공하거나 처리하는 로직을 작성할 수 있습니다
+# 예시:
+# if 'result' in output:
+#     output['processed'] = True
+#     output['processing_time'] = time.strftime('%Y-%m-%d %H:%M:%S')
+
+# ========================================================================
+# 최종 출력 확인
+# ========================================================================
+
+print(f"\\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] Final output type: {type(output)}")
+print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Final output:")
+print(json.dumps(output, ensure_ascii=False, indent=2))
+
+# output 변수가 설정되었음을 명시적으로 표시
+print(f"\\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] ✅ Output variable has been automatically set from AI response")`;
   };
 
   const getNodeIcon = (nodeType: string) => {
@@ -446,13 +1357,11 @@ output = {
     autoSaveTasks(newTasks);
     setDraggedTask(null);
     setDropPosition(null);
-    setIsDraggingHandle(false);
   };
 
   const handleDragEnd = () => {
     setDraggedTask(null);
     setDropPosition(null);
-    setIsDraggingHandle(false);
   };
 
   const getTaskStatusIcon = (status?: 'locked' | 'editable' | 'low_priority') => {
@@ -508,8 +1417,8 @@ output = {
   return (
     <>
       <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-        <div className="bg-white rounded-lg w-[98%] h-[95%] flex flex-col">
-          <div className="p-4 border-b flex justify-between items-center">
+        <div className="bg-white rounded-lg w-[98%] h-[95%] flex flex-col overflow-hidden">
+          <div className="p-4 border-b flex justify-between items-center flex-shrink-0">
             <div className="flex items-center gap-2">
               <span className="text-2xl">👷</span>
               {isEditingName ? (
@@ -565,9 +1474,9 @@ output = {
             <button onClick={onClose} className="text-2xl hover:text-gray-600">&times;</button>
           </div>
 
-          <div className="flex flex-1 overflow-hidden">
+          <div className="flex flex-1 overflow-hidden min-h-0">
             {/* Left Side - Connected From Nodes */}
-            <div className="w-16 border-r bg-gray-50 p-2 flex flex-col gap-2 items-center overflow-y-auto">
+            <div className="w-14 flex-shrink-0 border-r bg-gray-50 p-2 flex flex-col gap-2 items-center overflow-y-auto">
               <div className="text-xs text-gray-500 mb-2 -rotate-90 whitespace-nowrap mt-8">From</div>
               {connectedFromNodes.map((connNode) => (
                 <div
@@ -576,10 +1485,10 @@ output = {
                   onClick={() => handleNodeClick(connNode)}
                   title={connNode.label}
                 >
-                  <div className="w-12 h-12 rounded-lg bg-white border-2 border-gray-300 flex items-center justify-center transition-all duration-200 group-hover:scale-110 group-hover:border-indigo-500 group-hover:shadow-lg">
+                  <div className="w-10 h-10 rounded-lg bg-white border-2 border-gray-300 flex items-center justify-center transition-all duration-200 group-hover:scale-110 group-hover:border-indigo-500 group-hover:shadow-lg">
                     {getNodeIcon(connNode.type)}
                   </div>
-                  <div className="text-xs text-center mt-1 truncate w-12 opacity-0 group-hover:opacity-100 transition-opacity">
+                  <div className="text-xs text-center mt-1 truncate w-10 opacity-0 group-hover:opacity-100 transition-opacity">
                     {connNode.label}
                   </div>
                 </div>
@@ -587,14 +1496,14 @@ output = {
             </div>
 
             {/* Main Content Area */}
-            <div className="flex-1 flex">
+            <div className="flex-1 flex min-w-0 overflow-hidden">
               {/* Left Panel - Input */}
-              <div className="w-1/4 border-r p-4 flex flex-col">
-                <h3 className="font-semibold mb-2">Input Source</h3>
+              <div className="w-[20%] min-w-[200px] max-w-[300px] border-r p-4 flex flex-col overflow-hidden">
+                <h3 className="font-semibold mb-2 flex-shrink-0">Input Source</h3>
                 <select
                   value={selectedInput}
                   onChange={(e) => setSelectedInput(e.target.value)}
-                  className="w-full border border-gray-200 rounded-md p-2 mb-4 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-all"
+                  className="w-full border border-gray-200 rounded-md p-2 mb-4 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-all flex-shrink-0"
                 >
                   <option value="">No input</option>
                   {node.connectedFrom?.map(connNodeId => {
@@ -609,17 +1518,19 @@ output = {
                 </select>
 
                 {connectedNodeData && (
-                  <div className="bg-gray-50 rounded-md p-3 flex-1 overflow-y-auto">
-                    <h4 className="font-medium mb-2">Input Data:</h4>
-                    <pre className="text-xs overflow-x-auto">
-                      {JSON.stringify(connectedNodeData, null, 2)}
-                    </pre>
+                  <div className="bg-gray-50 rounded-md p-3 flex-1 overflow-hidden flex flex-col min-h-0">
+                    <h4 className="font-medium mb-2 flex-shrink-0">Input Data:</h4>
+                    <div className="flex-1 overflow-auto min-h-0">
+                      <pre className="text-xs">
+                        {JSON.stringify(connectedNodeData, null, 2)}
+                      </pre>
+                    </div>
                   </div>
                 )}
               </div>
 
               {/* Center Panel - Code Editor with tabs */}
-              <div className="flex-1 flex flex-col min-w-0">
+              <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
                 <div className="flex border-b flex-shrink-0">
                   <button
                     onClick={() => setActiveTab('code')}
@@ -645,7 +1556,7 @@ output = {
                   {activeTab === 'code' ? (
                     <div className="flex-1 min-h-0">
                       <CodeEditor
-                        value={editedNode.code || getDefaultCode()}
+                        value={editedNode.code || node.code || getDefaultCode()}
                         onChange={(code) => setEditedNode({ ...editedNode, code })}
                       />
                     </div>
@@ -752,10 +1663,7 @@ output = {
                                       {/* Drag Handle */}
                                       <div 
                                         draggable={task.taskStatus !== 'locked'}
-                                        onDragStart={(e) => {
-                                          setIsDraggingHandle(true);
-                                          handleDragStart(e, index);
-                                        }}
+                                        onDragStart={(e) => handleDragStart(e, index)}
                                         className={`flex-shrink-0 cursor-move ${task.taskStatus === 'locked' ? 'invisible' : ''}`}
                                       >
                                         <GripVertical className="w-3 h-3 text-gray-300" />
@@ -817,67 +1725,78 @@ output = {
                       </div>
                     </div>
                   ) : (
-                    <div className="flex-1 overflow-y-auto min-h-0 p-4">
-                      <h3 className="font-semibold mb-3">Activity Log</h3>
-                      <div className="space-y-2">
-                        {executionLogs.length === 0 && editedNode.updateHistory?.length === 0 ? (
+                    <div className="flex-1 flex flex-col min-h-0">
+                      <div className="flex justify-between items-center p-4 pb-3 flex-shrink-0 border-b border-gray-100">
+                        <h3 className="font-semibold">Activity Log</h3>
+                        <button
+                          onClick={handleClearLogs}
+                          className="text-xs text-gray-500 hover:text-gray-700 px-2 py-1 rounded hover:bg-gray-100 transition-colors"
+                          title="Clear activity log"
+                        >
+                          Clear
+                        </button>
+                      </div>
+                      <div className="flex-1 overflow-y-auto min-h-0 p-4 pt-0" ref={activityLogRef}>
+                        <div className="space-y-2">
+                        {executionLogs.length === 0 ? (
                           <div className="text-gray-500 text-center py-8">
                             No activity recorded yet
                           </div>
-                        ) : (
-                          <>
-                            {/* Recent execution logs */}
-                            {executionLogs.map((log, idx) => (
-                              <div key={`exec-${idx}`} className={`
-                                border rounded-md p-3
-                                ${log.type === 'error' ? 'border-red-200 bg-red-50' : 
-                                  log.type === 'complete' ? 'border-green-200 bg-green-50' : 
-                                  'border-gray-200 bg-gray-50'}
-                              `}>
-                                <div className="flex justify-between items-start">
-                                  <div className="flex-1">
-                                    <div className="text-sm text-gray-600">
-                                      {new Date(log.timestamp).toLocaleString()}
-                                    </div>
-                                    <div className="font-medium mt-1">
-                                      {log.message}
-                                    </div>
-                                    {log.details && (
-                                      <pre className="text-xs mt-2 p-2 bg-white rounded overflow-x-auto">
+                        ) : null}
+                        
+                        {/* Recent execution logs */}
+                        {executionLogs.map((log, idx) => (
+                          <div key={`exec-${idx}`} className={`
+                            border rounded-md p-3
+                            ${log.type === 'error' ? 'border-red-200 bg-red-50' : 
+                              log.type === 'complete' ? 'border-green-200 bg-green-50' : 
+                              log.type === 'ai_request' ? 'border-blue-200 bg-blue-50' :
+                              log.type === 'ai_response' ? 'border-purple-200 bg-purple-50' :
+                              log.type === 'info' ? 'border-gray-200 bg-gray-50' :
+                              'border-gray-200 bg-gray-50'}
+                          `}>
+                            <div className="flex justify-between items-start">
+                              <div className="flex-1">
+                                <div className="text-sm text-gray-600">
+                                  {new Date(log.timestamp).toLocaleString()}
+                                </div>
+                                <div className="mt-1 font-medium">
+                                  {log.message}
+                                </div>
+                                {log.details && (
+                                  <div className="mt-2">
+                                    <details className="cursor-pointer">
+                                      <summary className="text-sm text-gray-600 hover:text-gray-800">
+                                        View details
+                                      </summary>
+                                      <pre className="text-xs mt-2 p-2 bg-white rounded overflow-x-auto max-h-40">
                                         {typeof log.details === 'string' 
                                           ? log.details 
                                           : JSON.stringify(log.details, null, 2)}
                                       </pre>
-                                    )}
+                                    </details>
                                   </div>
-                                </div>
+                                )}
                               </div>
-                            ))}
-                            
-                            {/* Historical activity */}
-                            {editedNode.updateHistory?.map((update, idx) => (
-                              <div key={`hist-${idx}`} className="border border-gray-200 rounded-md p-3">
-                                <div className="flex justify-between items-start">
-                                  <div>
-                                    <div className="text-sm text-gray-600">
-                                      {new Date(update.timestamp).toLocaleString()}
-                                    </div>
-                                    <div className="font-medium">
-                                      Type: {update.type}
-                                      {update.by && ` by ${update.by}`}
-                                    </div>
-                                    {update.score !== undefined && (
-                                      <div className="flex items-center gap-1 mt-1">
-                                        <Award className="w-4 h-4 text-amber-500" />
-                                        <span className="text-sm">AI Score: {update.score}/100</span>
-                                      </div>
-                                    )}
-                                  </div>
-                                </div>
+                              <div className={`
+                                px-2 py-1 rounded text-xs font-medium
+                                ${log.type === 'error' ? 'bg-red-100 text-red-700' : 
+                                  log.type === 'complete' ? 'bg-green-100 text-green-700' : 
+                                  log.type === 'ai_request' ? 'bg-blue-100 text-blue-700' :
+                                  log.type === 'ai_response' ? 'bg-purple-100 text-purple-700' :
+                                  log.type === 'info' ? 'bg-gray-100 text-gray-700' :
+                                  'bg-gray-100 text-gray-700'}
+                              `}>
+                                {log.type === 'ai_request' ? 'AI Request' :
+                                 log.type === 'ai_response' ? 'AI Response' :
+                                 log.type === 'complete' ? 'Complete' :
+                                 log.type === 'error' ? 'Error' :
+                                 'Info'}
                               </div>
-                            ))}
-                          </>
-                        )}
+                            </div>
+                          </div>
+                        ))}
+                        </div>
                       </div>
                     </div>
                   )}
@@ -885,16 +1804,16 @@ output = {
                 
                 {/* Execution Result */}
                 {executionResult && (
-                  <div className={`p-3 border-t ${executionResult.success ? 'bg-emerald-50' : 'bg-red-50'}`}>
+                  <div className={`p-3 border-t flex-shrink-0 ${executionResult?.success ? 'bg-emerald-50' : 'bg-red-50'}`}>
                     <div className="flex items-start gap-2">
                       <div className="flex-1">
-                        {executionResult.success ? (
+                        {executionResult?.success ? (
                           <div className="text-emerald-700">
-                            <strong>Success:</strong> {typeof executionResult.output === 'string' ? executionResult.output : JSON.stringify(executionResult.output)}
+                            <strong>Success:</strong> {typeof executionResult?.output === 'string' ? executionResult.output : JSON.stringify(executionResult?.output)}
                           </div>
                         ) : (
                           <div className="text-red-700">
-                            <strong>Error:</strong> {executionResult.error}
+                            <strong>Error:</strong> {executionResult?.error}
                           </div>
                         )}
                       </div>
@@ -909,7 +1828,7 @@ output = {
                 )}
                 
                 {/* AI Model Selection */}
-                <div className="p-4 border-t bg-gray-50">
+                <div className="p-4 border-t bg-gray-50 flex-shrink-0">
                   <AIModelSelector
                     value={editedNode.model || 'none'}
                     lmStudioUrl={editedNode.lmStudioUrl}
@@ -919,7 +1838,7 @@ output = {
                 </div>
                 
                 {/* Action Buttons - Save button only for code */}
-                <div className="p-4 border-t flex gap-2">
+                <div className="p-4 border-t flex gap-2 flex-shrink-0">
                   <button
                     onClick={handleSave}
                     className="flex items-center gap-2 bg-indigo-500 text-white rounded-md px-4 py-2 hover:bg-indigo-600 transition-colors"
@@ -948,6 +1867,52 @@ output = {
                       </>
                     )}
                   </button>
+                  {isExecuting && (
+                    <>
+                      <button
+                        onClick={() => {
+                          // 강제로 실행 중지
+                          if (executionTimeoutRef.current) {
+                            clearTimeout(executionTimeoutRef.current);
+                          }
+                          if (messageCheckIntervalRef.current) {
+                            clearInterval(messageCheckIntervalRef.current);
+                            messageCheckIntervalRef.current = null;
+                          }
+                          setIsExecuting(false);
+                          isExecutingRef.current = false;
+                          setCurrentExecutionStartTime(null);
+                          
+                          // 노드 상태 업데이트
+                          const stoppedNode = {
+                            ...editedNode,
+                            isRunning: false,
+                            currentExecutionStartTime: null
+                          };
+                          setEditedNode(stoppedNode);
+                          
+                          // onUpdate만 호출 (onSave는 모달을 닫으므로 호출하지 않음)
+                          if (onUpdate) {
+                            onUpdate(stoppedNode);
+                          }
+                          
+                          // 원본 node 객체도 업데이트
+                          node.isRunning = false;
+                          (node as any).currentExecutionStartTime = null;
+                          
+                          addExecutionLog('info', '⏹️ Execution stopped manually');
+                          setExecutionResult({
+                            success: false,
+                            error: 'Execution stopped by user'
+                          });
+                        }}
+                        className="flex items-center gap-2 bg-red-500 text-white rounded-md px-4 py-2 hover:bg-red-600 transition-colors"
+                      >
+                        <Square className="w-4 h-4" />
+                        Stop
+                      </button>
+                    </>
+                  )}
                   <button
                     onClick={() => setShowJsonViewer(true)}
                     className="flex items-center gap-2 bg-slate-600 text-white rounded-md px-4 py-2 hover:bg-slate-700 transition-colors"
@@ -971,29 +1936,71 @@ output = {
               </div>
 
               {/* Right Panel - Output & History */}
-              <div className="w-1/3 border-l flex flex-col">
-                <div className="flex-1 p-4 flex flex-col overflow-hidden">
+              <div className="w-[30%] min-w-[250px] max-w-[400px] border-l flex flex-col overflow-hidden">
+                <div className="flex-1 p-4 flex flex-col overflow-hidden min-h-0">
                   <div className="flex items-center justify-between mb-2">
                     <h3 className="font-semibold">Output</h3>
                     {lastExecutionTime && (
                       <div className="flex items-center gap-1 text-xs text-gray-500">
                         <Clock className="w-3 h-3" />
-                        <span>Last run: {new Date(lastExecutionTime).toLocaleTimeString()}</span>
+                        <span>Last run: {new Date(lastExecutionTime!).toLocaleTimeString()}</span>
                       </div>
                     )}
                   </div>
                   
-                  {editedNode.output ? (
+                  {isExecuting ? (
+                    // 실행 중일 때 표시
+                    <div className="flex-1 flex flex-col items-center justify-center">
+                      <Loader className="w-8 h-8 text-indigo-500 animate-spin mb-4" />
+                      <div className="text-gray-600 font-medium">Executing code...</div>
+                      <div className="text-sm text-gray-500 mt-2">Waiting for AI response</div>
+                      {executionElapsedTime > 0 && (
+                        <div className="text-xs text-gray-400 mt-4">
+                          Running for: {executionElapsedTime >= 60 
+                            ? `${Math.floor(executionElapsedTime / 60)}m ${executionElapsedTime % 60}s`
+                            : `${executionElapsedTime}s`
+                          }
+                        </div>
+                      )}
+                    </div>
+                  ) : editedNode.output ? (
+                    // 실행 완료 후 output이 있을 때
                     <div className="flex-1 flex flex-col overflow-hidden">
-                      <div className="mb-2 flex items-center gap-2 text-sm text-green-600">
-                        <CheckCircle className="w-4 h-4" />
-                        <span>Output successfully generated</span>
+                      <div className="mb-2 flex items-center justify-between">
+                        <div className="flex items-center gap-2 text-sm text-green-600">
+                          <CheckCircle className="w-4 h-4" />
+                          <span>
+                            {currentExecutionStartTime && lastOutputUpdateTime && 
+                             new Date(lastOutputUpdateTime!).getTime() < new Date(currentExecutionStartTime!).getTime()
+                              ? 'Previous execution output' 
+                              : 'Output successfully generated'}
+                          </span>
+                        </div>
+                        {lastOutputUpdateTime && (
+                          <div className="text-xs text-gray-500">
+                            {new Date(lastOutputUpdateTime!).toLocaleTimeString()}
+                          </div>
+                        )}
                       </div>
-                      <pre className="flex-1 bg-gray-50 rounded-md p-3 text-xs overflow-auto">
-                        {JSON.stringify(editedNode.output, null, 2)}
-                      </pre>
+                      <div className="flex-1 overflow-auto min-h-0">
+                        <pre className="bg-gray-50 rounded-md p-3 text-xs">
+                          {typeof editedNode.output === 'string' 
+                            ? editedNode.output 
+                            : JSON.stringify(editedNode.output, null, 2)}
+                        </pre>
+                        {editedNode.output?.error && (
+                          <div className="mt-2 p-2 bg-red-50 border border-red-200 rounded">
+                            <div className="text-sm font-medium text-red-800">Error in output:</div>
+                            <div className="text-xs text-red-700 mt-1">{editedNode.output.error}</div>
+                            {editedNode.output.type && (
+                              <div className="text-xs text-red-600 mt-1">Type: {editedNode.output.type}</div>
+                            )}
+                          </div>
+                        )}
+                      </div>
                     </div>
                   ) : (
+                    // output이 없을 때
                     <div className="text-gray-500">No output yet</div>
                   )}
                   
@@ -1011,7 +2018,7 @@ output = {
                 </div>
                 
                 {/* Saved Versions */}
-                <div className="border-t p-4">
+                <div className="border-t p-4 flex-shrink-0">
                   <h3 className="font-semibold mb-2 flex items-center gap-2">
                     <Clock className="w-4 h-4" />
                     Saved Versions
@@ -1041,7 +2048,7 @@ output = {
             </div>
 
             {/* Right Side - Connected To Nodes */}
-            <div className="w-16 border-l bg-gray-50 p-2 flex flex-col gap-2 items-center overflow-y-auto">
+            <div className="w-14 flex-shrink-0 border-l bg-gray-50 p-2 flex flex-col gap-2 items-center overflow-y-auto">
               <div className="text-xs text-gray-500 mb-2 rotate-90 whitespace-nowrap mt-8">To</div>
               {connectedToNodes.map((connNode) => (
                 <div
@@ -1050,10 +2057,10 @@ output = {
                   onClick={() => handleNodeClick(connNode)}
                   title={connNode.label}
                 >
-                  <div className="w-12 h-12 rounded-lg bg-white border-2 border-gray-300 flex items-center justify-center transition-all duration-200 group-hover:scale-110 group-hover:border-emerald-500 group-hover:shadow-lg">
+                  <div className="w-10 h-10 rounded-lg bg-white border-2 border-gray-300 flex items-center justify-center transition-all duration-200 group-hover:scale-110 group-hover:border-emerald-500 group-hover:shadow-lg">
                     {getNodeIcon(connNode.type)}
                   </div>
-                  <div className="text-xs text-center mt-1 truncate w-12 opacity-0 group-hover:opacity-100 transition-opacity">
+                  <div className="text-xs text-center mt-1 truncate w-10 opacity-0 group-hover:opacity-100 transition-opacity">
                     {connNode.label}
                   </div>
                 </div>
@@ -1118,10 +2125,11 @@ output = {
       {/* Selected Node Edit Modal */}
       {selectedNodeForEdit && (
         (() => {
-          const ModalComponent = selectedNodeForEdit.type === 'worker' ? WorkerEditModal :
-                              (selectedNodeForEdit.type === 'supervisor' || selectedNodeForEdit.type === 'planner') ? 
+          const nodeType = selectedNodeForEdit?.type;
+          const ModalComponent = nodeType === 'worker' ? WorkerEditModal :
+                              (nodeType === 'supervisor' || nodeType === 'planner') ? 
                               require('./SupervisorEditModal').SupervisorEditModal :
-                              (selectedNodeForEdit.type === 'input' || selectedNodeForEdit.type === 'output') ?
+                              (nodeType === 'input' || nodeType === 'output') ?
                               require('./IOConfigModal').IOConfigModal : null;
 
           if (ModalComponent) {
@@ -1138,7 +2146,7 @@ output = {
                     tasks,
                     purpose,
                     outputFormat
-                  });
+                  } as Node);
                   // 새로운 노드의 편집창 열기를 위해 잠시 후 처리
                   setSelectedNodeForEdit(null);
                   onClose();

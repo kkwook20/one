@@ -1,4 +1,4 @@
-# backend/execution.py - 정리된 버전
+# backend/execution.py - 수정된 버전
 
 import asyncio
 import json
@@ -23,119 +23,72 @@ async def execute_python_code(node_id: str, code: str, context: Dict[str, Any] =
     model_name = context.get('model', 'none') if context else 'none'
     lm_studio_url = context.get('lmStudioUrl', '') if context else ''
     
-    # 노드 정보 가져오기 (purpose와 outputFormat을 위해)
-    node_purpose = ''
-    output_format_description = ''
-    current_node_data = {}
-    global_vars_data = {}
-    section_outputs_data = {}
-    
-    if section_id:
-        from storage import sections_db, get_global_var as storage_get_global_var, get_section_outputs as storage_get_section_outputs
-        section = sections_db.get(section_id)
-        if section:
-            node = next((n for n in section.nodes if n.id == node_id), None)
-            if node:
-                node_purpose = node.purpose or ''
-                output_format_description = node.outputFormat or ''
-                # 현재 노드의 전체 데이터
-                current_node_data = {
-                    'id': node.id,
-                    'type': node.type,
-                    'label': node.label,
-                    'purpose': node.purpose,
-                    'outputFormat': node.outputFormat,
-                    'tasks': [task.dict() if hasattr(task, 'dict') else task for task in (node.tasks or [])],
-                    'model': node.model,
-                    'lmStudioUrl': node.lmStudioUrl
-                }
-                
-                # 자주 사용되는 global variables 미리 준비
-                # 예: 같은 섹션의 다른 노드 정보들
-                for n in section.nodes:
-                    if n.id != node_id and n.output:
-                        var_path = f"{section.name.lower()}.{n.type}.{n.id}.output"
-                        global_vars_data[var_path] = n.output
-    
     # 임시 디렉토리에서 실행
     with tempfile.TemporaryDirectory() as temp_dir:
         code_file = os.path.join(temp_dir, "node_code.py")
+        output_file = os.path.join(temp_dir, "output.json")
         
-        # 코드 래핑
-        wrapped_code = f"""
+        # 코드 래핑 - 시스템 필수 기능만 제공
+        wrapped_code = f"""# -*- coding: utf-8 -*-
 import json
 import sys
 import requests
 import time
+import os
 
-# 입력 데이터
-inputs = {json.dumps(inputs)}
+# UTF-8 인코딩 설정
+import io
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
 
-# AI 모델 설정
-model_name = "{model_name}"
-lm_studio_url = "{lm_studio_url}"
+# 입력 데이터 (연결된 노드의 출력)
+inputs = {json.dumps(inputs, ensure_ascii=False)}
 
-# 현재 노드 정보
-current_node = {json.dumps(current_node_data)}
-
-# 노드 목적
-node_purpose = '''{node_purpose}'''
-
-# 출력 형식 설명
-output_format_description = '''{output_format_description}'''
-
-# 미리 로드된 global variables
-_global_vars = {json.dumps(global_vars_data)}
-
-# 글로벌 변수 접근 함수
-def get_global_var(var_path):
-    # 미리 로드된 데이터에서 찾기
-    if var_path in _global_vars:
-        return _global_vars[var_path]
-    # TODO: 없으면 실제 storage에서 가져오는 로직 추가 필요
-    return None
-
+# 글로벌 변수 함수들
 def get_connected_outputs():
+    \"\"\"연결된 노드의 출력 데이터를 가져옵니다\"\"\"
     return inputs
 
 def get_section_outputs(section_name):
-    # TODO: 실제 구현 필요
+    \"\"\"다른 섹션의 출력을 가져옵니다 (향후 구현)\"\"\"
     return {{}}
 
-# AI 모델 접근 함수 (실제 LM Studio 호출)
-def call_ai_model(prompt, model=None, endpoint=None):
+# AI 모델 접근 함수
+def call_ai_model(prompt, model="{model_name}", url="{lm_studio_url}"):
     \"\"\"AI 모델 호출 함수 - LM Studio API 연동\"\"\"
-    model_to_use = model or model_name
-    endpoint_to_use = endpoint or lm_studio_url
     
-    if model_to_use == 'none' or not endpoint_to_use:
+    if model == 'none' or not url:
         return {{"error": "No AI model configured"}}
     
     try:
-        # LM Studio API 호출
+        print("###AI_REQUEST_START###", flush=True)
+        print(f"Calling AI model: {{model}}", flush=True)
+        
         response = requests.post(
-            f"{{endpoint_to_use}}/v1/chat/completions",
+            f"{{url}}/v1/chat/completions",
             json={{
-                "model": model_to_use,
+                "model": model,
                 "messages": [{{"role": "user", "content": prompt}}],
                 "temperature": 0.7,
                 "max_tokens": 2000,
                 "stream": False
             }},
-            timeout=60  # 60초 타임아웃
+            timeout=60
         )
         
         if response.status_code == 200:
             result = response.json()
-            return result['choices'][0]['message']['content']
+            content = result['choices'][0]['message']['content']
+            print("###AI_RESPONSE_RECEIVED###", flush=True)
+            print(f"Response length: {{len(content)}} characters", flush=True)
+            print("###AI_COMPLETE###", flush=True)
+            return content
         else:
+            print(f"###AI_ERROR### Status code: {{response.status_code}}", flush=True)
             return {{"error": f"AI model returned status {{response.status_code}}"}}
             
-    except requests.exceptions.Timeout:
-        return {{"error": "AI model request timeout (60s)"}}
-    except requests.exceptions.ConnectionError:
-        return {{"error": "Cannot connect to LM Studio. Make sure it's running."}}
     except Exception as e:
+        print(f"###AI_ERROR### {{str(e)}}", flush=True)
         return {{"error": f"AI model error: {{str(e)}}"}}
 
 # 출력 변수 초기화
@@ -143,15 +96,39 @@ output = None
 
 # 사용자 코드 실행
 try:
+    print("###EXECUTION_START###", flush=True)
+    
+    # 사용자 코드 실행
 {chr(10).join('    ' + line for line in code.split(chr(10)))}
+    
+    print("###EXECUTION_COMPLETE###", flush=True)
+    
+    # output 변수가 설정되었는지 확인
+    if 'output' in locals() and output is not None:
+        print(f"###OUTPUT_SET### Output variable detected", flush=True)
+        # output을 파일로 저장 (안정적인 전달을 위해)
+        with open(r"{output_file}", "w", encoding="utf-8") as f:
+            json.dump({{"success": True, "output": output}}, f, ensure_ascii=False)
+        print(f"###OUTPUT_SAVED### Output saved to file", flush=True)
+    else:
+        print("###NO_OUTPUT### No output variable set", flush=True)
+        with open(r"{output_file}", "w", encoding="utf-8") as f:
+            json.dump({{"success": True, "output": {{"message": "No output set", "status": "no_output"}}}}, f, ensure_ascii=False)
+            
 except Exception as e:
-    output = {{"error": str(e), "type": str(type(e).__name__)}}
+    print(f"###EXECUTION_ERROR### {{str(e)}}", flush=True)
+    import traceback
+    traceback.print_exc()
+    with open(r"{output_file}", "w", encoding="utf-8") as f:
+        json.dump({{"success": False, "error": str(e), "type": str(type(e).__name__)}}, f, ensure_ascii=False)
 
-# 결과 출력
-if output is not None:
-    print(json.dumps({{"success": True, "output": output}}))
-else:
-    print(json.dumps({{"success": True, "output": {{"message": "Code executed successfully"}}}}))
+# 결과 확인을 위한 최종 출력
+try:
+    with open(r"{output_file}", "r", encoding="utf-8") as f:
+        final_result = json.load(f)
+        print("###FINAL_OUTPUT###", json.dumps(final_result, ensure_ascii=False))
+except:
+    print("###ERROR_READING_OUTPUT###")
 """
         
         with open(code_file, "w", encoding='utf-8') as f:
@@ -159,40 +136,71 @@ else:
         
         # 코드 실행
         try:
+            env = os.environ.copy()
+            env['PYTHONIOENCODING'] = 'utf-8'
+            
             result = subprocess.run(
                 [sys.executable, code_file],
                 capture_output=True,
                 text=True,
-                timeout=120,  # 120초 타임아웃 (AI 응답 대기 시간 고려)
-                cwd=temp_dir
+                encoding='utf-8',
+                timeout=120,
+                cwd=temp_dir,
+                env=env
             )
             
-            if result.returncode == 0:
+            # 실행 로그 파싱
+            stdout_lines = result.stdout.splitlines()
+            execution_logs = []
+            
+            for line in stdout_lines:
+                if line.startswith("###AI_REQUEST_START###"):
+                    execution_logs.append({"type": "ai_request", "message": "Sending request to AI model"})
+                elif line.startswith("###AI_RESPONSE_RECEIVED###"):
+                    execution_logs.append({"type": "ai_response", "message": "Received response from AI model"})
+                elif line.startswith("###AI_COMPLETE###"):
+                    execution_logs.append({"type": "ai_complete", "message": "AI processing completed"})
+                elif line.startswith("###OUTPUT_SET###"):
+                    execution_logs.append({"type": "info", "message": "Output variable detected"})
+                elif line.startswith("###OUTPUT_SAVED###"):
+                    execution_logs.append({"type": "info", "message": "Output saved successfully"})
+                elif line.startswith("###NO_OUTPUT###"):
+                    execution_logs.append({"type": "warning", "message": "No output variable set by code"})
+            
+            # output.json 파일에서 결과 읽기 (가장 안정적인 방법)
+            output_path = os.path.join(temp_dir, "output.json")
+            if os.path.exists(output_path):
                 try:
-                    parsed_result = json.loads(result.stdout)
-                    
-                    # 성공적으로 실행되고 output이 있는 경우 노드에 저장
-                    if parsed_result.get("success") and section_id:
-                        output_data = parsed_result.get("output")
-                        if output_data and output_data != {"message": "Code executed successfully"}:
-                            # 노드의 output 업데이트
-                            from storage import sections_db
-                            section = sections_db.get(section_id)
-                            if section:
-                                for node in section.nodes:
-                                    if node.id == node_id:
-                                        node.output = output_data
-                                        # 파일에도 저장
-                                        from main import save_sections_to_file
-                                        save_sections_to_file()
-                                        break
-                    
-                    return parsed_result
-                except json.JSONDecodeError:
-                    # stdout이 JSON이 아닌 경우 그대로 반환
-                    return {"success": True, "output": result.stdout.strip() or "No output"}
-            else:
-                return {"success": False, "error": result.stderr or "Unknown error"}
+                    with open(output_path, "r", encoding="utf-8") as f:
+                        result_data = json.load(f)
+                        result_data["execution_logs"] = execution_logs
+                        
+                        # 디버깅 정보 추가
+                        print(f"[Execution] Successfully loaded output from file: {json.dumps(result_data)[:100]}...")
+                        
+                        return result_data
+                except Exception as e:
+                    print(f"[Execution] Error reading output file: {e}")
+            
+            # 파일이 없으면 stdout에서 FINAL_OUTPUT 찾기
+            for line in stdout_lines:
+                if line.startswith("###FINAL_OUTPUT###"):
+                    try:
+                        json_str = line.replace("###FINAL_OUTPUT###", "").strip()
+                        result_data = json.loads(json_str)
+                        result_data["execution_logs"] = execution_logs
+                        return result_data
+                    except:
+                        pass
+            
+            # 그래도 못 찾으면 에러 반환
+            return {
+                "success": False,
+                "error": "Could not capture output from code execution",
+                "stdout": result.stdout[-1000:],  # 마지막 1000자만
+                "stderr": result.stderr,
+                "execution_logs": execution_logs
+            }
                 
         except subprocess.TimeoutExpired:
             return {"success": False, "error": "Code execution timeout (120s)"}
@@ -206,19 +214,9 @@ def get_connected_outputs(node: Node, section: Section, all_sections: List[Secti
     
     outputs = {}
     for conn_id in node.connectedFrom:
-        # 현재 섹션에서 찾기
         for n in section.nodes:
             if n.id == conn_id and n.output:
                 outputs[n.label] = n.output
                 break
-        
-        # 다른 섹션에서도 찾기 (cross-section connections)
-        if conn_id not in outputs:
-            for other_section in all_sections:
-                if other_section.id != section.id:
-                    for n in other_section.nodes:
-                        if n.id == conn_id and n.output:
-                            outputs[n.label] = n.output
-                            break
     
     return outputs

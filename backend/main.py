@@ -1,4 +1,4 @@
-# backend/main.py - 중복 제거 및 정리된 버전
+# backend/main.py - 수정된 전체 버전
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -314,36 +314,99 @@ async def execute_node_endpoint(request: ExecuteRequest):
     return {"status": "started", "nodeId": request.nodeId}
 
 async def execute_node_task(request: ExecuteRequest, node: Node, section: Section):
-    """노드 실행 태스크"""
+    """노드 실행 태스크 - 수정된 버전"""
     try:
+        print(f"[Execute] Starting execution for node: {node.id}")
+        
         # 시작 알림
         await broadcast_message({
             "type": "node_execution_start",
             "nodeId": node.id
         })
         
-        # 진행률 업데이트
-        for i in range(0, 101, 20):
-            await broadcast_message({
-                "type": "progress",
-                "nodeId": node.id,
-                "progress": i / 100
-            })
-            await asyncio.sleep(0.2)
+        # 초기 진행률
+        await broadcast_message({
+            "type": "progress",
+            "nodeId": node.id,
+            "progress": 0.1,
+            "message": "Preparing execution environment"
+        })
+        await asyncio.sleep(0.1)
         
-        # 코드 실행
+        await broadcast_message({
+            "type": "progress",
+            "nodeId": node.id,
+            "progress": 0.2,
+            "message": "Connecting to AI model"
+        })
+        await asyncio.sleep(0.1)
+        
+        # 코드 실행 준비
         all_sections = list(sections_db.values())
         connected_outputs = get_connected_outputs(node, section, all_sections)
         
-        # AI 모델 정보 추가
         execution_context = {
             "inputs": connected_outputs,
             "model": node.model,
             "lmStudioUrl": node.lmStudioUrl
         }
         
-        result = await execute_python_code(node.id, request.code or "", execution_context, section.id)
+        # AI 모델 정보 추가
+        prompt_size = len(str(connected_outputs)) + len(node.code or "") + len(node.purpose or "") + len(node.outputFormat or "")
+        await broadcast_message({
+            "type": "progress",
+            "nodeId": node.id,
+            "progress": 0.3,
+            "message": "Sending prompt to AI model",
+            "prompt_size": f"{prompt_size} chars"
+        })
         
+        # 코드 실행
+        print(f"[Execute] Executing code for node: {node.id}")
+        result = await execute_python_code(node.id, request.code or "", execution_context, section.id)
+        print(f"[Execute] Execution result: success={result.get('success')}, has_output={result.get('output') is not None}")
+        
+        # 실행 로그 처리
+        if "execution_logs" in result:
+            for log in result["execution_logs"]:
+                if log["type"] == "ai_request":
+                    await broadcast_message({
+                        "type": "ai_request",
+                        "nodeId": node.id,
+                        "message": log["message"]
+                    })
+                    await broadcast_message({
+                        "type": "progress",
+                        "nodeId": node.id,
+                        "progress": 0.5,
+                        "message": "AI is processing your request"
+                    })
+                elif log["type"] == "ai_response":
+                    await broadcast_message({
+                        "type": "ai_response",
+                        "nodeId": node.id,
+                        "message": log["message"]
+                    })
+                elif log["type"] == "ai_complete":
+                    await broadcast_message({
+                        "type": "ai_complete",
+                        "nodeId": node.id,
+                        "message": "AI processing completed"
+                    })
+                    await broadcast_message({
+                        "type": "progress",
+                        "nodeId": node.id,
+                        "progress": 0.7,
+                        "message": "Processing AI response"
+                    })
+                elif log["type"] == "error":
+                    await broadcast_message({
+                        "type": "ai_error",
+                        "nodeId": node.id,
+                        "error": log["message"]
+                    })
+        
+        # 실행 결과 처리
         if result["success"]:
             # 노드 출력 업데이트
             node.output = result["output"]
@@ -351,20 +414,73 @@ async def execute_node_task(request: ExecuteRequest, node: Node, section: Sectio
             # 변경사항 저장
             save_sections_to_file()
             
-            # 결과 전송
+            # 진행률 90%
+            await broadcast_message({
+                "type": "progress",
+                "nodeId": node.id,
+                "progress": 0.9,
+                "message": "Finalizing output"
+            })
+            
+            await asyncio.sleep(0.1)
+            
+            # *** 중요: output과 함께 node_output_updated 전송 ***
+            print(f"[Execute] Sending output update for node: {node.id}")
+            print(f"[Execute] Output preview: {str(result['output'])[:100]}...")
+            
             await broadcast_message({
                 "type": "node_output_updated",
                 "nodeId": node.id,
                 "output": result["output"]
             })
             
-            # 완료 알림
+            # 완료 진행률
+            await broadcast_message({
+                "type": "progress",
+                "nodeId": node.id,
+                "progress": 1.0,
+                "message": "Complete"
+            })
+            
+            # 여러 형태의 완료 메시지 전송 (호환성을 위해)
+            await broadcast_message({
+                "type": "ai_complete",
+                "nodeId": node.id,
+                "output": result["output"]  # output 포함
+            })
+            
             await broadcast_message({
                 "type": "node_execution_complete",
                 "nodeId": node.id
             })
+            
+            await broadcast_message({
+                "type": "execution_complete",
+                "nodeId": node.id
+            })
+            
+            await broadcast_message({
+                "type": "complete",
+                "nodeId": node.id
+            })
+            
+            await broadcast_message({
+                "type": "done",
+                "nodeId": node.id
+            })
+            
+            # 최종 output 메시지 (추가 안전장치)
+            await broadcast_message({
+                "type": "output",
+                "nodeId": node.id,
+                "output": result["output"]
+            })
+            
+            print(f"[Execute] Successfully completed execution for node: {node.id}")
+            
         else:
             # 에러 전송
+            print(f"[Execute] Execution failed for node: {node.id}, error: {result.get('error')}")
             await broadcast_message({
                 "type": "node_execution_error",
                 "nodeId": node.id,
@@ -372,6 +488,10 @@ async def execute_node_task(request: ExecuteRequest, node: Node, section: Sectio
             })
             
     except Exception as e:
+        print(f"[Execute] Exception during execution for node {node.id}: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        
         await broadcast_message({
             "type": "node_execution_error",
             "nodeId": node.id,

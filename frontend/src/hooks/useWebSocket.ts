@@ -1,4 +1,4 @@
-// frontend/src/hooks/useWebSocket.ts - 정리된 버전
+// frontend/src/hooks/useWebSocket.ts - 수정된 버전
 import { useEffect, useRef } from 'react';
 import { WS_URL } from '../constants';
 
@@ -81,6 +81,12 @@ export const useWebSocket = (handlers: WebSocketHandlers) => {
               return;
             }
             
+            // *** 중요: 모든 메시지를 window 이벤트로 전달 ***
+            const customEvent = new CustomEvent('websocket_message', {
+              detail: data
+            });
+            window.dispatchEvent(customEvent);
+            
             // 현재 handlers ref 사용
             const currentHandlers = handlersRef.current;
             
@@ -121,8 +127,35 @@ export const useWebSocket = (handlers: WebSocketHandlers) => {
                 }
                 break;
                 
+              // 추가 메시지 타입들 (WorkerEditModal에서 사용)
+              case 'ai_request':
+              case 'ai_response':
+              case 'ai_complete':
+              case 'ai_finished':
+              case 'ai_done':
+              case 'ai_error':
+              case 'ai_streaming':
+              case 'ai_thinking':
+              case 'processing':
+              case 'ai_working':
+              case 'execution_complete':
+              case 'execution_end':
+              case 'node_execution_end':
+              case 'complete':
+              case 'done':
+              case 'finished':
+              case 'output':
+              case 'result':
+              case 'response':
+              case 'heartbeat':
+              case 'keep_alive':
+                // 이미 window 이벤트로 전달했으므로 추가 처리 불필요
+                console.debug(`WebSocket message type '${data.type}' dispatched to window`);
+                break;
+                
               default:
-                console.log('Unknown WebSocket message type:', data.type);
+                console.debug('Unknown WebSocket message type:', data.type);
+                // 알 수 없는 메시지도 이미 window 이벤트로 전달됨
             }
           } catch (error) {
             console.error('Failed to parse WebSocket message:', error);
