@@ -39,6 +39,10 @@ export interface Node {
   updateHistory?: UpdateHistory[];
   aiScore?: number;
   
+  // Worker 노드 전용 필드
+  purpose?: string; // 노드의 목적
+  outputFormat?: string; // output 형식 설명 (AI에게 요청할 텍스트)
+  
   // AI Model Configuration
   lmStudioUrl?: string;
   lmStudioConnectionId?: string;

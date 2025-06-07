@@ -1,6 +1,6 @@
 // frontend/src/components/modals/WorkerEditModal.tsx - 원래 레이아웃 복원 + 연결 노드 패널 + AI 모델 선택 + Tasks 탭 (개선된 UI)
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Save, Play, Database, Clock, Award, Loader, X, Pencil, FileText, FileInput, FileOutput, Plus, Trash2, GripVertical, Lock, Circle, Triangle } from 'lucide-react';
+import { Save, Play, Database, Clock, Award, Loader, X, Pencil, FileText, FileInput, FileOutput, Plus, Trash2, GripVertical, Lock, Circle, Triangle, Target, FileJson } from 'lucide-react';
 import { Node, Section, Version, TaskItem } from '../../types';
 import { apiClient } from '../../api/client';
 import { CodeEditor } from '../CodeEditor';
@@ -48,6 +48,10 @@ export const WorkerEditModal: React.FC<WorkerEditModalProps> = ({
   const [dropPosition, setDropPosition] = useState<number | null>(null);
   const [isDraggingHandle, setIsDraggingHandle] = useState<boolean>(false);
   
+  // Purpose와 Output Format 상태
+  const [purpose, setPurpose] = useState<string>(editedNode.purpose || '');
+  const [outputFormat, setOutputFormat] = useState<string>(editedNode.outputFormat || '');
+  
   // Task 자동 저장을 위한 ref
   const taskSaveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -74,7 +78,7 @@ export const WorkerEditModal: React.FC<WorkerEditModalProps> = ({
   }, [node.id]);
 
   // Task 자동 저장 함수
-  const autoSaveTasks = useCallback((updatedTasks: TaskItem[]) => {
+  const autoSaveTasks = useCallback((updatedTasks: TaskItem[], updatedPurpose?: string, updatedOutputFormat?: string) => {
     // 이전 타임아웃 취소
     if (taskSaveTimeoutRef.current) {
       clearTimeout(taskSaveTimeoutRef.current);
@@ -82,15 +86,20 @@ export const WorkerEditModal: React.FC<WorkerEditModalProps> = ({
 
     // 300ms 후에 저장 (디바운스)
     taskSaveTimeoutRef.current = setTimeout(() => {
-      const updatedNode = { ...editedNode, tasks: updatedTasks };
+      const updatedNode = { 
+        ...editedNode, 
+        tasks: updatedTasks,
+        purpose: updatedPurpose !== undefined ? updatedPurpose : purpose,
+        outputFormat: updatedOutputFormat !== undefined ? updatedOutputFormat : outputFormat
+      };
       if (onUpdate) {
         onUpdate(updatedNode);
       } else {
         onSave(updatedNode);
       }
-      console.log('Tasks auto-saved');
+      console.log('Node data auto-saved');
     }, 300);
-  }, [editedNode, onUpdate, onSave]);
+  }, [editedNode, onUpdate, onSave, purpose, outputFormat]);
 
   // 컴포넌트 언마운트 시 타임아웃 정리
   useEffect(() => {
@@ -103,7 +112,12 @@ export const WorkerEditModal: React.FC<WorkerEditModalProps> = ({
 
   const handleSave = () => {
     // Code 저장 시에만 사용
-    onSave({ ...editedNode, tasks });
+    onSave({ 
+      ...editedNode, 
+      tasks,
+      purpose,
+      outputFormat
+    });
     onClose();
   };
 
@@ -127,12 +141,28 @@ export const WorkerEditModal: React.FC<WorkerEditModalProps> = ({
     setEditedNode(updatedNode);
     
     // 모델 변경 시 자동 저장
+    const nodeToSave = { 
+      ...updatedNode, 
+      tasks, 
+      purpose,
+      outputFormat
+    };
     if (onUpdate) {
-      onUpdate({ ...updatedNode, tasks });
+      onUpdate(nodeToSave);
     } else {
-      onSave({ ...updatedNode, tasks });
+      onSave(nodeToSave);
     }
     console.log('Model settings auto-saved');
+  };
+
+  const handlePurposeChange = (newPurpose: string) => {
+    setPurpose(newPurpose);
+    autoSaveTasks(tasks, newPurpose, undefined);
+  };
+
+  const handleOutputFormatChange = (newFormat: string) => {
+    setOutputFormat(newFormat);
+    autoSaveTasks(tasks, undefined, newFormat);
   };
 
   const executeCode = async () => {
@@ -203,7 +233,28 @@ data = get_connected_outputs()
 model_name = "${editedNode.model || 'none'}"
 lm_studio_url = "${editedNode.lmStudioUrl || ''}"
 
+# Get current node information
+# current_node contains all settings for this node including:
+# - id, type, label
+# - purpose: the node's purpose
+# - outputFormat: output format description
+# - tasks: list of detailed tasks
+# - model: AI model configuration
+print("Current node:", json.dumps(current_node, indent=2))
+
+# Get node purpose (what this node should accomplish)
+node_purpose = """${purpose || 'No purpose defined'}"""
+
+# Get expected output format description
+output_format_description = """${outputFormat || 'No output format defined'}"""
+
+# Access tasks if needed
+tasks = current_node.get('tasks', [])
+for task in tasks:
+    print(f"Task: {task['text']} - Status: {task['status']}")
+
 # Your processing logic here
+# Use the output_format_description to guide how you structure the output
 output = {
     "result": "processed data",
     "status": "success",
@@ -544,137 +595,168 @@ output = {
                     </div>
                   ) : activeTab === 'tasks' ? (
                     <div className="flex-1 overflow-y-auto min-h-0">
-                      <div className="p-4">
-                        <div className="flex justify-between items-center mb-4 sticky top-0 bg-white z-10 pb-2">
-                          <div className="flex items-center gap-3">
-                            <h3 className="font-semibold">Task Management</h3>
-                            {/* AI Score Mini Legend */}
-                            <div className="flex items-center gap-1 text-xs text-gray-400">
-                              <span className="text-[10px]">AI Score:</span>
-                              <div 
-                                className="w-6 h-2 rounded-sm border border-gray-200" 
-                                style={{ background: getScoreGradient(0) }}
-                                title="0%"
-                              />
-                              <div 
-                                className="w-6 h-2 rounded-sm border border-gray-200" 
-                                style={{ background: getScoreGradient(50) }}
-                                title="50%"
-                              />
-                              <div 
-                                className="w-6 h-2 rounded-sm border border-gray-200" 
-                                style={{ background: getScoreGradient(100) }}
-                                title="100%"
-                              />
-                            </div>
+                      <div className="p-6">
+                        {/* Task Outline Section */}
+                        <div className="bg-gradient-to-r from-indigo-50 to-purple-50 rounded-lg p-6 mb-6 border border-indigo-200">
+                          <h3 className="font-bold text-lg mb-4 text-indigo-900 flex items-center gap-2">
+                            <Target className="w-5 h-5" />
+                            Task Outline
+                          </h3>
+                          
+                          {/* Purpose Field */}
+                          <div className="mb-4">
+                            <label className="block text-sm font-semibold text-indigo-800 mb-2">
+                              Node Purpose
+                              <span className="ml-2 text-xs font-normal text-gray-600">
+                                (What this node should accomplish)
+                              </span>
+                            </label>
+                            <textarea
+                              value={purpose}
+                              onChange={(e) => handlePurposeChange(e.target.value)}
+                              placeholder="Describe the main purpose of this worker node..."
+                              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 resize-none"
+                              rows={3}
+                            />
                           </div>
-                          <button
-                            onClick={handleAddTask}
-                            className="flex items-center gap-2 px-3 py-1 bg-indigo-500 text-white rounded-md hover:bg-indigo-600 transition-colors text-sm"
-                          >
-                            <Plus className="w-4 h-4" />
-                            Add Task
-                          </button>
+                          
+                          {/* Output Format Field */}
+                          <div>
+                            <label className="block text-sm font-semibold text-indigo-800 mb-2 flex items-center gap-2">
+                              <FileJson className="w-4 h-4" />
+                              Output Format
+                              <span className="ml-2 text-xs font-normal text-gray-600">
+                                (Describe the expected output format)
+                              </span>
+                            </label>
+                            <textarea
+                              value={outputFormat}
+                              onChange={(e) => handleOutputFormatChange(e.target.value)}
+                              placeholder="Describe the output format for the AI to generate...&#10;Example: Create a JSON object with character names as keys and their descriptions as values"
+                              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 resize-none"
+                              rows={4}
+                            />
+                          </div>
                         </div>
-                        
-                        <div 
-                          className="space-y-2 relative"
-                          onDragLeave={handleDragLeave}
-                          onDrop={handleDrop}
-                        >
-                          {tasks.length === 0 ? (
-                            <div className="text-center py-12 text-gray-400">
-                              <p className="text-sm">No tasks yet</p>
-                              <p className="text-xs mt-1">Click "Add Task" to create one</p>
-                            </div>
-                          ) : (
-                            <>
-                              {/* Drop indicator at the top */}
-                              {dropPosition === 0 && (
-                                <div className="h-0.5 bg-indigo-500 rounded-full -my-1 relative z-20">
-                                  <div className="absolute -top-1 -left-1 w-2 h-2 bg-indigo-500 rounded-full"></div>
-                                </div>
-                              )}
-                              
-                              {tasks.map((task, index) => (
-                                <React.Fragment key={task.id}>
-                                  <div
-                                    onDragOver={(e) => handleDragOver(e, index)}
-                                    onDragEnd={handleDragEnd}
-                                    className={`
-                                      relative flex items-center gap-2 p-2.5 bg-white border rounded-lg shadow-sm hover:shadow-md transition-shadow
-                                      ${task.taskStatus === 'locked' ? 'opacity-50' : ''}
-                                      ${task.taskStatus === 'low_priority' ? 'opacity-70' : ''}
-                                      ${draggedTask === index ? 'opacity-50' : ''}
-                                      border-gray-100
-                                    `}
-                                    style={{
-                                      background: getScoreGradient(task.aiScore)
-                                    }}
-                                  >
-                                    {/* Drag Handle */}
-                                    <div 
-                                      draggable={task.taskStatus !== 'locked'}
-                                      onDragStart={(e) => {
-                                        setIsDraggingHandle(true);
-                                        handleDragStart(e, index);
-                                      }}
-                                      className={`flex-shrink-0 cursor-move ${task.taskStatus === 'locked' ? 'invisible' : ''}`}
-                                    >
-                                      <GripVertical className="w-3 h-3 text-gray-300" />
-                                    </div>
-                                    
-                                    {/* Task Status Toggle */}
-                                    <button
-                                      onClick={() => handleTaskStatusToggle(task.id)}
-                                      className="p-1.5 rounded-md hover:bg-gray-100 transition-all flex-shrink-0"
-                                      title={getTaskStatusTooltip(task.taskStatus)}
-                                    >
-                                      {getTaskStatusIcon(task.taskStatus)}
-                                    </button>
-                                    
-                                    {/* Task Text */}
-                                    <input
-                                      type="text"
-                                      value={task.text}
-                                      onChange={(e) => handleTaskTextChange(task.id, e.target.value)}
-                                      disabled={task.taskStatus === 'locked'}
-                                      className={`
-                                        flex-1 px-2 py-1 bg-transparent border-none outline-none text-gray-700 placeholder-gray-400
-                                        ${task.taskStatus === 'locked' ? 'cursor-not-allowed' : 'cursor-text'}
-                                        focus:bg-white focus:bg-opacity-60 rounded transition-all select-text
-                                      `}
-                                      placeholder="Enter task description"
-                                      style={{ userSelect: 'text' }}
-                                    />
-                                    
-                                    {/* Delete Button */}
-                                    <button
-                                      onClick={() => handleDeleteTask(task.id)}
-                                      className="p-1.5 rounded-md hover:bg-gray-50 text-gray-400 hover:text-red-500 transition-all flex-shrink-0"
-                                      title="Delete task"
-                                    >
-                                      <Trash2 className="w-4 h-4" />
-                                    </button>
+
+                        {/* Detailed Tasks Section */}
+                        <div>
+                          <div className="flex justify-between items-center mb-4">
+                            <h3 className="font-bold text-lg flex items-center gap-2">
+                              <FileText className="w-5 h-5" />
+                              Detailed Tasks
+                              <span className="text-xs font-normal text-gray-500">
+                                (Step-by-step breakdown)
+                              </span>
+                            </h3>
+                            <button
+                              onClick={handleAddTask}
+                              className="flex items-center gap-2 px-3 py-1 bg-indigo-500 text-white rounded-md hover:bg-indigo-600 transition-colors text-sm"
+                            >
+                              <Plus className="w-4 h-4" />
+                              Add Task
+                            </button>
+                          </div>
+                          
+                          <div 
+                            className="space-y-2 relative"
+                            onDragLeave={handleDragLeave}
+                            onDrop={handleDrop}
+                          >
+                            {tasks.length === 0 ? (
+                              <div className="text-center py-12 text-gray-400 bg-gray-50 rounded-lg border-2 border-dashed border-gray-300">
+                                <p className="text-sm">No detailed tasks yet</p>
+                                <p className="text-xs mt-1">Click "Add Task" to create one</p>
+                              </div>
+                            ) : (
+                              <>
+                                {/* Drop indicator at the top */}
+                                {dropPosition === 0 && (
+                                  <div className="h-0.5 bg-indigo-500 rounded-full -my-1 relative z-20">
+                                    <div className="absolute -top-1 -left-1 w-2 h-2 bg-indigo-500 rounded-full"></div>
                                   </div>
-                                  
-                                  {/* Drop indicator between tasks */}
-                                  {dropPosition === index + 1 && index !== tasks.length - 1 && (
-                                    <div className="h-0.5 bg-indigo-500 rounded-full -my-1 relative z-20">
-                                      <div className="absolute -top-1 -left-1 w-2 h-2 bg-indigo-500 rounded-full"></div>
+                                )}
+                                
+                                {tasks.map((task, index) => (
+                                  <React.Fragment key={task.id}>
+                                    <div
+                                      onDragOver={(e) => handleDragOver(e, index)}
+                                      onDragEnd={handleDragEnd}
+                                      className={`
+                                        relative flex items-center gap-2 p-2.5 bg-white border rounded-lg shadow-sm hover:shadow-md transition-shadow
+                                        ${task.taskStatus === 'locked' ? 'opacity-50' : ''}
+                                        ${task.taskStatus === 'low_priority' ? 'opacity-70' : ''}
+                                        ${draggedTask === index ? 'opacity-50' : ''}
+                                        border-gray-100
+                                      `}
+                                      style={{
+                                        background: getScoreGradient(task.aiScore)
+                                      }}
+                                    >
+                                      {/* Drag Handle */}
+                                      <div 
+                                        draggable={task.taskStatus !== 'locked'}
+                                        onDragStart={(e) => {
+                                          setIsDraggingHandle(true);
+                                          handleDragStart(e, index);
+                                        }}
+                                        className={`flex-shrink-0 cursor-move ${task.taskStatus === 'locked' ? 'invisible' : ''}`}
+                                      >
+                                        <GripVertical className="w-3 h-3 text-gray-300" />
+                                      </div>
+                                      
+                                      {/* Task Status Toggle */}
+                                      <button
+                                        onClick={() => handleTaskStatusToggle(task.id)}
+                                        className="p-1.5 rounded-md hover:bg-gray-100 transition-all flex-shrink-0"
+                                        title={getTaskStatusTooltip(task.taskStatus)}
+                                      >
+                                        {getTaskStatusIcon(task.taskStatus)}
+                                      </button>
+                                      
+                                      {/* Task Text */}
+                                      <input
+                                        type="text"
+                                        value={task.text}
+                                        onChange={(e) => handleTaskTextChange(task.id, e.target.value)}
+                                        disabled={task.taskStatus === 'locked'}
+                                        className={`
+                                          flex-1 px-2 py-1 bg-transparent border-none outline-none text-gray-700 placeholder-gray-400
+                                          ${task.taskStatus === 'locked' ? 'cursor-not-allowed' : 'cursor-text'}
+                                          focus:bg-white focus:bg-opacity-60 rounded transition-all select-text
+                                        `}
+                                        placeholder="Enter task description"
+                                        style={{ userSelect: 'text' }}
+                                      />
+                                      
+                                      {/* Delete Button */}
+                                      <button
+                                        onClick={() => handleDeleteTask(task.id)}
+                                        className="p-1.5 rounded-md hover:bg-gray-50 text-gray-400 hover:text-red-500 transition-all flex-shrink-0"
+                                        title="Delete task"
+                                      >
+                                        <Trash2 className="w-4 h-4" />
+                                      </button>
                                     </div>
-                                  )}
-                                </React.Fragment>
-                              ))}
-                              
-                              {/* Drop indicator at the bottom */}
-                              {dropPosition === tasks.length && tasks.length > 0 && (
-                                <div className="h-0.5 bg-indigo-500 rounded-full -my-1 relative z-20">
-                                  <div className="absolute -top-1 -left-1 w-2 h-2 bg-indigo-500 rounded-full"></div>
-                                </div>
-                              )}
-                            </>
-                          )}
+                                    
+                                    {/* Drop indicator between tasks */}
+                                    {dropPosition === index + 1 && index !== tasks.length - 1 && (
+                                      <div className="h-0.5 bg-indigo-500 rounded-full -my-1 relative z-20">
+                                        <div className="absolute -top-1 -left-1 w-2 h-2 bg-indigo-500 rounded-full"></div>
+                                      </div>
+                                    )}
+                                  </React.Fragment>
+                                ))}
+                                
+                                {/* Drop indicator at the bottom */}
+                                {dropPosition === tasks.length && tasks.length > 0 && (
+                                  <div className="h-0.5 bg-indigo-500 rounded-full -my-1 relative z-20">
+                                    <div className="absolute -top-1 -left-1 w-2 h-2 bg-indigo-500 rounded-full"></div>
+                                  </div>
+                                )}
+                              </>
+                            )}
+                          </div>
                         </div>
                       </div>
                     </div>
@@ -890,14 +972,24 @@ output = {
             
             <div className="flex-1 p-4 overflow-auto">
               <pre className="bg-gray-900 text-gray-100 p-4 rounded font-mono text-sm">
-                {JSON.stringify({ ...editedNode, tasks }, null, 2)}
+                {JSON.stringify({ 
+                  ...editedNode, 
+                  tasks,
+                  purpose,
+                  outputFormat
+                }, null, 2)}
               </pre>
             </div>
             
             <div className="p-4 border-t flex gap-2">
               <button
                 onClick={() => {
-                  navigator.clipboard.writeText(JSON.stringify({ ...editedNode, tasks }, null, 2));
+                  navigator.clipboard.writeText(JSON.stringify({ 
+                    ...editedNode, 
+                    tasks,
+                    purpose,
+                    outputFormat
+                  }, null, 2));
                   alert('JSON copied to clipboard');
                 }}
                 className="flex-1 bg-indigo-500 text-white rounded-md px-4 py-2 hover:bg-indigo-600 transition-colors"
@@ -933,7 +1025,12 @@ output = {
                 onClose={() => setSelectedNodeForEdit(null)}
                 onSave={(updatedNode: Node) => {
                   // 현재 모달을 저장하고
-                  onSave({ ...editedNode, tasks });
+                  onSave({ 
+                    ...editedNode, 
+                    tasks,
+                    purpose,
+                    outputFormat
+                  });
                   // 새로운 노드의 편집창 열기를 위해 잠시 후 처리
                   setSelectedNodeForEdit(null);
                   onClose();

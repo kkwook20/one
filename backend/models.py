@@ -43,6 +43,10 @@ class Node(BaseModel):
     model: Optional[str] = None
     vectorDB: Optional[Dict[str, str]] = None
     
+    # Worker 노드 전용 필드
+    purpose: Optional[str] = None  # 노드의 목적
+    outputFormat: Optional[str] = None  # output 형식 설명 (AI에게 요청할 텍스트)
+    
     # AI Model Configuration
     lmStudioUrl: Optional[str] = None
     lmStudioConnectionId: Optional[str] = None

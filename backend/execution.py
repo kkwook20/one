@@ -22,6 +22,40 @@ async def execute_python_code(node_id: str, code: str, context: Dict[str, Any] =
     model_name = context.get('model', 'none') if context else 'none'
     lm_studio_url = context.get('lmStudioUrl', '') if context else ''
     
+    # 노드 정보 가져오기 (purpose와 outputFormat을 위해)
+    node_purpose = ''
+    output_format_description = ''
+    current_node_data = {}
+    global_vars_data = {}
+    section_outputs_data = {}
+    
+    if section_id:
+        from storage import sections_db, get_global_var as storage_get_global_var, get_section_outputs as storage_get_section_outputs
+        section = sections_db.get(section_id)
+        if section:
+            node = next((n for n in section.nodes if n.id == node_id), None)
+            if node:
+                node_purpose = node.purpose or ''
+                output_format_description = node.outputFormat or ''
+                # 현재 노드의 전체 데이터
+                current_node_data = {
+                    'id': node.id,
+                    'type': node.type,
+                    'label': node.label,
+                    'purpose': node.purpose,
+                    'outputFormat': node.outputFormat,
+                    'tasks': [task.dict() if hasattr(task, 'dict') else task for task in (node.tasks or [])],
+                    'model': node.model,
+                    'lmStudioUrl': node.lmStudioUrl
+                }
+                
+                # 자주 사용되는 global variables 미리 준비
+                # 예: 같은 섹션의 다른 노드 정보들
+                for n in section.nodes:
+                    if n.id != node_id and n.output:
+                        var_path = f"{section.name.lower()}.{n.type}.{n.id}.output"
+                        global_vars_data[var_path] = n.output
+    
     # 임시 디렉토리에서 실행
     with tempfile.TemporaryDirectory() as temp_dir:
         code_file = os.path.join(temp_dir, "node_code.py")
@@ -38,16 +72,31 @@ inputs = {json.dumps(inputs)}
 model_name = "{model_name}"
 lm_studio_url = "{lm_studio_url}"
 
-# 글로벌 변수 접근 함수 (더미 - 실제 환경에서는 API 호출로 대체)
+# 현재 노드 정보
+current_node = {json.dumps(current_node_data)}
+
+# 노드 목적
+node_purpose = '''{node_purpose}'''
+
+# 출력 형식 설명
+output_format_description = '''{output_format_description}'''
+
+# 미리 로드된 global variables
+_global_vars = {json.dumps(global_vars_data)}
+
+# 글로벌 변수 접근 함수
 def get_global_var(var_path):
-    # 실제 환경에서는 API를 통해 가져와야 함
+    # 미리 로드된 데이터에서 찾기
+    if var_path in _global_vars:
+        return _global_vars[var_path]
+    # TODO: 없으면 실제 storage에서 가져오는 로직 추가 필요
     return None
 
 def get_connected_outputs():
     return inputs
 
 def get_section_outputs(section_name):
-    # 실제 환경에서는 API를 통해 가져와야 함
+    # TODO: 실제 구현 필요
     return {{}}
 
 # AI 모델 접근 함수 (예시)

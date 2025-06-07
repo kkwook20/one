@@ -342,7 +342,7 @@ async def execute_node_task(request: ExecuteRequest, node: Node, section: Sectio
             "lmStudioUrl": node.lmStudioUrl
         }
         
-        result = await execute_python_code(node.id, request.code or "", execution_context, request.sectionId)
+        result = await execute_python_code(node.id, request.code or "", execution_context, section.id)
         
         if result["success"]:
             # 노드 출력 업데이트
@@ -384,12 +384,20 @@ async def execute_flow_endpoint(request: dict):
     section_id = request.get("sectionId")
     start_node_id = request.get("startNodeId")
     
-    if not section_id or not start_node_id:
-        raise HTTPException(status_code=400, detail="Missing sectionId or startNodeId")
+    # sectionId는 필수
+    if not section_id:
+        raise HTTPException(status_code=400, detail="Missing sectionId")
     
     section = sections_db.get(section_id)
     if not section:
         raise HTTPException(status_code=404, detail="Section not found")
+    
+    # startNodeId가 없으면 input 노드를 자동으로 찾음
+    if not start_node_id:
+        input_node = next((n for n in section.nodes if n.type == "input"), None)
+        if not input_node:
+            raise HTTPException(status_code=400, detail="No input node found in the section")
+        start_node_id = input_node.id
     
     # 비동기 실행
     asyncio.create_task(execute_flow_task(section, start_node_id))
