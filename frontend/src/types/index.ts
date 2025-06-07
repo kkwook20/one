@@ -37,8 +37,11 @@ export interface Node {
   updateHistory?: UpdateHistory[];
   aiScore?: number;
   
-  // Additional fields for modals
+  // AI Model Configuration
   lmStudioUrl?: string;
+  lmStudioConnectionId?: string;
+  
+  // Additional fields for modals
   availableModels?: any[];
   inputConfig?: any;
   outputConfig?: any;
@@ -84,4 +87,17 @@ export interface ExecutionLog {
   nodeLabel: string;
   type: 'start' | 'processing' | 'complete' | 'error' | 'file_created' | 'info';
   message: string;
+}
+
+// LM Studio Types
+export interface LMStudioModel {
+  id: string;
+  name: string;
+  type: 'lmstudio' | 'builtin';
+}
+
+export interface LMStudioConnection {
+  connectionId: string;
+  url: string;
+  models: LMStudioModel[];
 }

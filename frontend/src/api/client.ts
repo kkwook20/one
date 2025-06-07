@@ -1,7 +1,7 @@
 // frontend/src/api/client.ts - 정리된 버전
 import axios from 'axios';
 import { API_URL } from '../constants';
-import { Section } from '../types';
+import { Section, LMStudioConnection, LMStudioModel } from '../types';
 
 // Axios 인스턴스 생성
 const axiosInstance = axios.create({
@@ -24,6 +24,21 @@ export const apiClient = {
   // Models
   getModels: () => 
     axiosInstance.get('/models'),
+
+  // LM Studio
+  connectLMStudio: (url: string) =>
+    axiosInstance.post<{
+      success: boolean;
+      connectionId: string;
+      models: LMStudioModel[];
+      url: string;
+    }>('/lmstudio/connect', { url }),
+  
+  getLMStudioModels: (connectionId: string) =>
+    axiosInstance.get<{
+      models: LMStudioModel[];
+      url: string;
+    }>(`/lmstudio/models/${connectionId}`),
 
   // Sections
   getSections: () => 

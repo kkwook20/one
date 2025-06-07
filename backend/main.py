@@ -2,7 +2,7 @@
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from typing import Dict, Optional
+from typing import Dict, Optional, List
 import asyncio
 import json
 import os
@@ -10,6 +10,7 @@ import time
 import random
 from datetime import datetime
 import threading
+import httpx
 
 # Local imports
 from models import Section, Node, ExecuteRequest, Position
@@ -36,6 +37,9 @@ active_connections: Dict[str, WebSocket] = {}
 
 # 파일 저장 락
 save_lock = threading.Lock()
+
+# LM Studio 연결 정보 저장
+lm_studio_connections: Dict[str, Dict] = {}
 
 def save_sections_to_file():
     """섹션 데이터를 파일로 저장 (동기식)"""
@@ -330,7 +334,15 @@ async def execute_node_task(request: ExecuteRequest, node: Node, section: Sectio
         # 코드 실행
         all_sections = list(sections_db.values())
         connected_outputs = get_connected_outputs(node, section, all_sections)
-        result = await execute_python_code(node.id, request.code or "", connected_outputs, request.sectionId)
+        
+        # AI 모델 정보 추가
+        execution_context = {
+            "inputs": connected_outputs,
+            "model": node.model,
+            "lmStudioUrl": node.lmStudioUrl
+        }
+        
+        result = await execute_python_code(node.id, request.code or "", execution_context, request.sectionId)
         
         if result["success"]:
             # 노드 출력 업데이트
@@ -430,12 +442,88 @@ async def stop_node(node_id: str):
 @app.get("/models")
 async def get_models():
     """AI 모델 목록 반환"""
+    # LM Studio를 통해서만 모델 사용 가능
+    return {"data": []}
+
+@app.post("/lmstudio/connect")
+async def connect_lmstudio(request: dict):
+    """LM Studio 연결 테스트 및 모델 목록 가져오기"""
+    url = request.get("url", "").strip()
+    if not url:
+        raise HTTPException(status_code=400, detail="URL is required")
+    
+    # URL 정규화
+    if not url.startswith(("http://", "https://")):
+        url = f"http://{url}"
+    
+    if not url.endswith("/"):
+        url = f"{url}/"
+    
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            # LM Studio의 모델 목록 API 호출
+            models_url = f"{url}v1/models"
+            response = await client.get(models_url)
+            
+            if response.status_code == 200:
+                data = response.json()
+                models = []
+                
+                # OpenAI 형식의 응답 파싱
+                if "data" in data:
+                    for model in data["data"]:
+                        models.append({
+                            "id": model.get("id", "unknown"),
+                            "name": model.get("id", "Unknown Model"),
+                            "type": "lmstudio"
+                        })
+                
+                # 연결 정보 저장
+                connection_id = f"conn_{int(time.time())}"
+                lm_studio_connections[connection_id] = {
+                    "url": url,
+                    "models": models,
+                    "connected_at": datetime.now().isoformat()
+                }
+                
+                return {
+                    "success": True,
+                    "connectionId": connection_id,
+                    "models": models,
+                    "url": url
+                }
+            else:
+                raise HTTPException(
+                    status_code=response.status_code,
+                    detail=f"LM Studio returned status {response.status_code}"
+                )
+                
+    except httpx.TimeoutException:
+        raise HTTPException(
+            status_code=408,
+            detail="Connection timeout. Make sure LM Studio is running and accessible."
+        )
+    except httpx.ConnectError:
+        raise HTTPException(
+            status_code=503,
+            detail="Cannot connect to LM Studio. Make sure it's running on the specified address."
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Connection failed: {str(e)}"
+        )
+
+@app.get("/lmstudio/models/{connection_id}")
+async def get_lmstudio_models(connection_id: str):
+    """저장된 LM Studio 모델 목록 반환"""
+    if connection_id not in lm_studio_connections:
+        raise HTTPException(status_code=404, detail="Connection not found")
+    
+    connection = lm_studio_connections[connection_id]
     return {
-        "data": [
-            {"id": "llama-3.1-8b"},
-            {"id": "mistral-7b"},
-            {"id": "codellama-13b"}
-        ]
+        "models": connection["models"],
+        "url": connection["url"]
     }
 
 @app.post("/node/{node_id}/deactivate")

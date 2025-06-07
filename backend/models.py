@@ -41,6 +41,10 @@ class Node(BaseModel):
     model: Optional[str] = None
     vectorDB: Optional[Dict[str, str]] = None
     
+    # AI Model Configuration
+    lmStudioUrl: Optional[str] = None
+    lmStudioConnectionId: Optional[str] = None
+    
     # Supervisor/Planner 전용
     supervisedNodes: Optional[List[str]] = None
     updateHistory: Optional[List[UpdateHistory]] = None

@@ -1,9 +1,10 @@
-// frontend/src/components/modals/SupervisorEditModal.tsx - 연결된 노드 아이콘 추가
-import React, { useState, useEffect } from 'react';
+// frontend/src/components/modals/SupervisorEditModal.tsx - 연결된 노드 아이콘 추가 + AI 모델 선택
+import React, { useState } from 'react';
 import { X, Award, Pencil, Save, Play, FileText, Loader, FileInput, FileOutput } from 'lucide-react';
 import { Node, Section } from '../../types';
 import { apiClient } from '../../api/client';
 import { CodeEditor } from '../CodeEditor';
+import { AIModelSelector } from '../AIModelSelector';
 
 interface SupervisorEditModalProps {
   node: Node;
@@ -22,7 +23,6 @@ export const SupervisorEditModal: React.FC<SupervisorEditModalProps> = ({
 }) => {
   const [editedNode, setEditedNode] = useState(node);
   const [selectedTarget, setSelectedTarget] = useState<string>('');
-  const [models, setModels] = useState<string[]>(['none']);
   const [supervisedNodesList, setSupervisedNodesList] = useState<string[]>(node.supervisedNodes || []);
   const [modificationHistory, setModificationHistory] = useState<any[]>(node.modificationHistory || []);
   const [evaluationHistory, setEvaluationHistory] = useState<any[]>(node.evaluationHistory || []);
@@ -34,19 +34,6 @@ export const SupervisorEditModal: React.FC<SupervisorEditModalProps> = ({
   const [showJsonViewer, setShowJsonViewer] = useState(false);
   const [isExecuting, setIsExecuting] = useState(false);
   const [executionResult, setExecutionResult] = useState<{ success: boolean; output?: any; error?: string } | null>(null);
-
-  useEffect(() => {
-    // Load available models
-    apiClient.getModels()
-      .then(res => {
-        const modelList = res.data.data.map((m: any) => m.id);
-        setModels(['none', ...modelList]);
-      })
-      .catch(() => {
-        // Silently fail if API is not available
-        setModels(['none']);
-      });
-  }, []);
 
   const handleSave = () => {
     onSave({ 
@@ -66,6 +53,15 @@ export const SupervisorEditModal: React.FC<SupervisorEditModalProps> = ({
   const handleCancelRename = () => {
     setTempName(editedNode.label);
     setIsEditingName(false);
+  };
+
+  const handleModelChange = (model: string, lmStudioUrl?: string, connectionId?: string) => {
+    setEditedNode({ 
+      ...editedNode, 
+      model,
+      lmStudioUrl,
+      lmStudioConnectionId: connectionId
+    });
   };
 
   const executeCode = async () => {
@@ -184,12 +180,21 @@ export const SupervisorEditModal: React.FC<SupervisorEditModalProps> = ({
     return `# ${node.type} logic
 # This code manages other nodes
 # Access planning data via get_global_var()
+# AI model is available via: model_name = "${editedNode.model || 'none'}"
 
 def ${node.type === 'supervisor' ? 'supervise' : 'plan'}_nodes():
+    # Get AI model configuration
+    model_name = "${editedNode.model || 'none'}"
+    lm_studio_url = "${editedNode.lmStudioUrl || ''}"
+    
     # Get planner's guidance
     plan = get_global_var("${section.name.toLowerCase()}.planner.${node.id}.output")
     
-    # Implement ${node.type} logic
+    # Implement ${node.type} logic with AI model
+    if model_name != 'none':
+        # Use AI model for intelligent ${node.type === 'supervisor' ? 'supervision' : 'planning'}
+        pass
+    
     pass`;
   };
 
@@ -347,16 +352,14 @@ def ${node.type === 'supervisor' ? 'supervise' : 'plan'}_nodes():
               </div>
             )}
             
-            <div className="p-3 border-t">
-              <select
+            {/* AI Model Selection */}
+            <div className="p-3 border-t bg-gray-50">
+              <AIModelSelector
                 value={editedNode.model || 'none'}
-                onChange={(e) => setEditedNode({ ...editedNode, model: e.target.value })}
-                className="w-full border rounded px-3 py-2"
-              >
-                {models.map(model => (
-                  <option key={model} value={model}>{model}</option>
-                ))}
-              </select>
+                lmStudioUrl={editedNode.lmStudioUrl}
+                lmStudioConnectionId={editedNode.lmStudioConnectionId}
+                onChange={handleModelChange}
+              />
             </div>
           </div>
 

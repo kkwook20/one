@@ -10,12 +10,17 @@ from typing import Dict, Any, List
 from models import Node, Section
 from storage import get_global_var, get_section_outputs
 
-async def execute_python_code(node_id: str, code: str, inputs: Dict[str, Any] = None, section_id: str = None) -> Dict[str, Any]:
+async def execute_python_code(node_id: str, code: str, context: Dict[str, Any] = None, section_id: str = None) -> Dict[str, Any]:
     """Python 코드 실행"""
     
     # 빈 코드 처리
     if not code or code.strip() == '':
         return {"success": True, "output": {"message": "No code to execute", "status": "empty"}}
+    
+    # 컨텍스트에서 입력과 AI 모델 정보 추출
+    inputs = context.get('inputs', {}) if context else {}
+    model_name = context.get('model', 'none') if context else 'none'
+    lm_studio_url = context.get('lmStudioUrl', '') if context else ''
     
     # 임시 디렉토리에서 실행
     with tempfile.TemporaryDirectory() as temp_dir:
@@ -27,7 +32,11 @@ import json
 import sys
 
 # 입력 데이터
-inputs = {json.dumps(inputs or {})}
+inputs = {json.dumps(inputs)}
+
+# AI 모델 설정
+model_name = "{model_name}"
+lm_studio_url = "{lm_studio_url}"
 
 # 글로벌 변수 접근 함수 (더미 - 실제 환경에서는 API 호출로 대체)
 def get_global_var(var_path):
@@ -40,6 +49,16 @@ def get_connected_outputs():
 def get_section_outputs(section_name):
     # 실제 환경에서는 API를 통해 가져와야 함
     return {{}}
+
+# AI 모델 접근 함수 (예시)
+def call_ai_model(prompt, model=None, endpoint=None):
+    \"\"\"AI 모델 호출 함수 (실제 구현은 사용자가 작성)\"\"\"
+    model_to_use = model or model_name
+    endpoint_to_use = endpoint or lm_studio_url
+    
+    # 여기에 실제 AI 모델 호출 로직 구현
+    # 예: requests를 사용한 API 호출
+    return {{"response": f"Mock response from {{model_to_use}}"}}
 
 # 출력 변수 초기화
 output = None

@@ -1,9 +1,10 @@
-// frontend/src/components/modals/WorkerEditModal.tsx - 원래 레이아웃 복원 + 연결 노드 패널
+// frontend/src/components/modals/WorkerEditModal.tsx - 원래 레이아웃 복원 + 연결 노드 패널 + AI 모델 선택
 import React, { useState, useEffect } from 'react';
 import { Save, Play, Database, Clock, Award, Loader, X, Pencil, FileText, FileInput, FileOutput } from 'lucide-react';
 import { Node, Section, Version } from '../../types';
 import { apiClient } from '../../api/client';
 import { CodeEditor } from '../CodeEditor';
+import { AIModelSelector } from '../AIModelSelector';
 
 interface WorkerEditModalProps {
   node: Node;
@@ -69,6 +70,15 @@ export const WorkerEditModal: React.FC<WorkerEditModalProps> = ({
     setIsEditingName(false);
   };
 
+  const handleModelChange = (model: string, lmStudioUrl?: string, connectionId?: string) => {
+    setEditedNode({ 
+      ...editedNode, 
+      model,
+      lmStudioUrl,
+      lmStudioConnectionId: connectionId
+    });
+  };
+
   const executeCode = async () => {
     setIsExecuting(true);
     setExecutionResult(null);
@@ -126,16 +136,22 @@ export const WorkerEditModal: React.FC<WorkerEditModalProps> = ({
     return `# ${node.label} Implementation
 # Access input data via 'inputs' variable or get_connected_outputs()
 # Set results in 'output' variable
+# AI model is available via: model_name = "${editedNode.model || 'none'}"
 
 import json
 
 # Get connected outputs
 data = get_connected_outputs()
 
+# Get AI model configuration
+model_name = "${editedNode.model || 'none'}"
+lm_studio_url = "${editedNode.lmStudioUrl || ''}"
+
 # Your processing logic here
 output = {
     "result": "processed data",
-    "status": "success"
+    "status": "success",
+    "model_used": model_name
 }`;
   };
 
@@ -356,6 +372,16 @@ output = {
                     </div>
                   </div>
                 )}
+                
+                {/* AI Model Selection */}
+                <div className="p-4 border-t bg-gray-50">
+                  <AIModelSelector
+                    value={editedNode.model || 'none'}
+                    lmStudioUrl={editedNode.lmStudioUrl}
+                    lmStudioConnectionId={editedNode.lmStudioConnectionId}
+                    onChange={handleModelChange}
+                  />
+                </div>
                 
                 {/* Action Buttons */}
                 <div className="p-4 border-t flex gap-2">
