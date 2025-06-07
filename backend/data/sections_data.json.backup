@@ -16,8 +16,7 @@
         "isDeactivated": false,
         "tasks": null,
         "connectedTo": [
-          "worker-1749232940791",
-          "planner-1749265919253"
+          "output-preproduction-script"
         ],
         "connectedFrom": null,
         "code": null,
@@ -47,8 +46,7 @@
         "tasks": null,
         "connectedTo": null,
         "connectedFrom": [
-          "worker-1749232940791",
-          "supervisor-1749265918836"
+          "input-preproduction-script"
         ],
         "code": null,
         "output": null,
@@ -77,26 +75,51 @@
         "tasks": [
           {
             "id": "task-1749232940791",
-            "text": "",
+            "text": "fgyhfghfgh",
             "status": "pending",
-            "taskStatus": null,
-            "aiScore": null
+            "taskStatus": "editable",
+            "aiScore": 50.0
+          },
+          {
+            "id": "task-1749281920183",
+            "text": "Enter tassdfsdfsdfsss",
+            "status": "pending",
+            "taskStatus": "editable",
+            "aiScore": 50.0
+          },
+          {
+            "id": "task-1749281919801",
+            "text": "Enter task description",
+            "status": "pending",
+            "taskStatus": "editable",
+            "aiScore": 50.0
+          },
+          {
+            "id": "task-1749281919998",
+            "text": "Enter task description",
+            "status": "pending",
+            "taskStatus": "editable",
+            "aiScore": 50.0
+          },
+          {
+            "id": "task-1749282680296",
+            "text": "Enter task description",
+            "status": "pending",
+            "taskStatus": "editable",
+            "aiScore": 50.0
           }
         ],
         "connectedTo": [
-          "output-preproduction-script",
-          "supervisor-1749265918836"
+          "worker-1749282008123"
         ],
-        "connectedFrom": [
-          "input-preproduction-script"
-        ],
+        "connectedFrom": [],
         "code": null,
         "output": null,
         "error": null,
-        "model": "mistral-7b-instruct-v0.3",
+        "model": "qwen2.5-coder-14b-houdini_vex_functions",
         "vectorDB": null,
         "lmStudioUrl": "http://localhost:1234/",
-        "lmStudioConnectionId": "conn_1749275284",
+        "lmStudioConnectionId": "conn_1749281903",
         "supervisedNodes": null,
         "updateHistory": null,
         "aiScore": null,
@@ -115,12 +138,8 @@
         "isRunning": false,
         "isDeactivated": false,
         "tasks": null,
-        "connectedTo": [
-          "output-preproduction-script"
-        ],
-        "connectedFrom": [
-          "worker-1749232940791"
-        ],
+        "connectedTo": [],
+        "connectedFrom": [],
         "code": null,
         "output": null,
         "error": null,
@@ -147,9 +166,7 @@
         "isDeactivated": false,
         "tasks": null,
         "connectedTo": [],
-        "connectedFrom": [
-          "input-preproduction-script"
-        ],
+        "connectedFrom": [],
         "code": null,
         "output": null,
         "error": null,
@@ -162,6 +179,43 @@
         "aiScore": null,
         "modificationHistory": [],
         "evaluationHistory": [],
+        "plannerRecommendations": null
+      },
+      {
+        "id": "worker-1749282008123",
+        "type": "worker",
+        "label": "Worker",
+        "position": {
+          "x": 707.0,
+          "y": 820.0
+        },
+        "isRunning": false,
+        "isDeactivated": false,
+        "tasks": [
+          {
+            "id": "task-1749282008123",
+            "text": "",
+            "status": "pending",
+            "taskStatus": null,
+            "aiScore": null
+          }
+        ],
+        "connectedTo": null,
+        "connectedFrom": [
+          "worker-1749232940791"
+        ],
+        "code": null,
+        "output": null,
+        "error": null,
+        "model": null,
+        "vectorDB": null,
+        "lmStudioUrl": null,
+        "lmStudioConnectionId": null,
+        "supervisedNodes": null,
+        "updateHistory": null,
+        "aiScore": null,
+        "modificationHistory": null,
+        "evaluationHistory": null,
         "plannerRecommendations": null
       }
     ],

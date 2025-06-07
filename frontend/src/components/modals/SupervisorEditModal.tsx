@@ -12,6 +12,7 @@ interface SupervisorEditModalProps {
   allSections: Section[];
   onClose: () => void;
   onSave: (node: Node) => void;
+  onUpdate?: (node: Node) => void;
 }
 
 export const SupervisorEditModal: React.FC<SupervisorEditModalProps> = ({
@@ -19,7 +20,8 @@ export const SupervisorEditModal: React.FC<SupervisorEditModalProps> = ({
   section,
   allSections,
   onClose,
-  onSave
+  onSave,
+  onUpdate
 }) => {
   const [editedNode, setEditedNode] = useState(node);
   const [selectedTarget, setSelectedTarget] = useState<string>('');
@@ -36,6 +38,7 @@ export const SupervisorEditModal: React.FC<SupervisorEditModalProps> = ({
   const [executionResult, setExecutionResult] = useState<{ success: boolean; output?: any; error?: string } | null>(null);
 
   const handleSave = () => {
+    // Code 저장 시에만 사용
     onSave({ 
       ...editedNode, 
       supervisedNodes: supervisedNodesList,
@@ -56,12 +59,31 @@ export const SupervisorEditModal: React.FC<SupervisorEditModalProps> = ({
   };
 
   const handleModelChange = (model: string, lmStudioUrl?: string, connectionId?: string) => {
-    setEditedNode({ 
+    const updatedNode = { 
       ...editedNode, 
       model,
       lmStudioUrl,
       lmStudioConnectionId: connectionId
-    });
+    };
+    setEditedNode(updatedNode);
+    
+    // 모델 변경 시 자동 저장
+    if (onUpdate) {
+      onUpdate({
+        ...updatedNode,
+        supervisedNodes: supervisedNodesList,
+        modificationHistory,
+        evaluationHistory
+      });
+    } else {
+      onSave({
+        ...updatedNode,
+        supervisedNodes: supervisedNodesList,
+        modificationHistory,
+        evaluationHistory
+      });
+    }
+    console.log('Model settings auto-saved');
   };
 
   const executeCode = async () => {
@@ -223,7 +245,12 @@ def ${node.type === 'supervisor' ? 'supervise' : 'plan'}_nodes():
 
   const handleNodeClick = (clickedNode: Node) => {
     // 현재 모달을 저장하고 닫기
-    onSave(editedNode);
+    onSave({ 
+      ...editedNode, 
+      supervisedNodes: supervisedNodesList,
+      modificationHistory,
+      evaluationHistory
+    });
     onClose();
     
     // 새로운 노드 편집창 열기를 위해 이벤트 발송
@@ -562,7 +589,7 @@ def ${node.type === 'supervisor' ? 'supervise' : 'plan'}_nodes():
             className="flex items-center gap-2 bg-blue-500 text-white rounded px-4 py-2 hover:bg-blue-600"
           >
             <Save className="w-4 h-4" />
-            Save
+            Save Code
           </button>
           <button
             onClick={executeCode}

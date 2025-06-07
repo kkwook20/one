@@ -1198,7 +1198,12 @@ function AIPipelineFlow() {
       position: { x: Math.round(position.x), y: Math.round(position.y) },
       isRunning: false,
       tasks: nodeType === 'worker' ? [
-        { id: `task-${Date.now()}`, text: '', status: 'pending' }
+        { 
+          id: `task-${Date.now()}`, 
+          text: '', 
+          status: 'pending',
+          taskStatus: 'editable'  // 기본값을 'editable'로 설정
+        }
       ] : undefined
     };
 
@@ -1788,6 +1793,7 @@ function AIPipelineFlow() {
                 nodeCallbacks.onUpdate(node);
                 setEditingNode(null);
               }}
+              onUpdate={nodeCallbacks.onUpdate}
             />
           ) : (editingNode.type === 'supervisor' || editingNode.type === 'planner') ? (
             <SupervisorEditModal
@@ -1799,6 +1805,7 @@ function AIPipelineFlow() {
                 nodeCallbacks.onUpdate(node);
                 setEditingNode(null);
               }}
+              onUpdate={nodeCallbacks.onUpdate}
             />
           ) : null}
         </>

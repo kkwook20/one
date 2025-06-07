@@ -22,18 +22,18 @@ export const AIModelSelector: React.FC<AIModelSelectorProps> = ({
   const [connectionStatus, setConnectionStatus] = useState<'disconnected' | 'connecting' | 'connected' | 'error'>('disconnected');
   const [connectionError, setConnectionError] = useState<string>('');
   const [models, setModels] = useState<LMStudioModel[]>([]);
+  const [retryCount, setRetryCount] = useState(0);
+  const [retryTimeoutId, setRetryTimeoutId] = useState<NodeJS.Timeout | null>(null);
 
-  const handleConnect = useCallback(async () => {
-    setIsConnecting(true);
-    setConnectionStatus('connecting');
-    setConnectionError('');
-
+  const connectWithRetry = useCallback(async (url: string, attempt: number = 1) => {
     try {
-      const response = await apiClient.connectLMStudio(localUrl);
+      const response = await apiClient.connectLMStudio(url);
       
       if (response.data.success) {
         setModels(response.data.models);
         setConnectionStatus('connected');
+        setRetryCount(0);
+        
         // If no model selected yet, select the first available model
         if (!value || value === 'none') {
           const firstModel = response.data.models[0];
@@ -45,21 +45,88 @@ export const AIModelSelector: React.FC<AIModelSelectorProps> = ({
         } else {
           onChange(value, response.data.url, response.data.connectionId);
         }
+        
+        return true; // 연결 성공
       }
+      return false;
     } catch (error: any) {
-      setConnectionStatus('error');
-      setConnectionError(
-        error.response?.data?.detail || 
-        'Failed to connect. Make sure LM Studio is running.'
-      );
-      console.error('LM Studio connection error:', error);
-    } finally {
-      setIsConnecting(false);
+      console.error(`Connection attempt ${attempt} failed:`, error);
+      
+      // 재시도 로직
+      if (attempt < 5) {
+        let delay = 0;
+        if (attempt === 1) {
+          delay = 0; // 즉시 재시도
+        } else if (attempt === 2) {
+          delay = 0; // 즉시 재시도
+        } else if (attempt === 3) {
+          delay = 3000; // 3초 후
+        } else if (attempt === 4) {
+          delay = 5000; // 5초 후
+        } else if (attempt === 5) {
+          delay = 15000; // 15초 후
+        }
+        
+        if (delay === 0) {
+          // 즉시 재시도
+          return await connectWithRetry(url, attempt + 1);
+        } else {
+          // 지연 재시도
+          setRetryCount(attempt);
+          const timeoutId = setTimeout(async () => {
+            const success = await connectWithRetry(url, attempt + 1);
+            if (!success && attempt === 4) {
+              // 마지막 시도 실패
+              setConnectionStatus('error');
+              setConnectionError(
+                'Cannot connect to LM Studio after 5 attempts. Please make sure LM Studio is running.'
+              );
+              setRetryCount(0);
+            }
+          }, delay);
+          setRetryTimeoutId(timeoutId);
+          return false;
+        }
+      } else {
+        // 모든 재시도 실패
+        setConnectionStatus('error');
+        setConnectionError(
+          'Cannot connect to LM Studio after 5 attempts. Please make sure LM Studio is running.'
+        );
+        setRetryCount(0);
+        return false;
+      }
     }
-  }, [localUrl, value, onChange]);
+  }, [value, onChange]);
+
+  const handleConnect = useCallback(async () => {
+    // 이전 재시도 타이머 취소
+    if (retryTimeoutId) {
+      clearTimeout(retryTimeoutId);
+      setRetryTimeoutId(null);
+    }
+    
+    setIsConnecting(true);
+    setConnectionStatus('connecting');
+    setConnectionError('');
+    setRetryCount(0);
+
+    await connectWithRetry(localUrl);
+    
+    setIsConnecting(false);
+  }, [localUrl, connectWithRetry, retryTimeoutId]);
 
   useEffect(() => {
-    // If already connected, load models and maintain connection
+    // 컴포넌트 언마운트 시 타이머 정리
+    return () => {
+      if (retryTimeoutId) {
+        clearTimeout(retryTimeoutId);
+      }
+    };
+  }, [retryTimeoutId]);
+
+  useEffect(() => {
+    // If already connected, load models
     if (lmStudioConnectionId && lmStudioUrl) {
       setLocalUrl(lmStudioUrl);
       apiClient.getLMStudioModels(lmStudioConnectionId)
@@ -68,17 +135,14 @@ export const AIModelSelector: React.FC<AIModelSelectorProps> = ({
           setConnectionStatus('connected');
         })
         .catch(() => {
-          // Connection expired, try to reconnect
+          // Connection expired
           setConnectionStatus('disconnected');
-          // Auto-reconnect if URL is available
-          if (lmStudioUrl) {
-            handleConnect();
-          }
         });
     }
-  }, [lmStudioConnectionId, lmStudioUrl, handleConnect]);
+  }, [lmStudioConnectionId, lmStudioUrl]);
 
   const handleModelChange = (modelId: string) => {
+    // 모델 선택 시 즉시 onChange 호출하여 자동 저장
     onChange(modelId, localUrl, lmStudioConnectionId);
   };
 
@@ -110,7 +174,7 @@ export const AIModelSelector: React.FC<AIModelSelectorProps> = ({
             {isConnecting ? (
               <>
                 <Loader2 className="w-4 h-4 animate-spin" />
-                Connecting...
+                {retryCount > 0 ? `Retry ${retryCount}/5...` : 'Connecting...'}
               </>
             ) : connectionStatus === 'connected' ? (
               <>

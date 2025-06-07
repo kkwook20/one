@@ -1,5 +1,5 @@
 // frontend/src/components/modals/WorkerEditModal.tsx - 원래 레이아웃 복원 + 연결 노드 패널 + AI 모델 선택 + Tasks 탭 (개선된 UI)
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Save, Play, Database, Clock, Award, Loader, X, Pencil, FileText, FileInput, FileOutput, Plus, Trash2, GripVertical, Lock, Circle, Triangle } from 'lucide-react';
 import { Node, Section, Version, TaskItem } from '../../types';
 import { apiClient } from '../../api/client';
@@ -12,6 +12,7 @@ interface WorkerEditModalProps {
   allSections: Section[];
   onClose: () => void;
   onSave: (node: Node) => void;
+  onUpdate?: (node: Node) => void;
 }
 
 export const WorkerEditModal: React.FC<WorkerEditModalProps> = ({
@@ -19,7 +20,8 @@ export const WorkerEditModal: React.FC<WorkerEditModalProps> = ({
   section,
   allSections,
   onClose,
-  onSave
+  onSave,
+  onUpdate
 }) => {
   const [editedNode, setEditedNode] = useState(node);
   const [selectedInput, setSelectedInput] = useState<string>(node.connectedFrom?.[0] || '');
@@ -35,14 +37,18 @@ export const WorkerEditModal: React.FC<WorkerEditModalProps> = ({
   
   // Tasks 관련 상태
   const [tasks, setTasks] = useState<TaskItem[]>(() => {
-    // 기본 AI 점수 50점으로 초기화
+    // 기본 AI 점수 50점으로 초기화, taskStatus가 없으면 'editable'로 설정
     return (editedNode.tasks || []).map(task => ({
       ...task,
-      aiScore: task.aiScore ?? 50
+      aiScore: task.aiScore ?? 50,
+      taskStatus: task.taskStatus || 'editable'  // 기본값 'editable' 추가
     }));
   });
   const [draggedTask, setDraggedTask] = useState<number | null>(null);
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
+  
+  // Task 자동 저장을 위한 ref
+  const taskSaveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
     // Load connected node data
@@ -66,7 +72,36 @@ export const WorkerEditModal: React.FC<WorkerEditModalProps> = ({
       });
   }, [node.id]);
 
+  // Task 자동 저장 함수
+  const autoSaveTasks = useCallback((updatedTasks: TaskItem[]) => {
+    // 이전 타임아웃 취소
+    if (taskSaveTimeoutRef.current) {
+      clearTimeout(taskSaveTimeoutRef.current);
+    }
+
+    // 300ms 후에 저장 (디바운스)
+    taskSaveTimeoutRef.current = setTimeout(() => {
+      const updatedNode = { ...editedNode, tasks: updatedTasks };
+      if (onUpdate) {
+        onUpdate(updatedNode);
+      } else {
+        onSave(updatedNode);
+      }
+      console.log('Tasks auto-saved');
+    }, 300);
+  }, [editedNode, onUpdate, onSave]);
+
+  // 컴포넌트 언마운트 시 타임아웃 정리
+  useEffect(() => {
+    return () => {
+      if (taskSaveTimeoutRef.current) {
+        clearTimeout(taskSaveTimeoutRef.current);
+      }
+    };
+  }, []);
+
   const handleSave = () => {
+    // Code 저장 시에만 사용
     onSave({ ...editedNode, tasks });
     onClose();
   };
@@ -82,12 +117,21 @@ export const WorkerEditModal: React.FC<WorkerEditModalProps> = ({
   };
 
   const handleModelChange = (model: string, lmStudioUrl?: string, connectionId?: string) => {
-    setEditedNode({ 
+    const updatedNode = { 
       ...editedNode, 
       model,
       lmStudioUrl,
       lmStudioConnectionId: connectionId
-    });
+    };
+    setEditedNode(updatedNode);
+    
+    // 모델 변경 시 자동 저장
+    if (onUpdate) {
+      onUpdate({ ...updatedNode, tasks });
+    } else {
+      onSave({ ...updatedNode, tasks });
+    }
+    console.log('Model settings auto-saved');
   };
 
   const executeCode = async () => {
@@ -202,15 +246,19 @@ output = {
       taskStatus: 'editable',
       aiScore: 50 // 기본값 50점
     };
-    setTasks([...tasks, newTask]);
+    const updatedTasks = [...tasks, newTask];
+    setTasks(updatedTasks);
+    autoSaveTasks(updatedTasks);
   };
 
   const handleDeleteTask = (taskId: string) => {
-    setTasks(tasks.filter(t => t.id !== taskId));
+    const updatedTasks = tasks.filter(t => t.id !== taskId);
+    setTasks(updatedTasks);
+    autoSaveTasks(updatedTasks);
   };
 
   const handleTaskStatusToggle = (taskId: string) => {
-    setTasks(tasks.map(t => {
+    const updatedTasks = tasks.map(t => {
       if (t.id === taskId) {
         // 상태 순환: editable -> low_priority -> locked -> editable
         const currentStatus = t.taskStatus || 'editable';
@@ -227,13 +275,17 @@ output = {
         return { ...t, taskStatus: newStatus };
       }
       return t;
-    }));
+    });
+    setTasks(updatedTasks);
+    autoSaveTasks(updatedTasks);
   };
 
   const handleTaskTextChange = (taskId: string, newText: string) => {
-    setTasks(tasks.map(t => 
+    const updatedTasks = tasks.map(t => 
       t.id === taskId ? { ...t, text: newText } : t
-    ));
+    );
+    setTasks(updatedTasks);
+    autoSaveTasks(updatedTasks);
   };
 
   const handleDragStart = (index: number) => {
@@ -264,6 +316,7 @@ output = {
     newTasks.splice(adjustedIndex, 0, draggedItem);
     
     setTasks(newTasks);
+    autoSaveTasks(newTasks);
     setDraggedTask(null);
     setDragOverIndex(null);
   };
@@ -432,8 +485,8 @@ output = {
               </div>
 
               {/* Center Panel - Code Editor with tabs */}
-              <div className="flex-1 flex flex-col">
-                <div className="flex border-b">
+              <div className="flex-1 flex flex-col min-w-0">
+                <div className="flex border-b flex-shrink-0">
                   <button
                     onClick={() => setActiveTab('code')}
                     className={`px-4 py-2 font-medium transition-all ${activeTab === 'code' ? 'bg-gray-50 border-b-2 border-indigo-500 text-indigo-600' : 'text-gray-600 hover:text-gray-900'}`}
@@ -454,114 +507,118 @@ output = {
                   </button>
                 </div>
                 
-                <div className="flex-1 overflow-hidden">
+                <div className="flex-1 overflow-hidden flex flex-col min-h-0">
                   {activeTab === 'code' ? (
-                    <CodeEditor
-                      value={editedNode.code || getDefaultCode()}
-                      onChange={(code) => setEditedNode({ ...editedNode, code })}
-                    />
+                    <div className="flex-1 min-h-0">
+                      <CodeEditor
+                        value={editedNode.code || getDefaultCode()}
+                        onChange={(code) => setEditedNode({ ...editedNode, code })}
+                      />
+                    </div>
                   ) : activeTab === 'tasks' ? (
-                    <div className="p-4 overflow-y-auto h-full">
-                      <div className="flex justify-between items-center mb-4">
-                        <div className="flex items-center gap-3">
-                          <h3 className="font-semibold">Task Management</h3>
-                          {/* AI Score Mini Legend */}
-                          <div className="flex items-center gap-1 text-xs text-gray-400">
-                            <span className="text-[10px]">AI Score:</span>
-                            <div 
-                              className="w-6 h-2 rounded-sm border border-gray-200" 
-                              style={{ background: getScoreGradient(0) }}
-                              title="0%"
-                            />
-                            <div 
-                              className="w-6 h-2 rounded-sm border border-gray-200" 
-                              style={{ background: getScoreGradient(50) }}
-                              title="50%"
-                            />
-                            <div 
-                              className="w-6 h-2 rounded-sm border border-gray-200" 
-                              style={{ background: getScoreGradient(100) }}
-                              title="100%"
-                            />
-                          </div>
-                        </div>
-                        <button
-                          onClick={handleAddTask}
-                          className="flex items-center gap-2 px-3 py-1 bg-indigo-500 text-white rounded-md hover:bg-indigo-600 transition-colors text-sm"
-                        >
-                          <Plus className="w-4 h-4" />
-                          Add Task
-                        </button>
-                      </div>
-                      
-                      <div className="space-y-2">
-                        {tasks.length === 0 ? (
-                          <div className="text-center py-12 text-gray-400">
-                            <p className="text-sm">No tasks yet</p>
-                            <p className="text-xs mt-1">Click "Add Task" to create one</p>
-                          </div>
-                        ) : (
-                          tasks.map((task, index) => (
-                            <div
-                              key={task.id}
-                              draggable={task.taskStatus !== 'locked'}
-                              onDragStart={() => handleDragStart(index)}
-                              onDragOver={(e) => handleDragOver(e, index)}
-                              onDragLeave={handleDragLeave}
-                              onDrop={(e) => handleDrop(e, index)}
-                              className={`
-                                relative flex items-center gap-2 p-2.5 bg-white border rounded-lg shadow-sm hover:shadow-md transition-shadow
-                                ${dragOverIndex === index ? 'border-indigo-300 bg-indigo-50/50' : 'border-gray-100'}
-                                ${task.taskStatus === 'locked' ? 'opacity-50' : 'cursor-move'}
-                                ${task.taskStatus === 'low_priority' ? 'opacity-70' : ''}
-                              `}
-                              style={{
-                                background: getScoreGradient(task.aiScore)
-                              }}
-                            >
-                              {/* Drag Handle */}
-                              <div className={`${task.taskStatus === 'locked' ? 'invisible' : ''}`}>
-                                <GripVertical className="w-3 h-3 text-gray-300" />
-                              </div>
-                              
-                              {/* Task Status Toggle */}
-                              <button
-                                onClick={() => handleTaskStatusToggle(task.id)}
-                                className="p-1.5 rounded-md hover:bg-gray-100 transition-all"
-                                title={getTaskStatusTooltip(task.taskStatus)}
-                              >
-                                {getTaskStatusIcon(task.taskStatus)}
-                              </button>
-                              
-                              {/* Task Text */}
-                              <input
-                                type="text"
-                                value={task.text}
-                                onChange={(e) => handleTaskTextChange(task.id, e.target.value)}
-                                disabled={task.taskStatus === 'locked'}
-                                className={`
-                                  flex-1 px-2 py-1 bg-transparent border-none outline-none text-gray-700 placeholder-gray-400
-                                  ${task.taskStatus === 'locked' ? 'cursor-not-allowed' : 'cursor-text'}
-                                  focus:bg-white focus:bg-opacity-60 rounded transition-all
-                                `}
-                                placeholder="Enter task description"
+                    <div className="flex-1 overflow-y-auto min-h-0">
+                      <div className="p-4">
+                        <div className="flex justify-between items-center mb-4 sticky top-0 bg-white z-10 pb-2">
+                          <div className="flex items-center gap-3">
+                            <h3 className="font-semibold">Task Management</h3>
+                            {/* AI Score Mini Legend */}
+                            <div className="flex items-center gap-1 text-xs text-gray-400">
+                              <span className="text-[10px]">AI Score:</span>
+                              <div 
+                                className="w-6 h-2 rounded-sm border border-gray-200" 
+                                style={{ background: getScoreGradient(0) }}
+                                title="0%"
                               />
-                              
-                              {/* Delete Button */}
-                              <button
-                                onClick={() => handleDeleteTask(task.id)}
-                                className="p-1.5 rounded-md hover:bg-gray-50 text-gray-400 hover:text-red-500 transition-all"
-                                title="Delete task"
-                              >
-                                <Trash2 className="w-4 h-4" />
-                              </button>
+                              <div 
+                                className="w-6 h-2 rounded-sm border border-gray-200" 
+                                style={{ background: getScoreGradient(50) }}
+                                title="50%"
+                              />
+                              <div 
+                                className="w-6 h-2 rounded-sm border border-gray-200" 
+                                style={{ background: getScoreGradient(100) }}
+                                title="100%"
+                              />
                             </div>
-                          ))
-                        )}
+                          </div>
+                          <button
+                            onClick={handleAddTask}
+                            className="flex items-center gap-2 px-3 py-1 bg-indigo-500 text-white rounded-md hover:bg-indigo-600 transition-colors text-sm"
+                          >
+                            <Plus className="w-4 h-4" />
+                            Add Task
+                          </button>
+                        </div>
+                        
+                        <div className="space-y-2">
+                          {tasks.length === 0 ? (
+                            <div className="text-center py-12 text-gray-400">
+                              <p className="text-sm">No tasks yet</p>
+                              <p className="text-xs mt-1">Click "Add Task" to create one</p>
+                            </div>
+                          ) : (
+                            tasks.map((task, index) => (
+                              <div
+                                key={task.id}
+                                draggable={task.taskStatus !== 'locked'}
+                                onDragStart={() => handleDragStart(index)}
+                                onDragOver={(e) => handleDragOver(e, index)}
+                                onDragLeave={handleDragLeave}
+                                onDrop={(e) => handleDrop(e, index)}
+                                className={`
+                                  relative flex items-center gap-2 p-2.5 bg-white border rounded-lg shadow-sm hover:shadow-md transition-shadow
+                                  ${dragOverIndex === index ? 'border-indigo-300 bg-indigo-50/50' : 'border-gray-100'}
+                                  ${task.taskStatus === 'locked' ? 'opacity-50' : 'cursor-move'}
+                                  ${task.taskStatus === 'low_priority' ? 'opacity-70' : ''}
+                                `}
+                                style={{
+                                  background: getScoreGradient(task.aiScore)
+                                }}
+                              >
+                                {/* Drag Handle */}
+                                <div className={`flex-shrink-0 ${task.taskStatus === 'locked' ? 'invisible' : ''}`}>
+                                  <GripVertical className="w-3 h-3 text-gray-300" />
+                                </div>
+                                
+                                {/* Task Status Toggle */}
+                                <button
+                                  onClick={() => handleTaskStatusToggle(task.id)}
+                                  className="p-1.5 rounded-md hover:bg-gray-100 transition-all flex-shrink-0"
+                                  title={getTaskStatusTooltip(task.taskStatus)}
+                                >
+                                  {getTaskStatusIcon(task.taskStatus)}
+                                </button>
+                                
+                                {/* Task Text */}
+                                <input
+                                  type="text"
+                                  value={task.text}
+                                  onChange={(e) => handleTaskTextChange(task.id, e.target.value)}
+                                  disabled={task.taskStatus === 'locked'}
+                                  className={`
+                                    flex-1 px-2 py-1 bg-transparent border-none outline-none text-gray-700 placeholder-gray-400
+                                    ${task.taskStatus === 'locked' ? 'cursor-not-allowed' : 'cursor-text'}
+                                    focus:bg-white focus:bg-opacity-60 rounded transition-all
+                                  `}
+                                  placeholder="Enter task description"
+                                />
+                                
+                                {/* Delete Button */}
+                                <button
+                                  onClick={() => handleDeleteTask(task.id)}
+                                  className="p-1.5 rounded-md hover:bg-gray-50 text-gray-400 hover:text-red-500 transition-all flex-shrink-0"
+                                  title="Delete task"
+                                >
+                                  <Trash2 className="w-4 h-4" />
+                                </button>
+                              </div>
+                            ))
+                          )}
+                        </div>
                       </div>
                     </div>
                   ) : (
-                    <div className="p-4 overflow-y-auto">
+                    <div className="flex-1 overflow-y-auto min-h-0 p-4">
                       <h3 className="font-semibold mb-3">Update History</h3>
                       <div className="space-y-3">
                         {editedNode.updateHistory?.map((update, idx) => (
@@ -625,14 +682,14 @@ output = {
                   />
                 </div>
                 
-                {/* Action Buttons */}
+                {/* Action Buttons - Save button only for code */}
                 <div className="p-4 border-t flex gap-2">
                   <button
                     onClick={handleSave}
                     className="flex items-center gap-2 bg-indigo-500 text-white rounded-md px-4 py-2 hover:bg-indigo-600 transition-colors"
                   >
                     <Save className="w-4 h-4" />
-                    Save
+                    Save Code
                   </button>
                   <button
                     onClick={executeCode}
@@ -825,6 +882,7 @@ output = {
                     window.dispatchEvent(event);
                   }, 100);
                 }}
+                onUpdate={onUpdate}
               />
             );
           }
