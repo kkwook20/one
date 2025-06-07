@@ -1,6 +1,6 @@
 // frontend/src/components/modals/WorkerEditModal.tsx - 원래 레이아웃 복원 + 연결 노드 패널 + AI 모델 선택 + Tasks 탭 (개선된 UI)
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Save, Play, Database, Clock, Award, Loader, X, Pencil, FileText, FileInput, FileOutput, Plus, Trash2, GripVertical, Lock, Circle, Triangle, Target, FileJson } from 'lucide-react';
+import { Save, Play, Database, Clock, Award, Loader, X, Pencil, FileText, FileInput, FileOutput, Plus, Trash2, GripVertical, Lock, Circle, Triangle, Target, FileJson, CheckCircle } from 'lucide-react';
 import { Node, Section, Version, TaskItem } from '../../types';
 import { apiClient } from '../../api/client';
 import { CodeEditor } from '../CodeEditor';
@@ -13,6 +13,14 @@ interface WorkerEditModalProps {
   onClose: () => void;
   onSave: (node: Node) => void;
   onUpdate?: (node: Node) => void;
+}
+
+// 실행 로그 타입 추가
+interface ExecutionLog {
+  timestamp: string;
+  type: 'start' | 'ai_request' | 'ai_response' | 'complete' | 'error';
+  message: string;
+  details?: any;
 }
 
 export const WorkerEditModal: React.FC<WorkerEditModalProps> = ({
@@ -34,6 +42,8 @@ export const WorkerEditModal: React.FC<WorkerEditModalProps> = ({
   const [tempName, setTempName] = useState(editedNode.label);
   const [showJsonViewer, setShowJsonViewer] = useState(false);
   const [selectedNodeForEdit, setSelectedNodeForEdit] = useState<Node | null>(null);
+  const [executionLogs, setExecutionLogs] = useState<ExecutionLog[]>([]);
+  const [lastExecutionTime, setLastExecutionTime] = useState<string | null>(null);
   
   // Tasks 관련 상태
   const [tasks, setTasks] = useState<TaskItem[]>(() => {
@@ -54,6 +64,48 @@ export const WorkerEditModal: React.FC<WorkerEditModalProps> = ({
   
   // Task 자동 저장을 위한 ref
   const taskSaveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  
+  // WebSocket handler 등록
+  useEffect(() => {
+    const handleWebSocketMessage = (event: any) => {
+      const data = event.detail;
+      if (data.nodeId !== node.id) return;
+      
+      switch (data.type) {
+        case 'node_execution_start':
+          addExecutionLog('start', '🚀 Code execution started');
+          break;
+        case 'progress':
+          if (data.progress === 0.2) {
+            addExecutionLog('ai_request', '📤 Sending request to AI model...');
+          } else if (data.progress === 0.6) {
+            addExecutionLog('ai_response', '📥 Receiving response from AI model...');
+          }
+          break;
+        case 'node_output_updated':
+          addExecutionLog('complete', '✅ Output successfully updated', data.output);
+          setLastExecutionTime(new Date().toISOString());
+          break;
+        case 'node_execution_error':
+          addExecutionLog('error', `❌ Execution failed: ${data.error}`);
+          break;
+      }
+    };
+    
+    window.addEventListener('websocket_message', handleWebSocketMessage);
+    return () => {
+      window.removeEventListener('websocket_message', handleWebSocketMessage);
+    };
+  }, [node.id]);
+
+  const addExecutionLog = (type: ExecutionLog['type'], message: string, details?: any) => {
+    setExecutionLogs(prev => [...prev, {
+      timestamp: new Date().toISOString(),
+      type,
+      message,
+      details
+    }]);
+  };
 
   useEffect(() => {
     // Load connected node data
@@ -168,6 +220,7 @@ export const WorkerEditModal: React.FC<WorkerEditModalProps> = ({
   const executeCode = async () => {
     setIsExecuting(true);
     setExecutionResult(null);
+    setExecutionLogs([]); // 이전 로그 초기화
     
     try {
       // Get connected outputs for execution
@@ -181,6 +234,8 @@ export const WorkerEditModal: React.FC<WorkerEditModalProps> = ({
         }
       }
 
+      addExecutionLog('start', '🚀 Starting code execution...');
+
       const response = await apiClient.executeNode(
         node.id,
         section.id,
@@ -193,7 +248,7 @@ export const WorkerEditModal: React.FC<WorkerEditModalProps> = ({
           setIsExecuting(false);
           setExecutionResult({
             success: true,
-            output: "Code execution started. Check the node for results."
+            output: "Code execution started. Check the output panel for results."
           });
         }, 1000);
       }
@@ -204,6 +259,7 @@ export const WorkerEditModal: React.FC<WorkerEditModalProps> = ({
         success: false,
         error: error.response?.data?.detail || error.message || 'Execution failed'
       });
+      addExecutionLog('error', `❌ ${error.response?.data?.detail || error.message || 'Execution failed'}`);
     }
   };
 
@@ -533,7 +589,7 @@ output = {
             {/* Main Content Area */}
             <div className="flex-1 flex">
               {/* Left Panel - Input */}
-              <div className="w-1/4 border-r p-4 overflow-y-auto">
+              <div className="w-1/4 border-r p-4 flex flex-col">
                 <h3 className="font-semibold mb-2">Input Source</h3>
                 <select
                   value={selectedInput}
@@ -553,25 +609,11 @@ output = {
                 </select>
 
                 {connectedNodeData && (
-                  <div className="bg-gray-50 rounded-md p-3 flex flex-col h-full max-h-[400px]">
-                    <h4 className="font-medium mb-2 flex justify-between items-center flex-shrink-0">
-                      <span>Input Data:</span>
-                      <button
-                        onClick={() => {
-                          const jsonStr = JSON.stringify(connectedNodeData, null, 2);
-                          navigator.clipboard.writeText(jsonStr);
-                          alert('Copied to clipboard!');
-                        }}
-                        className="text-xs text-indigo-600 hover:text-indigo-800"
-                      >
-                        Copy
-                      </button>
-                    </h4>
-                    <div className="flex-1 overflow-auto min-h-0">
-                      <pre className="text-xs p-2 bg-white rounded border border-gray-200 whitespace-pre-wrap break-words">
-                        {JSON.stringify(connectedNodeData, null, 2)}
-                      </pre>
-                    </div>
+                  <div className="bg-gray-50 rounded-md p-3 flex-1 overflow-y-auto">
+                    <h4 className="font-medium mb-2">Input Data:</h4>
+                    <pre className="text-xs overflow-x-auto">
+                      {JSON.stringify(connectedNodeData, null, 2)}
+                    </pre>
                   </div>
                 )}
               </div>
@@ -777,28 +819,65 @@ output = {
                   ) : (
                     <div className="flex-1 overflow-y-auto min-h-0 p-4">
                       <h3 className="font-semibold mb-3">Activity Log</h3>
-                      <div className="space-y-3">
-                        {editedNode.updateHistory?.map((update, idx) => (
-                          <div key={idx} className="border border-gray-200 rounded-md p-3">
-                            <div className="flex justify-between items-start">
-                              <div>
-                                <div className="text-sm text-gray-600">
-                                  {new Date(update.timestamp).toLocaleString()}
-                                </div>
-                                <div className="font-medium">
-                                  Type: {update.type}
-                                  {update.by && ` by ${update.by}`}
-                                </div>
-                                {update.score !== undefined && (
-                                  <div className="flex items-center gap-1 mt-1">
-                                    <Award className="w-4 h-4 text-amber-500" />
-                                    <span className="text-sm">AI Score: {update.score}/100</span>
-                                  </div>
-                                )}
-                              </div>
-                            </div>
+                      <div className="space-y-2">
+                        {executionLogs.length === 0 && editedNode.updateHistory?.length === 0 ? (
+                          <div className="text-gray-500 text-center py-8">
+                            No activity recorded yet
                           </div>
-                        ))}
+                        ) : (
+                          <>
+                            {/* Recent execution logs */}
+                            {executionLogs.map((log, idx) => (
+                              <div key={`exec-${idx}`} className={`
+                                border rounded-md p-3
+                                ${log.type === 'error' ? 'border-red-200 bg-red-50' : 
+                                  log.type === 'complete' ? 'border-green-200 bg-green-50' : 
+                                  'border-gray-200 bg-gray-50'}
+                              `}>
+                                <div className="flex justify-between items-start">
+                                  <div className="flex-1">
+                                    <div className="text-sm text-gray-600">
+                                      {new Date(log.timestamp).toLocaleString()}
+                                    </div>
+                                    <div className="font-medium mt-1">
+                                      {log.message}
+                                    </div>
+                                    {log.details && (
+                                      <pre className="text-xs mt-2 p-2 bg-white rounded overflow-x-auto">
+                                        {typeof log.details === 'string' 
+                                          ? log.details 
+                                          : JSON.stringify(log.details, null, 2)}
+                                      </pre>
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
+                            ))}
+                            
+                            {/* Historical activity */}
+                            {editedNode.updateHistory?.map((update, idx) => (
+                              <div key={`hist-${idx}`} className="border border-gray-200 rounded-md p-3">
+                                <div className="flex justify-between items-start">
+                                  <div>
+                                    <div className="text-sm text-gray-600">
+                                      {new Date(update.timestamp).toLocaleString()}
+                                    </div>
+                                    <div className="font-medium">
+                                      Type: {update.type}
+                                      {update.by && ` by ${update.by}`}
+                                    </div>
+                                    {update.score !== undefined && (
+                                      <div className="flex items-center gap-1 mt-1">
+                                        <Award className="w-4 h-4 text-amber-500" />
+                                        <span className="text-sm">AI Score: {update.score}/100</span>
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
+                            ))}
+                          </>
+                        )}
                       </div>
                     </div>
                   )}
@@ -893,25 +972,24 @@ output = {
 
               {/* Right Panel - Output & History */}
               <div className="w-1/3 border-l flex flex-col">
-                <div className="flex-1 p-4 overflow-y-auto">
-                  <h3 className="font-semibold mb-2 flex justify-between items-center">
-                    <span>Output</span>
-                    {editedNode.output && (
-                      <button
-                        onClick={() => {
-                          const jsonStr = JSON.stringify(editedNode.output, null, 2);
-                          navigator.clipboard.writeText(jsonStr);
-                          alert('Output copied to clipboard!');
-                        }}
-                        className="text-xs text-indigo-600 hover:text-indigo-800"
-                      >
-                        Copy
-                      </button>
+                <div className="flex-1 p-4 flex flex-col overflow-hidden">
+                  <div className="flex items-center justify-between mb-2">
+                    <h3 className="font-semibold">Output</h3>
+                    {lastExecutionTime && (
+                      <div className="flex items-center gap-1 text-xs text-gray-500">
+                        <Clock className="w-3 h-3" />
+                        <span>Last run: {new Date(lastExecutionTime).toLocaleTimeString()}</span>
+                      </div>
                     )}
-                  </h3>
+                  </div>
+                  
                   {editedNode.output ? (
-                    <div className="bg-gray-50 rounded-md p-3 max-h-[400px] overflow-auto">
-                      <pre className="text-xs whitespace-pre-wrap break-words">
+                    <div className="flex-1 flex flex-col overflow-hidden">
+                      <div className="mb-2 flex items-center gap-2 text-sm text-green-600">
+                        <CheckCircle className="w-4 h-4" />
+                        <span>Output successfully generated</span>
+                      </div>
+                      <pre className="flex-1 bg-gray-50 rounded-md p-3 text-xs overflow-auto">
                         {JSON.stringify(editedNode.output, null, 2)}
                       </pre>
                     </div>

@@ -107,24 +107,25 @@ export const IOConfigModal: React.FC<IOConfigModalProps> = ({
     if (section.group === 'preproduction' && section.name === 'Script') {
       // Script 섹션 전용 UI
       return (
-        <div className="space-y-4">
+        <>
           <h3 className="font-semibold mb-3">Enter Script Content</h3>
           <div className="mb-4">
             <div className="text-sm text-gray-600 mb-2">
               This is the starting point of your production pipeline. Enter your script, story outline, or initial concept here.
             </div>
           </div>
-          <textarea
-            value={textContent}
-            onChange={(e) => setTextContent(e.target.value)}
-            onKeyDown={(e) => {
-              // Prevent modal from closing on Enter
-              if (e.key === 'Enter') {
-                e.stopPropagation();
-              }
-            }}
-            className="w-full h-96 p-4 border-2 border-gray-300 rounded-lg font-mono text-sm focus:border-blue-500 focus:outline-none"
-            placeholder={`Enter your script content here...
+          <div className="mb-4" style={{ height: 'calc(100% - 140px)' }}>
+            <textarea
+              value={textContent}
+              onChange={(e) => setTextContent(e.target.value)}
+              onKeyDown={(e) => {
+                // Prevent modal from closing on Enter
+                if (e.key === 'Enter') {
+                  e.stopPropagation();
+                }
+              }}
+              className="w-full h-full p-4 border-2 border-gray-300 rounded-lg font-mono text-sm focus:border-blue-500 focus:outline-none resize-none"
+              placeholder={`Enter your script content here...
 
 Example:
 Title: My Animation Project
@@ -136,20 +137,21 @@ Action: ...
 
 Scene 2:
 ...`}
-          />
+            />
+          </div>
           <div className="flex justify-between items-center text-sm text-gray-600">
             <span>Characters: {textContent.length}</span>
             <span>Lines: {textContent.split('\n').length}</span>
           </div>
-        </div>
+        </>
       );
     }
 
     // 다른 섹션용 소스 선택 UI
     return (
-      <div className="space-y-6">
-        <div>
-          <h3 className="font-semibold mb-3">Select Source Sections</h3>
+      <>
+        <h3 className="font-semibold mb-3">Select Source Sections</h3>
+        <div className="overflow-y-auto" style={{ maxHeight: 'calc(100vh - 300px)' }}>
           <div className="space-y-2">
             {allSections
               .filter(s => s.id !== section.id)
@@ -207,59 +209,73 @@ Scene 2:
               ))}
           </div>
         </div>
-      </div>
+      </>
     );
   };
 
   const renderOutputConfig = () => {
     return (
-      <div className="space-y-6">
-        <div>
-          <h3 className="font-semibold mb-3">Output Configuration</h3>
-          <div className="space-y-4">
-            <div>
-              <label className="block text-sm font-medium mb-1">Format</label>
-              <select
-                value={section.outputConfig?.format || 'json'}
-                className="w-full border rounded p-2"
-                disabled
-              >
-                <option value="json">JSON</option>
-                <option value="yaml">YAML</option>
-                <option value="xml">XML</option>
-              </select>
-              <p className="text-xs text-gray-500 mt-1">
-                Output format can be changed in Section Settings
-              </p>
-            </div>
-            
-            <div>
-              <h4 className="font-medium mb-2">Connected Outputs</h4>
-              <div className="bg-gray-100 rounded p-3 space-y-2 max-h-64 overflow-y-auto">
-                {node.connectedFrom && node.connectedFrom.length > 0 ? (
-                  section.nodes
+      <>
+        <h3 className="font-semibold mb-3">Output Configuration</h3>
+        <div className="space-y-4">
+          <div>
+            <label className="block text-sm font-medium mb-1">Format</label>
+            <select
+              value={section.outputConfig?.format || 'json'}
+              className="w-full border rounded p-2"
+              disabled
+            >
+              <option value="json">JSON</option>
+              <option value="yaml">YAML</option>
+              <option value="xml">XML</option>
+            </select>
+            <p className="text-xs text-gray-500 mt-1">
+              Output format can be changed in Section Settings
+            </p>
+          </div>
+          
+          <div>
+            <h4 className="font-medium mb-2">Connected Outputs</h4>
+            <div className="bg-gray-100 rounded p-3 overflow-y-auto" style={{ maxHeight: 'calc(100vh - 400px)' }}>
+              {node.connectedFrom && node.connectedFrom.length > 0 ? (
+                <div className="space-y-2">
+                  {section.nodes
                     .filter(n => node.connectedFrom?.includes(n.id))
                     .map(n => (
-                      <div key={n.id} className="flex justify-between items-center bg-white p-2 rounded">
-                        <span className="font-medium truncate flex-1">{n.label}</span>
-                        <span className="text-sm text-gray-600 ml-2">{n.type}</span>
+                      <div key={n.id} className="bg-white p-3 rounded border">
+                        <div className="flex justify-between items-start mb-2">
+                          <span className="font-medium">{n.label}</span>
+                          <span className="text-sm text-gray-600">{n.type}</span>
+                        </div>
+                        {n.output && (
+                          <div className="mt-2">
+                            <div className="text-xs text-gray-600 mb-1">Output:</div>
+                            <div className="bg-gray-50 p-2 rounded max-h-40 overflow-y-auto">
+                              <pre className="text-xs overflow-x-auto">
+                                {typeof n.output === 'string' 
+                                  ? n.output 
+                                  : JSON.stringify(n.output, null, 2)}
+                              </pre>
+                            </div>
+                          </div>
+                        )}
                       </div>
-                    ))
-                ) : (
-                  <div className="text-gray-500 text-sm">No connected nodes</div>
-                )}
-              </div>
+                    ))}
+                </div>
+              ) : (
+                <div className="text-gray-500 text-sm">No connected nodes</div>
+              )}
             </div>
           </div>
         </div>
-      </div>
+      </>
     );
   };
 
   return (
     <>
       <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-        <div className="bg-white rounded-lg w-[98%] h-[95%] flex flex-col">
+        <div className="bg-white rounded-lg w-[90vw] h-[90vh] flex flex-col">
           <div className="p-4 border-b flex justify-between items-center">
             <div className="flex items-center gap-2">
               <span className="text-2xl">{node.type === 'input' ? '➡️' : '⬅️'}</span>
@@ -396,7 +412,7 @@ Scene 2:
       {/* JSON Viewer Modal */}
       {showJsonViewer && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[60]">
-          <div className="bg-white rounded-lg w-[60%] max-w-3xl h-[95%] flex flex-col">
+          <div className="bg-white rounded-lg w-[60%] max-w-3xl h-[90vh] flex flex-col">
             <div className="p-4 border-b flex justify-between items-center">
               <h2 className="text-xl font-bold flex items-center gap-2">
                 <FileText className="w-5 h-5" />

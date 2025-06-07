@@ -967,7 +967,7 @@ function AIPipelineFlow() {
     });
   }, [sections, selectedSection, edges, updateSectionInBackend, addLog, handleEdgeDelete, saveToHistory, isInternalUpdate]);
 
-  // WebSocket handlers
+ // wsHandlers 부분만 수정
   const wsHandlers = useMemo(() => ({
     onProgress: (nodeId: string, progress: number) => {
       setNodeProgress(prev => ({ ...prev, [nodeId]: progress }));
@@ -978,10 +978,10 @@ function AIPipelineFlow() {
           nodeId,
           nodeLabel: currentSection?.nodes.find(n => n.id === nodeId)?.label || 'Node',
           type: 'complete',
-          message: 'Execution completed successfully'
+          message: '✅ Execution completed successfully'
         });
         
-        // 3초 후에 complete 상태를 제거
+        // alert 제거 - 3초 후에 complete 상태를 제거
         setTimeout(() => {
           setCompletedNodes(prev => {
             const newSet = new Set(prev);
@@ -1006,11 +1006,19 @@ function AIPipelineFlow() {
         }, 2000);
       }
     },
-    onNodeOutputUpdated: (nodeId: string, output: string) => {
+    onNodeOutputUpdated: (nodeId: string, output: any) => {
       setSections(prev => prev.map(section => ({
         ...section,
         nodes: section.nodes.map(n => n.id === nodeId ? { ...n, output } : n)
       })));
+      
+      // Output 업데이트 시 로그 추가
+      addLog({
+        nodeId,
+        nodeLabel: currentSection?.nodes.find(n => n.id === nodeId)?.label || 'Node',
+        type: 'info',
+        message: `📝 Output updated: ${typeof output === 'string' ? output.substring(0, 100) + '...' : 'Data received'}`
+      });
     },
     onNodeExecutionStart: (nodeId: string) => {
       setRunningNodes(prev => new Set([...prev, nodeId]));
@@ -1018,7 +1026,7 @@ function AIPipelineFlow() {
         nodeId,
         nodeLabel: currentSection?.nodes.find(n => n.id === nodeId)?.label || 'Node',
         type: 'processing',
-        message: 'Processing...'
+        message: '🔄 Processing with AI model...'
       });
     },
     onNodeExecutionComplete: (nodeId: string) => {
@@ -1029,7 +1037,7 @@ function AIPipelineFlow() {
       });
       setCompletedNodes(prev => new Set([...prev, nodeId]));
       
-      // 3초 후에 complete 상태를 제거
+      // alert 제거 - 3초 후에 complete 상태를 제거
       setTimeout(() => {
         setCompletedNodes(prev => {
           const newSet = new Set(prev);
@@ -1048,7 +1056,7 @@ function AIPipelineFlow() {
         nodeId,
         nodeLabel: currentSection?.nodes.find(n => n.id === nodeId)?.label || 'Node',
         type: 'error',
-        message: `Error: ${error}`
+        message: `❌ Error: ${error}`
       });
     },
     onFlowProgress: (sourceId: string, targetId: string) => {
