@@ -8,6 +8,8 @@ export interface TaskItem {
   id: string;
   text: string;
   status: 'pending' | 'none' | 'partial';
+  taskStatus?: 'locked' | 'editable' | 'low_priority'; // 새로 추가: × 잠금, ○ 수정가능, △ 우선순위낮음
+  aiScore?: number; // AI 평가 점수
 }
 
 export interface UpdateHistory {

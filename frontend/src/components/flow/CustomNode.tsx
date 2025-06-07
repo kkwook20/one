@@ -9,9 +9,12 @@ import {
   Power, 
   FileInput, 
   FileOutput,
-  Loader2 
+  Loader2,
+  Lock,
+  Circle,
+  Triangle
 } from 'lucide-react';
-import { Node } from '../../types';
+import { Node, TaskItem } from '../../types';
 
 interface CustomNodeData extends Node {
   onEdit?: () => void;
@@ -84,6 +87,32 @@ export const CustomNode: React.FC<NodeProps<CustomNodeData>> = ({ data, id, sele
     if (data.isExecuting) return 'shadow-lg shadow-blue-500/30';
     if (data.isCompleted) return 'shadow-lg shadow-green-500/30';
     return 'shadow-md';
+  };
+
+  const getTaskStatusIcon = (status?: 'locked' | 'editable' | 'low_priority') => {
+    switch (status) {
+      case 'locked':
+        return <Lock className="w-3 h-3" />;
+      case 'editable':
+        return <Circle className="w-3 h-3" />;
+      case 'low_priority':
+        return <Triangle className="w-3 h-3" />;
+      default:
+        return null;
+    }
+  };
+
+  const getTaskStatusColor = (status?: 'locked' | 'editable' | 'low_priority') => {
+    switch (status) {
+      case 'locked':
+        return 'text-red-500';
+      case 'editable':
+        return 'text-green-500';
+      case 'low_priority':
+        return 'text-yellow-500';
+      default:
+        return 'text-gray-400';
+    }
   };
 
   return (
@@ -235,9 +264,14 @@ export const CustomNode: React.FC<NodeProps<CustomNodeData>> = ({ data, id, sele
                     ['partial', 'inProgress'].includes(task.status as string) ? 'bg-blue-500' : 
                     'bg-gray-300'}
                 `} />
-                <span className="truncate text-gray-700">
+                <span className="truncate text-gray-700 flex-1">
                   {task.text || `Task ${index + 1}`}
                 </span>
+                {task.taskStatus && (
+                  <span className={`flex-shrink-0 ${getTaskStatusColor(task.taskStatus as 'locked' | 'editable' | 'low_priority')}`}>
+                    {getTaskStatusIcon(task.taskStatus as 'locked' | 'editable' | 'low_priority')}
+                  </span>
+                )}
               </div>
             ))}
           </div>

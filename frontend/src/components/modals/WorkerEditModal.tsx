@@ -1,7 +1,7 @@
-// frontend/src/components/modals/WorkerEditModal.tsx - 원래 레이아웃 복원 + 연결 노드 패널 + AI 모델 선택
-import React, { useState, useEffect } from 'react';
-import { Save, Play, Database, Clock, Award, Loader, X, Pencil, FileText, FileInput, FileOutput } from 'lucide-react';
-import { Node, Section, Version } from '../../types';
+// frontend/src/components/modals/WorkerEditModal.tsx - 원래 레이아웃 복원 + 연결 노드 패널 + AI 모델 선택 + Tasks 탭 (개선된 UI)
+import React, { useState, useEffect, useRef } from 'react';
+import { Save, Play, Database, Clock, Award, Loader, X, Pencil, FileText, FileInput, FileOutput, Plus, Trash2, GripVertical, Lock, Circle, Triangle } from 'lucide-react';
+import { Node, Section, Version, TaskItem } from '../../types';
 import { apiClient } from '../../api/client';
 import { CodeEditor } from '../CodeEditor';
 import { AIModelSelector } from '../AIModelSelector';
@@ -25,13 +25,24 @@ export const WorkerEditModal: React.FC<WorkerEditModalProps> = ({
   const [selectedInput, setSelectedInput] = useState<string>(node.connectedFrom?.[0] || '');
   const [connectedNodeData, setConnectedNodeData] = useState<any>(null);
   const [versions, setVersions] = useState<Version[]>([]);
-  const [activeTab, setActiveTab] = useState<'code' | 'history'>('code');
+  const [activeTab, setActiveTab] = useState<'code' | 'tasks' | 'history'>('code');
   const [isExecuting, setIsExecuting] = useState(false);
   const [executionResult, setExecutionResult] = useState<{ success: boolean; output?: any; error?: string } | null>(null);
   const [isEditingName, setIsEditingName] = useState(false);
   const [tempName, setTempName] = useState(editedNode.label);
   const [showJsonViewer, setShowJsonViewer] = useState(false);
   const [selectedNodeForEdit, setSelectedNodeForEdit] = useState<Node | null>(null);
+  
+  // Tasks 관련 상태
+  const [tasks, setTasks] = useState<TaskItem[]>(() => {
+    // 기본 AI 점수 50점으로 초기화
+    return (editedNode.tasks || []).map(task => ({
+      ...task,
+      aiScore: task.aiScore ?? 50
+    }));
+  });
+  const [draggedTask, setDraggedTask] = useState<number | null>(null);
+  const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
 
   useEffect(() => {
     // Load connected node data
@@ -56,7 +67,7 @@ export const WorkerEditModal: React.FC<WorkerEditModalProps> = ({
   }, [node.id]);
 
   const handleSave = () => {
-    onSave(editedNode);
+    onSave({ ...editedNode, tasks });
     onClose();
   };
 
@@ -182,6 +193,131 @@ output = {
     setSelectedNodeForEdit(clickedNode);
   };
 
+  // Tasks 관련 함수들
+  const handleAddTask = () => {
+    const newTask: TaskItem = {
+      id: `task-${Date.now()}`,
+      text: 'Enter task description',
+      status: 'pending',
+      taskStatus: 'editable',
+      aiScore: 50 // 기본값 50점
+    };
+    setTasks([...tasks, newTask]);
+  };
+
+  const handleDeleteTask = (taskId: string) => {
+    setTasks(tasks.filter(t => t.id !== taskId));
+  };
+
+  const handleTaskStatusToggle = (taskId: string) => {
+    setTasks(tasks.map(t => {
+      if (t.id === taskId) {
+        // 상태 순환: editable -> low_priority -> locked -> editable
+        const currentStatus = t.taskStatus || 'editable';
+        let newStatus: 'locked' | 'editable' | 'low_priority' = 'editable';
+        
+        if (currentStatus === 'editable') {
+          newStatus = 'low_priority';
+        } else if (currentStatus === 'low_priority') {
+          newStatus = 'locked';
+        } else {
+          newStatus = 'editable';
+        }
+        
+        return { ...t, taskStatus: newStatus };
+      }
+      return t;
+    }));
+  };
+
+  const handleTaskTextChange = (taskId: string, newText: string) => {
+    setTasks(tasks.map(t => 
+      t.id === taskId ? { ...t, text: newText } : t
+    ));
+  };
+
+  const handleDragStart = (index: number) => {
+    setDraggedTask(index);
+  };
+
+  const handleDragOver = (e: React.DragEvent, index: number) => {
+    e.preventDefault();
+    setDragOverIndex(index);
+  };
+
+  const handleDragLeave = () => {
+    setDragOverIndex(null);
+  };
+
+  const handleDrop = (e: React.DragEvent, dropIndex: number) => {
+    e.preventDefault();
+    if (draggedTask === null) return;
+
+    const newTasks = [...tasks];
+    const draggedItem = newTasks[draggedTask];
+    
+    // Remove from old position
+    newTasks.splice(draggedTask, 1);
+    
+    // Insert at new position
+    const adjustedIndex = draggedTask < dropIndex ? dropIndex - 1 : dropIndex;
+    newTasks.splice(adjustedIndex, 0, draggedItem);
+    
+    setTasks(newTasks);
+    setDraggedTask(null);
+    setDragOverIndex(null);
+  };
+
+  const getTaskStatusIcon = (status?: 'locked' | 'editable' | 'low_priority') => {
+    switch (status) {
+      case 'locked':
+        return <Lock className="w-4 h-4 text-slate-500" />;
+      case 'editable':
+        return <Circle className="w-4 h-4 text-blue-500" />;
+      case 'low_priority':
+        return <Triangle className="w-4 h-4 text-amber-500" />;
+      default:
+        return <Circle className="w-4 h-4 text-gray-400" />;
+    }
+  };
+
+  const getTaskStatusTooltip = (status?: 'locked' | 'editable' | 'low_priority') => {
+    switch (status) {
+      case 'locked':
+        return 'Locked (Click to make editable)';
+      case 'editable':
+        return 'Editable (Click to set low priority)';
+      case 'low_priority':
+        return 'Low Priority (Click to lock)';
+      default:
+        return 'Editable';
+    }
+  };
+
+  const getScoreGradient = (score: number = 50) => {
+    // 점수를 0-100 범위로 제한
+    const clampedScore = Math.max(0, Math.min(100, score));
+    
+    // 모던한 색상: 회색(0) -> 파랑(50) -> 보라(100)
+    let r, g, b;
+    if (clampedScore <= 50) {
+      // 회색 -> 파랑
+      const ratio = clampedScore / 50;
+      r = Math.round(156 - (156 - 59) * ratio);  // 156 -> 59
+      g = Math.round(163 - (163 - 130) * ratio); // 163 -> 130
+      b = Math.round(175 + (246 - 175) * ratio); // 175 -> 246
+    } else {
+      // 파랑 -> 보라
+      const ratio = (clampedScore - 50) / 50;
+      r = Math.round(59 + (139 - 59) * ratio);   // 59 -> 139
+      g = Math.round(130 - (130 - 92) * ratio);  // 130 -> 92
+      b = Math.round(246 - (246 - 211) * ratio); // 246 -> 211
+    }
+    
+    const color = `rgba(${r}, ${g}, ${b}, 0.1)`;
+    return `linear-gradient(to right, ${color} ${clampedScore}%, rgba(${r}, ${g}, ${b}, 0.02) ${clampedScore}%)`;
+  };
+
   return (
     <>
       <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
@@ -195,7 +331,7 @@ output = {
                     type="text"
                     value={tempName}
                     onChange={(e) => setTempName(e.target.value)}
-                    className="px-2 py-1 border rounded focus:outline-none focus:border-blue-500"
+                    className="px-2 py-1 border border-gray-200 rounded-md focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-all"
                     autoFocus
                     onKeyDown={(e) => {
                       if (e.key === 'Enter') handleRename();
@@ -204,13 +340,13 @@ output = {
                   />
                   <button
                     onClick={handleRename}
-                    className="px-3 py-1 bg-blue-500 text-white rounded text-sm hover:bg-blue-600"
+                    className="px-3 py-1 bg-indigo-500 text-white rounded-md text-sm hover:bg-indigo-600 transition-colors"
                   >
                     Rename
                   </button>
                   <button
                     onClick={handleCancelRename}
-                    className="px-3 py-1 bg-gray-300 text-gray-700 rounded text-sm hover:bg-gray-400"
+                    className="px-3 py-1 bg-gray-200 text-gray-700 rounded-md text-sm hover:bg-gray-300 transition-colors"
                   >
                     Cancel
                   </button>
@@ -223,7 +359,7 @@ output = {
                       setIsEditingName(true);
                       setTempName(editedNode.label);
                     }}
-                    className="cursor-pointer hover:text-blue-600"
+                    className="cursor-pointer hover:text-indigo-600"
                   >
                     {editedNode.label}
                   </span>
@@ -232,9 +368,9 @@ output = {
                       setIsEditingName(true);
                       setTempName(editedNode.label);
                     }}
-                    className="invisible group-hover:visible p-1 hover:bg-gray-100 rounded"
+                    className="invisible group-hover:visible p-1 hover:bg-gray-100 rounded-md transition-all"
                   >
-                    <Pencil className="w-4 h-4 text-gray-600" />
+                    <Pencil className="w-4 h-4 text-gray-400" />
                   </button>
                 </h2>
               )}
@@ -253,7 +389,7 @@ output = {
                   onClick={() => handleNodeClick(connNode)}
                   title={connNode.label}
                 >
-                  <div className="w-12 h-12 rounded-lg bg-white border-2 border-gray-300 flex items-center justify-center transition-all duration-200 group-hover:scale-110 group-hover:border-blue-500 group-hover:shadow-lg">
+                  <div className="w-12 h-12 rounded-lg bg-white border-2 border-gray-300 flex items-center justify-center transition-all duration-200 group-hover:scale-110 group-hover:border-indigo-500 group-hover:shadow-lg">
                     {getNodeIcon(connNode.type)}
                   </div>
                   <div className="text-xs text-center mt-1 truncate w-12 opacity-0 group-hover:opacity-100 transition-opacity">
@@ -271,7 +407,7 @@ output = {
                 <select
                   value={selectedInput}
                   onChange={(e) => setSelectedInput(e.target.value)}
-                  className="w-full border rounded p-2 mb-4"
+                  className="w-full border border-gray-200 rounded-md p-2 mb-4 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-all"
                 >
                   <option value="">No input</option>
                   {node.connectedFrom?.map(connNodeId => {
@@ -286,7 +422,7 @@ output = {
                 </select>
 
                 {connectedNodeData && (
-                  <div className="bg-gray-100 rounded p-3">
+                  <div className="bg-gray-50 rounded-md p-3">
                     <h4 className="font-medium mb-2">Input Data:</h4>
                     <pre className="text-xs overflow-x-auto">
                       {JSON.stringify(connectedNodeData, null, 2)}
@@ -300,13 +436,19 @@ output = {
                 <div className="flex border-b">
                   <button
                     onClick={() => setActiveTab('code')}
-                    className={`px-4 py-2 ${activeTab === 'code' ? 'bg-gray-100 border-b-2 border-blue-500' : ''}`}
+                    className={`px-4 py-2 font-medium transition-all ${activeTab === 'code' ? 'bg-gray-50 border-b-2 border-indigo-500 text-indigo-600' : 'text-gray-600 hover:text-gray-900'}`}
                   >
                     Code
                   </button>
                   <button
+                    onClick={() => setActiveTab('tasks')}
+                    className={`px-4 py-2 font-medium transition-all ${activeTab === 'tasks' ? 'bg-gray-50 border-b-2 border-indigo-500 text-indigo-600' : 'text-gray-600 hover:text-gray-900'}`}
+                  >
+                    Tasks
+                  </button>
+                  <button
                     onClick={() => setActiveTab('history')}
-                    className={`px-4 py-2 ${activeTab === 'history' ? 'bg-gray-100 border-b-2 border-blue-500' : ''}`}
+                    className={`px-4 py-2 font-medium transition-all ${activeTab === 'history' ? 'bg-gray-50 border-b-2 border-indigo-500 text-indigo-600' : 'text-gray-600 hover:text-gray-900'}`}
                   >
                     Update History
                   </button>
@@ -318,12 +460,112 @@ output = {
                       value={editedNode.code || getDefaultCode()}
                       onChange={(code) => setEditedNode({ ...editedNode, code })}
                     />
+                  ) : activeTab === 'tasks' ? (
+                    <div className="p-4 overflow-y-auto h-full">
+                      <div className="flex justify-between items-center mb-4">
+                        <div className="flex items-center gap-3">
+                          <h3 className="font-semibold">Task Management</h3>
+                          {/* AI Score Mini Legend */}
+                          <div className="flex items-center gap-1 text-xs text-gray-400">
+                            <span className="text-[10px]">AI Score:</span>
+                            <div 
+                              className="w-6 h-2 rounded-sm border border-gray-200" 
+                              style={{ background: getScoreGradient(0) }}
+                              title="0%"
+                            />
+                            <div 
+                              className="w-6 h-2 rounded-sm border border-gray-200" 
+                              style={{ background: getScoreGradient(50) }}
+                              title="50%"
+                            />
+                            <div 
+                              className="w-6 h-2 rounded-sm border border-gray-200" 
+                              style={{ background: getScoreGradient(100) }}
+                              title="100%"
+                            />
+                          </div>
+                        </div>
+                        <button
+                          onClick={handleAddTask}
+                          className="flex items-center gap-2 px-3 py-1 bg-indigo-500 text-white rounded-md hover:bg-indigo-600 transition-colors text-sm"
+                        >
+                          <Plus className="w-4 h-4" />
+                          Add Task
+                        </button>
+                      </div>
+                      
+                      <div className="space-y-2">
+                        {tasks.length === 0 ? (
+                          <div className="text-center py-12 text-gray-400">
+                            <p className="text-sm">No tasks yet</p>
+                            <p className="text-xs mt-1">Click "Add Task" to create one</p>
+                          </div>
+                        ) : (
+                          tasks.map((task, index) => (
+                            <div
+                              key={task.id}
+                              draggable={task.taskStatus !== 'locked'}
+                              onDragStart={() => handleDragStart(index)}
+                              onDragOver={(e) => handleDragOver(e, index)}
+                              onDragLeave={handleDragLeave}
+                              onDrop={(e) => handleDrop(e, index)}
+                              className={`
+                                relative flex items-center gap-2 p-2.5 bg-white border rounded-lg shadow-sm hover:shadow-md transition-shadow
+                                ${dragOverIndex === index ? 'border-indigo-300 bg-indigo-50/50' : 'border-gray-100'}
+                                ${task.taskStatus === 'locked' ? 'opacity-50' : 'cursor-move'}
+                                ${task.taskStatus === 'low_priority' ? 'opacity-70' : ''}
+                              `}
+                              style={{
+                                background: getScoreGradient(task.aiScore)
+                              }}
+                            >
+                              {/* Drag Handle */}
+                              <div className={`${task.taskStatus === 'locked' ? 'invisible' : ''}`}>
+                                <GripVertical className="w-3 h-3 text-gray-300" />
+                              </div>
+                              
+                              {/* Task Status Toggle */}
+                              <button
+                                onClick={() => handleTaskStatusToggle(task.id)}
+                                className="p-1.5 rounded-md hover:bg-gray-100 transition-all"
+                                title={getTaskStatusTooltip(task.taskStatus)}
+                              >
+                                {getTaskStatusIcon(task.taskStatus)}
+                              </button>
+                              
+                              {/* Task Text */}
+                              <input
+                                type="text"
+                                value={task.text}
+                                onChange={(e) => handleTaskTextChange(task.id, e.target.value)}
+                                disabled={task.taskStatus === 'locked'}
+                                className={`
+                                  flex-1 px-2 py-1 bg-transparent border-none outline-none text-gray-700 placeholder-gray-400
+                                  ${task.taskStatus === 'locked' ? 'cursor-not-allowed' : 'cursor-text'}
+                                  focus:bg-white focus:bg-opacity-60 rounded transition-all
+                                `}
+                                placeholder="Enter task description"
+                              />
+                              
+                              {/* Delete Button */}
+                              <button
+                                onClick={() => handleDeleteTask(task.id)}
+                                className="p-1.5 rounded-md hover:bg-gray-50 text-gray-400 hover:text-red-500 transition-all"
+                                title="Delete task"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    </div>
                   ) : (
                     <div className="p-4 overflow-y-auto">
                       <h3 className="font-semibold mb-3">Update History</h3>
                       <div className="space-y-3">
                         {editedNode.updateHistory?.map((update, idx) => (
-                          <div key={idx} className="border rounded p-3">
+                          <div key={idx} className="border border-gray-200 rounded-md p-3">
                             <div className="flex justify-between items-start">
                               <div>
                                 <div className="text-sm text-gray-600">
@@ -335,7 +577,7 @@ output = {
                                 </div>
                                 {update.score !== undefined && (
                                   <div className="flex items-center gap-1 mt-1">
-                                    <Award className="w-4 h-4 text-yellow-500" />
+                                    <Award className="w-4 h-4 text-amber-500" />
                                     <span className="text-sm">AI Score: {update.score}/100</span>
                                   </div>
                                 )}
@@ -350,11 +592,11 @@ output = {
                 
                 {/* Execution Result */}
                 {executionResult && (
-                  <div className={`p-3 border-t ${executionResult.success ? 'bg-green-50' : 'bg-red-50'}`}>
+                  <div className={`p-3 border-t ${executionResult.success ? 'bg-emerald-50' : 'bg-red-50'}`}>
                     <div className="flex items-start gap-2">
                       <div className="flex-1">
                         {executionResult.success ? (
-                          <div className="text-green-700">
+                          <div className="text-emerald-700">
                             <strong>Success:</strong> {typeof executionResult.output === 'string' ? executionResult.output : JSON.stringify(executionResult.output)}
                           </div>
                         ) : (
@@ -387,7 +629,7 @@ output = {
                 <div className="p-4 border-t flex gap-2">
                   <button
                     onClick={handleSave}
-                    className="flex items-center gap-2 bg-blue-500 text-white rounded px-4 py-2 hover:bg-blue-600"
+                    className="flex items-center gap-2 bg-indigo-500 text-white rounded-md px-4 py-2 hover:bg-indigo-600 transition-colors"
                   >
                     <Save className="w-4 h-4" />
                     Save
@@ -395,10 +637,10 @@ output = {
                   <button
                     onClick={executeCode}
                     disabled={isExecuting}
-                    className={`flex items-center gap-2 rounded px-4 py-2 ${
+                    className={`flex items-center gap-2 rounded-md px-4 py-2 transition-colors ${
                       isExecuting 
                         ? 'bg-gray-400 text-gray-200 cursor-not-allowed' 
-                        : 'bg-green-500 text-white hover:bg-green-600'
+                        : 'bg-emerald-500 text-white hover:bg-emerald-600'
                     }`}
                   >
                     {isExecuting ? (
@@ -415,20 +657,20 @@ output = {
                   </button>
                   <button
                     onClick={() => setShowJsonViewer(true)}
-                    className="flex items-center gap-2 bg-gray-600 text-white rounded px-4 py-2 hover:bg-gray-700"
+                    className="flex items-center gap-2 bg-slate-600 text-white rounded-md px-4 py-2 hover:bg-slate-700 transition-colors"
                   >
                     <FileText className="w-4 h-4" />
                     View JSON
                   </button>
                   {editedNode.vectorDB && (
-                    <button className="flex items-center gap-2 bg-purple-500 text-white rounded px-4 py-2 hover:bg-purple-600">
+                    <button className="flex items-center gap-2 bg-purple-500 text-white rounded-md px-4 py-2 hover:bg-purple-600 transition-colors">
                       <Database className="w-4 h-4" />
                       Configure DB
                     </button>
                   )}
                   <button
                     onClick={onClose}
-                    className="ml-auto flex items-center gap-2 bg-gray-300 text-gray-700 rounded px-4 py-2 hover:bg-gray-400"
+                    className="ml-auto flex items-center gap-2 bg-gray-200 text-gray-700 rounded-md px-4 py-2 hover:bg-gray-300 transition-colors"
                   >
                     Cancel
                   </button>
@@ -440,7 +682,7 @@ output = {
                 <div className="flex-1 p-4 overflow-y-auto">
                   <h3 className="font-semibold mb-2">Output</h3>
                   {editedNode.output ? (
-                    <pre className="bg-gray-100 rounded p-3 text-xs overflow-x-auto">
+                    <pre className="bg-gray-50 rounded-md p-3 text-xs overflow-x-auto">
                       {JSON.stringify(editedNode.output, null, 2)}
                     </pre>
                   ) : (
@@ -448,12 +690,12 @@ output = {
                   )}
                   
                   {editedNode.aiScore && (
-                    <div className="mt-4 p-3 bg-yellow-50 rounded">
+                    <div className="mt-4 p-3 bg-amber-50 rounded-md">
                       <div className="flex items-center gap-2">
-                        <Award className="w-5 h-5 text-yellow-600" />
-                        <span className="font-medium">AI Evaluation Score</span>
+                        <Award className="w-5 h-5 text-amber-600" />
+                        <span className="font-medium text-gray-700">AI Evaluation Score</span>
                       </div>
-                      <div className="text-2xl font-bold text-yellow-600 mt-1">
+                      <div className="text-2xl font-bold text-amber-600 mt-1">
                         {editedNode.aiScore}/100
                       </div>
                     </div>
@@ -469,13 +711,13 @@ output = {
                   <div className="space-y-2 max-h-48 overflow-y-auto">
                     {versions.length > 0 ? (
                       versions.map(v => (
-                        <div key={v.id} className="border rounded p-2 text-sm">
+                        <div key={v.id} className="border border-gray-200 rounded-md p-2 text-sm">
                           <div className="text-gray-600">{new Date(v.timestamp).toLocaleString()}</div>
                           <div className="flex justify-between items-center">
                             <span>Model: {v.metadata.modelVersion}</span>
                             <button 
                               onClick={() => restoreVersion(v.id)}
-                              className="text-blue-500 hover:underline"
+                              className="text-indigo-500 hover:text-indigo-700 hover:underline"
                             >
                               Restore
                             </button>
@@ -500,7 +742,7 @@ output = {
                   onClick={() => handleNodeClick(connNode)}
                   title={connNode.label}
                 >
-                  <div className="w-12 h-12 rounded-lg bg-white border-2 border-gray-300 flex items-center justify-center transition-all duration-200 group-hover:scale-110 group-hover:border-green-500 group-hover:shadow-lg">
+                  <div className="w-12 h-12 rounded-lg bg-white border-2 border-gray-300 flex items-center justify-center transition-all duration-200 group-hover:scale-110 group-hover:border-emerald-500 group-hover:shadow-lg">
                     {getNodeIcon(connNode.type)}
                   </div>
                   <div className="text-xs text-center mt-1 truncate w-12 opacity-0 group-hover:opacity-100 transition-opacity">
@@ -530,23 +772,23 @@ output = {
             
             <div className="flex-1 p-4 overflow-auto">
               <pre className="bg-gray-900 text-gray-100 p-4 rounded font-mono text-sm">
-                {JSON.stringify(editedNode, null, 2)}
+                {JSON.stringify({ ...editedNode, tasks }, null, 2)}
               </pre>
             </div>
             
             <div className="p-4 border-t flex gap-2">
               <button
                 onClick={() => {
-                  navigator.clipboard.writeText(JSON.stringify(editedNode, null, 2));
+                  navigator.clipboard.writeText(JSON.stringify({ ...editedNode, tasks }, null, 2));
                   alert('JSON copied to clipboard');
                 }}
-                className="flex-1 bg-blue-500 text-white rounded px-4 py-2 hover:bg-blue-600"
+                className="flex-1 bg-indigo-500 text-white rounded-md px-4 py-2 hover:bg-indigo-600 transition-colors"
               >
                 Copy to Clipboard
               </button>
               <button
                 onClick={() => setShowJsonViewer(false)}
-                className="flex-1 bg-gray-300 rounded px-4 py-2 hover:bg-gray-400"
+                className="flex-1 bg-gray-200 text-gray-700 rounded-md px-4 py-2 hover:bg-gray-300 transition-colors"
               >
                 Close
               </button>
@@ -573,7 +815,7 @@ output = {
                 onClose={() => setSelectedNodeForEdit(null)}
                 onSave={(updatedNode: Node) => {
                   // 현재 모달을 저장하고
-                  onSave(editedNode);
+                  onSave({ ...editedNode, tasks });
                   // 새로운 노드의 편집창 열기를 위해 잠시 후 처리
                   setSelectedNodeForEdit(null);
                   onClose();

@@ -13,6 +13,8 @@ class TaskItem(BaseModel):
     id: str
     text: str
     status: str  # 'pending' | 'none' | 'partial'
+    taskStatus: Optional[str] = None  # 'locked' | 'editable' | 'low_priority'
+    aiScore: Optional[float] = None  # AI 평가 점수
 
 class UpdateHistory(BaseModel):
     """업데이트 기록"""

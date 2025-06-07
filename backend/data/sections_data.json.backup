@@ -67,7 +67,7 @@
       {
         "id": "worker-1749232940791",
         "type": "worker",
-        "label": "Worker 1",
+        "label": "Worker 1234234234234",
         "position": {
           "x": 312.0,
           "y": 785.0
@@ -78,7 +78,9 @@
           {
             "id": "task-1749232940791",
             "text": "",
-            "status": "pending"
+            "status": "pending",
+            "taskStatus": null,
+            "aiScore": null
           }
         ],
         "connectedTo": [
@@ -151,15 +153,15 @@
         "code": null,
         "output": null,
         "error": null,
-        "model": null,
+        "model": "nous-hermes-2-mistral-7b-dpo",
         "vectorDB": null,
-        "lmStudioUrl": null,
-        "lmStudioConnectionId": null,
-        "supervisedNodes": null,
+        "lmStudioUrl": "http://localhost:1234/",
+        "lmStudioConnectionId": "conn_1749275292",
+        "supervisedNodes": [],
         "updateHistory": null,
         "aiScore": null,
-        "modificationHistory": null,
-        "evaluationHistory": null,
+        "modificationHistory": [],
+        "evaluationHistory": [],
         "plannerRecommendations": null
       }
     ],

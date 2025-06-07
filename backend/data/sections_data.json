@@ -67,7 +67,7 @@
       {
         "id": "worker-1749232940791",
         "type": "worker",
-        "label": "Worker 1",
+        "label": "Worker 1234234234234",
         "position": {
           "x": 312.0,
           "y": 785.0
@@ -78,7 +78,9 @@
           {
             "id": "task-1749232940791",
             "text": "",
-            "status": "pending"
+            "status": "pending",
+            "taskStatus": null,
+            "aiScore": null
           }
         ],
         "connectedTo": [
