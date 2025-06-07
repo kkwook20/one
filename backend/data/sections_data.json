@@ -16,7 +16,8 @@
         "isDeactivated": false,
         "tasks": null,
         "connectedTo": [
-          "worker-1749232940791"
+          "worker-1749232940791",
+          "planner-1749265919253"
         ],
         "connectedFrom": null,
         "code": null,
@@ -44,7 +45,8 @@
         "tasks": null,
         "connectedTo": null,
         "connectedFrom": [
-          "worker-1749232940791"
+          "worker-1749232940791",
+          "supervisor-1749265918836"
         ],
         "code": null,
         "output": null,
@@ -63,8 +65,8 @@
         "type": "worker",
         "label": "Worker 1",
         "position": {
-          "x": 911.0,
-          "y": 933.0
+          "x": 312.0,
+          "y": 785.0
         },
         "isRunning": false,
         "isDeactivated": false,
@@ -76,7 +78,8 @@
           }
         ],
         "connectedTo": [
-          "output-preproduction-script"
+          "output-preproduction-script",
+          "supervisor-1749265918836"
         ],
         "connectedFrom": [
           "input-preproduction-script"
@@ -98,14 +101,18 @@
         "type": "supervisor",
         "label": "Supervisor",
         "position": {
-          "x": 791.0,
-          "y": 813.0
+          "x": 1190.0,
+          "y": 633.0
         },
         "isRunning": false,
         "isDeactivated": false,
         "tasks": null,
-        "connectedTo": null,
-        "connectedFrom": [],
+        "connectedTo": [
+          "output-preproduction-script"
+        ],
+        "connectedFrom": [
+          "worker-1749232940791"
+        ],
         "code": null,
         "output": null,
         "error": null,
@@ -123,14 +130,16 @@
         "type": "planner",
         "label": "Planner",
         "position": {
-          "x": 851.0,
-          "y": 873.0
+          "x": 591.0,
+          "y": 440.0
         },
         "isRunning": false,
         "isDeactivated": false,
         "tasks": null,
         "connectedTo": [],
-        "connectedFrom": [],
+        "connectedFrom": [
+          "input-preproduction-script"
+        ],
         "code": null,
         "output": null,
         "error": null,

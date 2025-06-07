@@ -1,4 +1,4 @@
-// frontend/src/App.tsx - 중복 제거 및 정리된 버전
+// frontend/src/App.tsx - 전체 코드 (이벤트 핸들러 병합)
 /* eslint-disable react-hooks/exhaustive-deps */
 import React, { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import { flushSync } from 'react-dom';
@@ -540,6 +540,19 @@ function AIPipelineFlow() {
       return updatedSections;
     });
   }, [selectedSection, updateSectionInBackend]);
+
+  // 노드 편집창 열기 이벤트 핸들러
+  useEffect(() => {
+    const handleOpenNodeEdit = (event: CustomEvent) => {
+      const node = event.detail as Node;
+      setEditingNode(node);
+    };
+
+    window.addEventListener('openNodeEdit', handleOpenNodeEdit as EventListener);
+    return () => {
+      window.removeEventListener('openNodeEdit', handleOpenNodeEdit as EventListener);
+    };
+  }, []);
 
   // 주기적 자동 저장 (5분마다)
   useEffect(() => {

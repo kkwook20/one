@@ -45,7 +45,7 @@ export const SectionSettingsModal: React.FC<SectionSettingsModalProps> = ({
 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-      <div className="bg-white rounded-lg w-full max-w-2xl p-6">
+      <div className="bg-white rounded-lg w-[98%] max-w-2xl p-6 max-h-[95%] overflow-y-auto">
         <h2 className="text-xl font-bold mb-4">Section Settings - {section.name}</h2>
         
         <div className="space-y-6">

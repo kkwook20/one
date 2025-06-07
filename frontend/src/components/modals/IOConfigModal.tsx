@@ -1,6 +1,6 @@
-// frontend/src/components/modals/IOConfigModal.tsx - 정리된 버전
+// frontend/src/components/modals/IOConfigModal.tsx - 연결된 노드 아이콘 추가
 import React, { useState, useEffect } from 'react';
-import { FileText, Pencil } from 'lucide-react';
+import { FileText, Pencil, FileInput, FileOutput } from 'lucide-react';
 import { Node, Section } from '../../types';
 
 interface IOConfigModalProps {
@@ -66,6 +66,41 @@ export const IOConfigModal: React.FC<IOConfigModalProps> = ({
   const handleCancelRename = () => {
     setTempName(editedNode.label);
     setIsEditingName(false);
+  };
+
+  const getNodeIcon = (nodeType: string) => {
+    switch (nodeType) {
+      case 'input':
+        return <FileInput className="w-5 h-5" />;
+      case 'output':
+        return <FileOutput className="w-5 h-5" />;
+      case 'worker':
+        return <span className="text-xl">👷</span>;
+      case 'supervisor':
+        return <span className="text-xl">👔</span>;
+      case 'planner':
+        return <span className="text-xl">📋</span>;
+      default:
+        return null;
+    }
+  };
+
+  // 연결된 노드들 가져오기
+  const connectedFromNodes = (node.connectedFrom?.map(id => section.nodes.find(n => n.id === id)) || [])
+    .filter((n): n is Node => n !== undefined);
+  const connectedToNodes = (node.connectedTo?.map(id => section.nodes.find(n => n.id === id)) || [])
+    .filter((n): n is Node => n !== undefined);
+
+  const handleNodeClick = (clickedNode: Node) => {
+    // 현재 모달을 저장하고 닫기
+    onSave(editedNode);
+    onClose();
+    
+    // 새로운 노드 편집창 열기를 위해 이벤트 발송
+    setTimeout(() => {
+      const event = new CustomEvent('openNodeEdit', { detail: clickedNode });
+      window.dispatchEvent(event);
+    }, 100);
   };
 
   const renderInputConfig = () => {
@@ -224,7 +259,7 @@ Scene 2:
   return (
     <>
       <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-        <div className="bg-white rounded-lg w-[90%] max-w-4xl h-[90%] flex flex-col">
+        <div className="bg-white rounded-lg w-[98%] h-[95%] flex flex-col">
           <div className="p-4 border-b flex justify-between items-center">
             <div className="flex items-center gap-2">
               <span className="text-2xl">{node.type === 'input' ? '➡️' : '⬅️'}</span>
@@ -281,34 +316,79 @@ Scene 2:
             <button onClick={onClose} className="text-2xl hover:text-gray-600">&times;</button>
           </div>
 
-          <div className="flex-1 p-6 overflow-y-auto">
-            {node.type === 'input' ? (
-              renderInputConfig()
-            ) : (
-              renderOutputConfig()
-            )}
-          </div>
+          <div className="flex flex-1 overflow-hidden">
+            {/* Left Side - Connected From Nodes */}
+            <div className="w-16 border-r bg-gray-50 p-2 flex flex-col gap-2 items-center overflow-y-auto">
+              <div className="text-xs text-gray-500 mb-2 -rotate-90 whitespace-nowrap mt-8">From</div>
+              {connectedFromNodes.map((connNode) => (
+                <div
+                  key={connNode.id}
+                  className="group cursor-pointer"
+                  onClick={() => handleNodeClick(connNode)}
+                  title={connNode.label}
+                >
+                  <div className="w-12 h-12 rounded-lg bg-white border-2 border-gray-300 flex items-center justify-center transition-all duration-200 group-hover:scale-110 group-hover:border-blue-500 group-hover:shadow-lg">
+                    {getNodeIcon(connNode.type)}
+                  </div>
+                  <div className="text-xs text-center mt-1 truncate w-12 opacity-0 group-hover:opacity-100 transition-opacity">
+                    {connNode.label}
+                  </div>
+                </div>
+              ))}
+            </div>
 
-          <div className="p-4 border-t flex gap-2">
-            <button 
-              onClick={handleSave} 
-              className="flex-1 bg-blue-500 text-white rounded px-4 py-2 hover:bg-blue-600"
-            >
-              Save
-            </button>
-            <button
-              onClick={() => setShowJsonViewer(true)}
-              className="flex items-center gap-2 bg-gray-600 text-white rounded px-4 py-2 hover:bg-gray-700"
-            >
-              <FileText className="w-4 h-4" />
-              View JSON
-            </button>
-            <button 
-              onClick={onClose} 
-              className="flex-1 bg-gray-300 rounded px-4 py-2 hover:bg-gray-400"
-            >
-              Cancel
-            </button>
+            {/* Main Content */}
+            <div className="flex-1 flex flex-col">
+              <div className="flex-1 p-6 overflow-y-auto">
+                {node.type === 'input' ? (
+                  renderInputConfig()
+                ) : (
+                  renderOutputConfig()
+                )}
+              </div>
+
+              <div className="p-4 border-t flex gap-2">
+                <button 
+                  onClick={handleSave} 
+                  className="flex-1 bg-blue-500 text-white rounded px-4 py-2 hover:bg-blue-600"
+                >
+                  Save
+                </button>
+                <button
+                  onClick={() => setShowJsonViewer(true)}
+                  className="flex items-center gap-2 bg-gray-600 text-white rounded px-4 py-2 hover:bg-gray-700"
+                >
+                  <FileText className="w-4 h-4" />
+                  View JSON
+                </button>
+                <button 
+                  onClick={onClose} 
+                  className="flex-1 bg-gray-300 rounded px-4 py-2 hover:bg-gray-400"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+
+            {/* Right Side - Connected To Nodes */}
+            <div className="w-16 border-l bg-gray-50 p-2 flex flex-col gap-2 items-center overflow-y-auto">
+              <div className="text-xs text-gray-500 mb-2 rotate-90 whitespace-nowrap mt-8">To</div>
+              {connectedToNodes.map((connNode) => (
+                <div
+                  key={connNode.id}
+                  className="group cursor-pointer"
+                  onClick={() => handleNodeClick(connNode)}
+                  title={connNode.label}
+                >
+                  <div className="w-12 h-12 rounded-lg bg-white border-2 border-gray-300 flex items-center justify-center transition-all duration-200 group-hover:scale-110 group-hover:border-green-500 group-hover:shadow-lg">
+                    {getNodeIcon(connNode.type)}
+                  </div>
+                  <div className="text-xs text-center mt-1 truncate w-12 opacity-0 group-hover:opacity-100 transition-opacity">
+                    {connNode.label}
+                  </div>
+                </div>
+              ))}
+            </div>
           </div>
         </div>
       </div>
@@ -316,7 +396,7 @@ Scene 2:
       {/* JSON Viewer Modal */}
       {showJsonViewer && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[60]">
-          <div className="bg-white rounded-lg w-[60%] max-w-3xl h-[90%] flex flex-col">
+          <div className="bg-white rounded-lg w-[60%] max-w-3xl h-[95%] flex flex-col">
             <div className="p-4 border-b flex justify-between items-center">
               <h2 className="text-xl font-bold flex items-center gap-2">
                 <FileText className="w-5 h-5" />

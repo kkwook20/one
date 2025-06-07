@@ -1,6 +1,6 @@
-// frontend/src/components/modals/WorkerEditModal.tsx - 정리된 버전
+// frontend/src/components/modals/WorkerEditModal.tsx - 원래 레이아웃 복원 + 연결 노드 패널
 import React, { useState, useEffect } from 'react';
-import { Save, Play, Database, Clock, Award, Loader, X, Pencil, FileText } from 'lucide-react';
+import { Save, Play, Database, Clock, Award, Loader, X, Pencil, FileText, FileInput, FileOutput } from 'lucide-react';
 import { Node, Section, Version } from '../../types';
 import { apiClient } from '../../api/client';
 import { CodeEditor } from '../CodeEditor';
@@ -30,6 +30,7 @@ export const WorkerEditModal: React.FC<WorkerEditModalProps> = ({
   const [isEditingName, setIsEditingName] = useState(false);
   const [tempName, setTempName] = useState(editedNode.label);
   const [showJsonViewer, setShowJsonViewer] = useState(false);
+  const [selectedNodeForEdit, setSelectedNodeForEdit] = useState<Node | null>(null);
 
   useEffect(() => {
     // Load connected node data
@@ -138,268 +139,349 @@ output = {
 }`;
   };
 
+  const getNodeIcon = (nodeType: string) => {
+    switch (nodeType) {
+      case 'input':
+        return <FileInput className="w-5 h-5" />;
+      case 'output':
+        return <FileOutput className="w-5 h-5" />;
+      case 'worker':
+        return <span className="text-xl">👷</span>;
+      case 'supervisor':
+        return <span className="text-xl">👔</span>;
+      case 'planner':
+        return <span className="text-xl">📋</span>;
+      default:
+        return null;
+    }
+  };
+
+  // 연결된 노드들 가져오기
+  const connectedFromNodes = (node.connectedFrom?.map(id => section.nodes.find(n => n.id === id)) || [])
+    .filter((n): n is Node => n !== undefined);
+  const connectedToNodes = (node.connectedTo?.map(id => section.nodes.find(n => n.id === id)) || [])
+    .filter((n): n is Node => n !== undefined);
+
+  const handleNodeClick = (clickedNode: Node) => {
+    setSelectedNodeForEdit(clickedNode);
+  };
+
   return (
-    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-      <div className="bg-white rounded-lg w-full max-w-7xl h-[95%] flex flex-col">
-        <div className="p-4 border-b flex justify-between items-center">
-          <div className="flex items-center gap-2">
-            <span className="text-2xl">👷</span>
-            {isEditingName ? (
-              <div className="flex items-center gap-2">
-                <input
-                  type="text"
-                  value={tempName}
-                  onChange={(e) => setTempName(e.target.value)}
-                  className="px-2 py-1 border rounded focus:outline-none focus:border-blue-500"
-                  autoFocus
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') handleRename();
-                    if (e.key === 'Escape') handleCancelRename();
-                  }}
-                />
-                <button
-                  onClick={handleRename}
-                  className="px-3 py-1 bg-blue-500 text-white rounded text-sm hover:bg-blue-600"
-                >
-                  Rename
-                </button>
-                <button
-                  onClick={handleCancelRename}
-                  className="px-3 py-1 bg-gray-300 text-gray-700 rounded text-sm hover:bg-gray-400"
-                >
-                  Cancel
-                </button>
-              </div>
-            ) : (
-              <h2 className="text-xl font-bold group flex items-center gap-1">
-                <span>{editedNode.label}</span>
-                <button
-                  onClick={() => {
-                    setIsEditingName(true);
-                    setTempName(editedNode.label);
-                  }}
-                  className="invisible group-hover:visible p-1 hover:bg-gray-100 rounded"
-                >
-                  <Pencil className="w-4 h-4 text-gray-600" />
-                </button>
-              </h2>
-            )}
-          </div>
-          <button onClick={onClose} className="text-2xl hover:text-gray-600">&times;</button>
-        </div>
-
-        <div className="flex flex-1 overflow-hidden">
-          {/* Left Panel - Input */}
-          <div className="w-1/4 border-r p-4 overflow-y-auto">
-            <h3 className="font-semibold mb-2">Input Source</h3>
-            <select
-              value={selectedInput}
-              onChange={(e) => setSelectedInput(e.target.value)}
-              className="w-full border rounded p-2 mb-4"
-            >
-              <option value="">No input</option>
-              {node.connectedFrom?.map(connNodeId => {
-                const connNode = section.nodes.find(n => n.id === connNodeId);
-                if (!connNode) return null;
-                return (
-                  <option key={connNode.id} value={connNode.id}>
-                    {connNode.label} ({connNode.type})
-                  </option>
-                );
-              })}
-            </select>
-
-            {connectedNodeData && (
-              <div className="bg-gray-100 rounded p-3">
-                <h4 className="font-medium mb-2">Input Data:</h4>
-                <pre className="text-xs overflow-x-auto">
-                  {JSON.stringify(connectedNodeData, null, 2)}
-                </pre>
-              </div>
-            )}
-          </div>
-
-          {/* Center Panel - Code Editor with tabs */}
-          <div className="flex-1 flex flex-col">
-            <div className="flex border-b">
-              <button
-                onClick={() => setActiveTab('code')}
-                className={`px-4 py-2 ${activeTab === 'code' ? 'bg-gray-100 border-b-2 border-blue-500' : ''}`}
-              >
-                Code
-              </button>
-              <button
-                onClick={() => setActiveTab('history')}
-                className={`px-4 py-2 ${activeTab === 'history' ? 'bg-gray-100 border-b-2 border-blue-500' : ''}`}
-              >
-                Update History
-              </button>
-            </div>
-            
-            <div className="flex-1 overflow-hidden">
-              {activeTab === 'code' ? (
-                <CodeEditor
-                  value={editedNode.code || getDefaultCode()}
-                  onChange={(code) => setEditedNode({ ...editedNode, code })}
-                />
-              ) : (
-                <div className="p-4 overflow-y-auto">
-                  <h3 className="font-semibold mb-3">Update History</h3>
-                  <div className="space-y-3">
-                    {editedNode.updateHistory?.map((update, idx) => (
-                      <div key={idx} className="border rounded p-3">
-                        <div className="flex justify-between items-start">
-                          <div>
-                            <div className="text-sm text-gray-600">
-                              {new Date(update.timestamp).toLocaleString()}
-                            </div>
-                            <div className="font-medium">
-                              Type: {update.type}
-                              {update.by && ` by ${update.by}`}
-                            </div>
-                            {update.score !== undefined && (
-                              <div className="flex items-center gap-1 mt-1">
-                                <Award className="w-4 h-4 text-yellow-500" />
-                                <span className="text-sm">AI Score: {update.score}/100</span>
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
+    <>
+      <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+        <div className="bg-white rounded-lg w-[98%] h-[95%] flex flex-col">
+          <div className="p-4 border-b flex justify-between items-center">
+            <div className="flex items-center gap-2">
+              <span className="text-2xl">👷</span>
+              {isEditingName ? (
+                <div className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    value={tempName}
+                    onChange={(e) => setTempName(e.target.value)}
+                    className="px-2 py-1 border rounded focus:outline-none focus:border-blue-500"
+                    autoFocus
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') handleRename();
+                      if (e.key === 'Escape') handleCancelRename();
+                    }}
+                  />
+                  <button
+                    onClick={handleRename}
+                    className="px-3 py-1 bg-blue-500 text-white rounded text-sm hover:bg-blue-600"
+                  >
+                    Rename
+                  </button>
+                  <button
+                    onClick={handleCancelRename}
+                    className="px-3 py-1 bg-gray-300 text-gray-700 rounded text-sm hover:bg-gray-400"
+                  >
+                    Cancel
+                  </button>
                 </div>
+              ) : (
+                <h2 className="text-xl font-bold group flex items-center gap-1">
+                  <span>Worker - </span>
+                  <span 
+                    onClick={() => {
+                      setIsEditingName(true);
+                      setTempName(editedNode.label);
+                    }}
+                    className="cursor-pointer hover:text-blue-600"
+                  >
+                    {editedNode.label}
+                  </span>
+                  <button
+                    onClick={() => {
+                      setIsEditingName(true);
+                      setTempName(editedNode.label);
+                    }}
+                    className="invisible group-hover:visible p-1 hover:bg-gray-100 rounded"
+                  >
+                    <Pencil className="w-4 h-4 text-gray-600" />
+                  </button>
+                </h2>
               )}
             </div>
-            
-            {/* Execution Result */}
-            {executionResult && (
-              <div className={`p-3 border-t ${executionResult.success ? 'bg-green-50' : 'bg-red-50'}`}>
-                <div className="flex items-start gap-2">
-                  <div className="flex-1">
-                    {executionResult.success ? (
-                      <div className="text-green-700">
-                        <strong>Success:</strong> {typeof executionResult.output === 'string' ? executionResult.output : JSON.stringify(executionResult.output)}
-                      </div>
-                    ) : (
-                      <div className="text-red-700">
-                        <strong>Error:</strong> {executionResult.error}
-                      </div>
-                    )}
+            <button onClick={onClose} className="text-2xl hover:text-gray-600">&times;</button>
+          </div>
+
+          <div className="flex flex-1 overflow-hidden">
+            {/* Left Side - Connected From Nodes */}
+            <div className="w-16 border-r bg-gray-50 p-2 flex flex-col gap-2 items-center overflow-y-auto">
+              <div className="text-xs text-gray-500 mb-2 -rotate-90 whitespace-nowrap mt-8">From</div>
+              {connectedFromNodes.map((connNode) => (
+                <div
+                  key={connNode.id}
+                  className="group cursor-pointer"
+                  onClick={() => handleNodeClick(connNode)}
+                  title={connNode.label}
+                >
+                  <div className="w-12 h-12 rounded-lg bg-white border-2 border-gray-300 flex items-center justify-center transition-all duration-200 group-hover:scale-110 group-hover:border-blue-500 group-hover:shadow-lg">
+                    {getNodeIcon(connNode.type)}
                   </div>
+                  <div className="text-xs text-center mt-1 truncate w-12 opacity-0 group-hover:opacity-100 transition-opacity">
+                    {connNode.label}
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {/* Main Content Area */}
+            <div className="flex-1 flex">
+              {/* Left Panel - Input */}
+              <div className="w-1/4 border-r p-4 overflow-y-auto">
+                <h3 className="font-semibold mb-2">Input Source</h3>
+                <select
+                  value={selectedInput}
+                  onChange={(e) => setSelectedInput(e.target.value)}
+                  className="w-full border rounded p-2 mb-4"
+                >
+                  <option value="">No input</option>
+                  {node.connectedFrom?.map(connNodeId => {
+                    const connNode = section.nodes.find(n => n.id === connNodeId);
+                    if (!connNode) return null;
+                    return (
+                      <option key={connNode.id} value={connNode.id}>
+                        {connNode.label} ({connNode.type})
+                      </option>
+                    );
+                  })}
+                </select>
+
+                {connectedNodeData && (
+                  <div className="bg-gray-100 rounded p-3">
+                    <h4 className="font-medium mb-2">Input Data:</h4>
+                    <pre className="text-xs overflow-x-auto">
+                      {JSON.stringify(connectedNodeData, null, 2)}
+                    </pre>
+                  </div>
+                )}
+              </div>
+
+              {/* Center Panel - Code Editor with tabs */}
+              <div className="flex-1 flex flex-col">
+                <div className="flex border-b">
                   <button
-                    onClick={() => setExecutionResult(null)}
-                    className="text-gray-500 hover:text-gray-700"
+                    onClick={() => setActiveTab('code')}
+                    className={`px-4 py-2 ${activeTab === 'code' ? 'bg-gray-100 border-b-2 border-blue-500' : ''}`}
                   >
-                    <X className="w-4 h-4" />
+                    Code
+                  </button>
+                  <button
+                    onClick={() => setActiveTab('history')}
+                    className={`px-4 py-2 ${activeTab === 'history' ? 'bg-gray-100 border-b-2 border-blue-500' : ''}`}
+                  >
+                    Update History
+                  </button>
+                </div>
+                
+                <div className="flex-1 overflow-hidden">
+                  {activeTab === 'code' ? (
+                    <CodeEditor
+                      value={editedNode.code || getDefaultCode()}
+                      onChange={(code) => setEditedNode({ ...editedNode, code })}
+                    />
+                  ) : (
+                    <div className="p-4 overflow-y-auto">
+                      <h3 className="font-semibold mb-3">Update History</h3>
+                      <div className="space-y-3">
+                        {editedNode.updateHistory?.map((update, idx) => (
+                          <div key={idx} className="border rounded p-3">
+                            <div className="flex justify-between items-start">
+                              <div>
+                                <div className="text-sm text-gray-600">
+                                  {new Date(update.timestamp).toLocaleString()}
+                                </div>
+                                <div className="font-medium">
+                                  Type: {update.type}
+                                  {update.by && ` by ${update.by}`}
+                                </div>
+                                {update.score !== undefined && (
+                                  <div className="flex items-center gap-1 mt-1">
+                                    <Award className="w-4 h-4 text-yellow-500" />
+                                    <span className="text-sm">AI Score: {update.score}/100</span>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+                
+                {/* Execution Result */}
+                {executionResult && (
+                  <div className={`p-3 border-t ${executionResult.success ? 'bg-green-50' : 'bg-red-50'}`}>
+                    <div className="flex items-start gap-2">
+                      <div className="flex-1">
+                        {executionResult.success ? (
+                          <div className="text-green-700">
+                            <strong>Success:</strong> {typeof executionResult.output === 'string' ? executionResult.output : JSON.stringify(executionResult.output)}
+                          </div>
+                        ) : (
+                          <div className="text-red-700">
+                            <strong>Error:</strong> {executionResult.error}
+                          </div>
+                        )}
+                      </div>
+                      <button
+                        onClick={() => setExecutionResult(null)}
+                        className="text-gray-500 hover:text-gray-700"
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
+                )}
+                
+                {/* Action Buttons */}
+                <div className="p-4 border-t flex gap-2">
+                  <button
+                    onClick={handleSave}
+                    className="flex items-center gap-2 bg-blue-500 text-white rounded px-4 py-2 hover:bg-blue-600"
+                  >
+                    <Save className="w-4 h-4" />
+                    Save
+                  </button>
+                  <button
+                    onClick={executeCode}
+                    disabled={isExecuting}
+                    className={`flex items-center gap-2 rounded px-4 py-2 ${
+                      isExecuting 
+                        ? 'bg-gray-400 text-gray-200 cursor-not-allowed' 
+                        : 'bg-green-500 text-white hover:bg-green-600'
+                    }`}
+                  >
+                    {isExecuting ? (
+                      <>
+                        <Loader className="w-4 h-4 animate-spin" />
+                        Running...
+                      </>
+                    ) : (
+                      <>
+                        <Play className="w-4 h-4" />
+                        Run Code
+                      </>
+                    )}
+                  </button>
+                  <button
+                    onClick={() => setShowJsonViewer(true)}
+                    className="flex items-center gap-2 bg-gray-600 text-white rounded px-4 py-2 hover:bg-gray-700"
+                  >
+                    <FileText className="w-4 h-4" />
+                    View JSON
+                  </button>
+                  {editedNode.vectorDB && (
+                    <button className="flex items-center gap-2 bg-purple-500 text-white rounded px-4 py-2 hover:bg-purple-600">
+                      <Database className="w-4 h-4" />
+                      Configure DB
+                    </button>
+                  )}
+                  <button
+                    onClick={onClose}
+                    className="ml-auto flex items-center gap-2 bg-gray-300 text-gray-700 rounded px-4 py-2 hover:bg-gray-400"
+                  >
+                    Cancel
                   </button>
                 </div>
               </div>
-            )}
-            
-            {/* Action Buttons */}
-            <div className="p-4 border-t flex gap-2">
-              <button
-                onClick={handleSave}
-                className="flex items-center gap-2 bg-blue-500 text-white rounded px-4 py-2 hover:bg-blue-600"
-              >
-                <Save className="w-4 h-4" />
-                Save
-              </button>
-              <button
-                onClick={executeCode}
-                disabled={isExecuting}
-                className={`flex items-center gap-2 rounded px-4 py-2 ${
-                  isExecuting 
-                    ? 'bg-gray-400 text-gray-200 cursor-not-allowed' 
-                    : 'bg-green-500 text-white hover:bg-green-600'
-                }`}
-              >
-                {isExecuting ? (
-                  <>
-                    <Loader className="w-4 h-4 animate-spin" />
-                    Running...
-                  </>
-                ) : (
-                  <>
-                    <Play className="w-4 h-4" />
-                    Run Code
-                  </>
-                )}
-              </button>
-              <button
-                onClick={() => setShowJsonViewer(true)}
-                className="flex items-center gap-2 bg-gray-600 text-white rounded px-4 py-2 hover:bg-gray-700"
-              >
-                <FileText className="w-4 h-4" />
-                View JSON
-              </button>
-              {editedNode.vectorDB && (
-                <button className="flex items-center gap-2 bg-purple-500 text-white rounded px-4 py-2 hover:bg-purple-600">
-                  <Database className="w-4 h-4" />
-                  Configure DB
-                </button>
-              )}
-              <button
-                onClick={onClose}
-                className="ml-auto flex items-center gap-2 bg-gray-300 text-gray-700 rounded px-4 py-2 hover:bg-gray-400"
-              >
-                Cancel
-              </button>
-            </div>
-          </div>
 
-          {/* Right Panel - Output & History */}
-          <div className="w-1/3 border-l flex flex-col">
-            <div className="flex-1 p-4 overflow-y-auto">
-              <h3 className="font-semibold mb-2">Output</h3>
-              {editedNode.output ? (
-                <pre className="bg-gray-100 rounded p-3 text-xs overflow-x-auto">
-                  {JSON.stringify(editedNode.output, null, 2)}
-                </pre>
-              ) : (
-                <div className="text-gray-500">No output yet</div>
-              )}
-              
-              {editedNode.aiScore && (
-                <div className="mt-4 p-3 bg-yellow-50 rounded">
-                  <div className="flex items-center gap-2">
-                    <Award className="w-5 h-5 text-yellow-600" />
-                    <span className="font-medium">AI Evaluation Score</span>
-                  </div>
-                  <div className="text-2xl font-bold text-yellow-600 mt-1">
-                    {editedNode.aiScore}/100
-                  </div>
-                </div>
-              )}
-            </div>
-            
-            {/* Version History */}
-            <div className="border-t p-4">
-              <h3 className="font-semibold mb-2 flex items-center gap-2">
-                <Clock className="w-4 h-4" />
-                Version History
-              </h3>
-              <div className="space-y-2 max-h-48 overflow-y-auto">
-                {versions.length > 0 ? (
-                  versions.map(v => (
-                    <div key={v.id} className="border rounded p-2 text-sm">
-                      <div className="text-gray-600">{new Date(v.timestamp).toLocaleString()}</div>
-                      <div className="flex justify-between items-center">
-                        <span>Model: {v.metadata.modelVersion}</span>
-                        <button 
-                          onClick={() => restoreVersion(v.id)}
-                          className="text-blue-500 hover:underline"
-                        >
-                          Restore
-                        </button>
+              {/* Right Panel - Output & History */}
+              <div className="w-1/3 border-l flex flex-col">
+                <div className="flex-1 p-4 overflow-y-auto">
+                  <h3 className="font-semibold mb-2">Output</h3>
+                  {editedNode.output ? (
+                    <pre className="bg-gray-100 rounded p-3 text-xs overflow-x-auto">
+                      {JSON.stringify(editedNode.output, null, 2)}
+                    </pre>
+                  ) : (
+                    <div className="text-gray-500">No output yet</div>
+                  )}
+                  
+                  {editedNode.aiScore && (
+                    <div className="mt-4 p-3 bg-yellow-50 rounded">
+                      <div className="flex items-center gap-2">
+                        <Award className="w-5 h-5 text-yellow-600" />
+                        <span className="font-medium">AI Evaluation Score</span>
+                      </div>
+                      <div className="text-2xl font-bold text-yellow-600 mt-1">
+                        {editedNode.aiScore}/100
                       </div>
                     </div>
-                  ))
-                ) : (
-                  <div className="text-gray-500 text-sm">No version history available</div>
-                )}
+                  )}
+                </div>
+                
+                {/* Version History */}
+                <div className="border-t p-4">
+                  <h3 className="font-semibold mb-2 flex items-center gap-2">
+                    <Clock className="w-4 h-4" />
+                    Version History
+                  </h3>
+                  <div className="space-y-2 max-h-48 overflow-y-auto">
+                    {versions.length > 0 ? (
+                      versions.map(v => (
+                        <div key={v.id} className="border rounded p-2 text-sm">
+                          <div className="text-gray-600">{new Date(v.timestamp).toLocaleString()}</div>
+                          <div className="flex justify-between items-center">
+                            <span>Model: {v.metadata.modelVersion}</span>
+                            <button 
+                              onClick={() => restoreVersion(v.id)}
+                              className="text-blue-500 hover:underline"
+                            >
+                              Restore
+                            </button>
+                          </div>
+                        </div>
+                      ))
+                    ) : (
+                      <div className="text-gray-500 text-sm">No version history available</div>
+                    )}
+                  </div>
+                </div>
               </div>
+            </div>
+
+            {/* Right Side - Connected To Nodes */}
+            <div className="w-16 border-l bg-gray-50 p-2 flex flex-col gap-2 items-center overflow-y-auto">
+              <div className="text-xs text-gray-500 mb-2 rotate-90 whitespace-nowrap mt-8">To</div>
+              {connectedToNodes.map((connNode) => (
+                <div
+                  key={connNode.id}
+                  className="group cursor-pointer"
+                  onClick={() => handleNodeClick(connNode)}
+                  title={connNode.label}
+                >
+                  <div className="w-12 h-12 rounded-lg bg-white border-2 border-gray-300 flex items-center justify-center transition-all duration-200 group-hover:scale-110 group-hover:border-green-500 group-hover:shadow-lg">
+                    {getNodeIcon(connNode.type)}
+                  </div>
+                  <div className="text-xs text-center mt-1 truncate w-12 opacity-0 group-hover:opacity-100 transition-opacity">
+                    {connNode.label}
+                  </div>
+                </div>
+              ))}
             </div>
           </div>
         </div>
@@ -446,6 +528,41 @@ output = {
           </div>
         </div>
       )}
-    </div>
+
+      {/* Selected Node Edit Modal */}
+      {selectedNodeForEdit && (
+        (() => {
+          const ModalComponent = selectedNodeForEdit.type === 'worker' ? WorkerEditModal :
+                              (selectedNodeForEdit.type === 'supervisor' || selectedNodeForEdit.type === 'planner') ? 
+                              require('./SupervisorEditModal').SupervisorEditModal :
+                              (selectedNodeForEdit.type === 'input' || selectedNodeForEdit.type === 'output') ?
+                              require('./IOConfigModal').IOConfigModal : null;
+
+          if (ModalComponent) {
+            return (
+              <ModalComponent
+                node={selectedNodeForEdit}
+                section={section}
+                allSections={allSections}
+                onClose={() => setSelectedNodeForEdit(null)}
+                onSave={(updatedNode: Node) => {
+                  // 현재 모달을 저장하고
+                  onSave(editedNode);
+                  // 새로운 노드의 편집창 열기를 위해 잠시 후 처리
+                  setSelectedNodeForEdit(null);
+                  onClose();
+                  // App.tsx에서 새로운 편집창을 열도록 전달
+                  setTimeout(() => {
+                    const event = new CustomEvent('openNodeEdit', { detail: updatedNode });
+                    window.dispatchEvent(event);
+                  }, 100);
+                }}
+              />
+            );
+          }
+          return null;
+        })()
+      )}
+    </>
   );
 };
