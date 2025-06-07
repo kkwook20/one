@@ -1,5 +1,5 @@
 // frontend/src/components/AIModelSelector.tsx
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { Loader2, Link, CheckCircle, AlertCircle } from 'lucide-react';
 import { apiClient } from '../api/client';
 import { LMStudioModel } from '../types';
@@ -23,21 +23,7 @@ export const AIModelSelector: React.FC<AIModelSelectorProps> = ({
   const [connectionError, setConnectionError] = useState<string>('');
   const [models, setModels] = useState<LMStudioModel[]>([]);
 
-  useEffect(() => {
-    // If already connected, load models
-    if (lmStudioConnectionId) {
-      apiClient.getLMStudioModels(lmStudioConnectionId)
-        .then(res => {
-          setModels(res.data.models);
-          setConnectionStatus('connected');
-        })
-        .catch(() => {
-          setConnectionStatus('disconnected');
-        });
-    }
-  }, [lmStudioConnectionId]);
-
-  const handleConnect = async () => {
+  const handleConnect = useCallback(async () => {
     setIsConnecting(true);
     setConnectionStatus('connecting');
     setConnectionError('');
@@ -70,7 +56,27 @@ export const AIModelSelector: React.FC<AIModelSelectorProps> = ({
     } finally {
       setIsConnecting(false);
     }
-  };
+  }, [localUrl, value, onChange]);
+
+  useEffect(() => {
+    // If already connected, load models and maintain connection
+    if (lmStudioConnectionId && lmStudioUrl) {
+      setLocalUrl(lmStudioUrl);
+      apiClient.getLMStudioModels(lmStudioConnectionId)
+        .then(res => {
+          setModels(res.data.models);
+          setConnectionStatus('connected');
+        })
+        .catch(() => {
+          // Connection expired, try to reconnect
+          setConnectionStatus('disconnected');
+          // Auto-reconnect if URL is available
+          if (lmStudioUrl) {
+            handleConnect();
+          }
+        });
+    }
+  }, [lmStudioConnectionId, lmStudioUrl, handleConnect]);
 
   const handleModelChange = (modelId: string) => {
     onChange(modelId, localUrl, lmStudioConnectionId);
@@ -88,14 +94,14 @@ export const AIModelSelector: React.FC<AIModelSelectorProps> = ({
             onChange={(e) => setLocalUrl(e.target.value)}
             placeholder="http://localhost:1234"
             className="flex-1 border rounded px-3 py-2 text-sm"
-            disabled={isConnecting}
+            disabled={isConnecting || connectionStatus === 'connected'}
           />
           <button
             onClick={handleConnect}
-            disabled={isConnecting || connectionStatus === 'connected'}
+            disabled={isConnecting}
             className={`px-4 py-2 rounded flex items-center gap-2 text-sm ${
               connectionStatus === 'connected'
-                ? 'bg-green-500 text-white cursor-not-allowed'
+                ? 'bg-green-500 text-white hover:bg-green-600'
                 : isConnecting
                 ? 'bg-gray-400 text-gray-200 cursor-not-allowed'
                 : 'bg-blue-500 text-white hover:bg-blue-600'
@@ -109,7 +115,7 @@ export const AIModelSelector: React.FC<AIModelSelectorProps> = ({
             ) : connectionStatus === 'connected' ? (
               <>
                 <CheckCircle className="w-4 h-4" />
-                Connected
+                Reconnect
               </>
             ) : (
               <>
@@ -135,9 +141,9 @@ export const AIModelSelector: React.FC<AIModelSelectorProps> = ({
       </div>
 
       {/* Model Selection */}
-      {connectionStatus === 'connected' && (
-        <div>
-          <label className="block text-sm font-medium mb-1">Select Model</label>
+      <div>
+        <label className="block text-sm font-medium mb-1">Select Model</label>
+        {connectionStatus === 'connected' ? (
           <select
             value={value || 'none'}
             onChange={(e) => handleModelChange(e.target.value)}
@@ -150,8 +156,12 @@ export const AIModelSelector: React.FC<AIModelSelectorProps> = ({
               </option>
             ))}
           </select>
-        </div>
-      )}
+        ) : (
+          <div className="w-full border rounded px-3 py-2 bg-gray-100 text-gray-500">
+            No server connection available
+          </div>
+        )}
+      </div>
 
       {/* Model Info */}
       {value && value !== 'none' && connectionStatus === 'connected' && (
@@ -159,13 +169,6 @@ export const AIModelSelector: React.FC<AIModelSelectorProps> = ({
           <span className="font-medium">LM Studio Model:</span> {value}
           <br />
           <span className="font-medium">Endpoint:</span> {localUrl}
-        </div>
-      )}
-
-      {/* Not Connected Info */}
-      {connectionStatus === 'disconnected' && !isConnecting && (
-        <div className="text-sm text-gray-500 italic">
-          Connect to LM Studio to select AI models
         </div>
       )}
     </div>
