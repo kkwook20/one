@@ -45,7 +45,8 @@ export const WorkerEditModal: React.FC<WorkerEditModalProps> = ({
     }));
   });
   const [draggedTask, setDraggedTask] = useState<number | null>(null);
-  const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
+  const [dropPosition, setDropPosition] = useState<number | null>(null);
+  const [isDraggingHandle, setIsDraggingHandle] = useState<boolean>(false);
   
   // Task 자동 저장을 위한 ref
   const taskSaveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
@@ -63,7 +64,7 @@ export const WorkerEditModal: React.FC<WorkerEditModalProps> = ({
   }, [selectedInput, node.connectedFrom, section]);
 
   useEffect(() => {
-    // Load version history (if API endpoint exists)
+    // Load saved versions (if API endpoint exists)
     apiClient.getVersions(node.id)
       .then(res => setVersions(res.data))
       .catch(() => {
@@ -288,22 +289,38 @@ output = {
     autoSaveTasks(updatedTasks);
   };
 
-  const handleDragStart = (index: number) => {
+  const handleDragStart = (e: React.DragEvent, index: number) => {
     setDraggedTask(index);
+    e.dataTransfer.effectAllowed = 'move';
   };
 
   const handleDragOver = (e: React.DragEvent, index: number) => {
     e.preventDefault();
-    setDragOverIndex(index);
+    e.dataTransfer.dropEffect = 'move';
+    
+    const rect = e.currentTarget.getBoundingClientRect();
+    const y = e.clientY - rect.top;
+    const height = rect.height;
+    
+    // 요소의 중간점을 기준으로 위/아래 결정
+    if (y < height / 2) {
+      setDropPosition(index);
+    } else {
+      setDropPosition(index + 1);
+    }
   };
 
-  const handleDragLeave = () => {
-    setDragOverIndex(null);
+  const handleDragLeave = (e: React.DragEvent) => {
+    // 자식 요소로 이동하는 경우가 아닐 때만 dropPosition 제거
+    const relatedTarget = e.relatedTarget as HTMLElement;
+    if (!e.currentTarget.contains(relatedTarget)) {
+      setDropPosition(null);
+    }
   };
 
-  const handleDrop = (e: React.DragEvent, dropIndex: number) => {
+  const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
-    if (draggedTask === null) return;
+    if (draggedTask === null || dropPosition === null) return;
 
     const newTasks = [...tasks];
     const draggedItem = newTasks[draggedTask];
@@ -312,13 +329,23 @@ output = {
     newTasks.splice(draggedTask, 1);
     
     // Insert at new position
-    const adjustedIndex = draggedTask < dropIndex ? dropIndex - 1 : dropIndex;
-    newTasks.splice(adjustedIndex, 0, draggedItem);
+    let insertIndex = dropPosition;
+    if (draggedTask < dropPosition) {
+      insertIndex -= 1;
+    }
+    newTasks.splice(insertIndex, 0, draggedItem);
     
     setTasks(newTasks);
     autoSaveTasks(newTasks);
     setDraggedTask(null);
-    setDragOverIndex(null);
+    setDropPosition(null);
+    setIsDraggingHandle(false);
+  };
+
+  const handleDragEnd = () => {
+    setDraggedTask(null);
+    setDropPosition(null);
+    setIsDraggingHandle(false);
   };
 
   const getTaskStatusIcon = (status?: 'locked' | 'editable' | 'low_priority') => {
@@ -503,7 +530,7 @@ output = {
                     onClick={() => setActiveTab('history')}
                     className={`px-4 py-2 font-medium transition-all ${activeTab === 'history' ? 'bg-gray-50 border-b-2 border-indigo-500 text-indigo-600' : 'text-gray-600 hover:text-gray-900'}`}
                   >
-                    Update History
+                    Activity Log
                   </button>
                 </div>
                 
@@ -550,76 +577,110 @@ output = {
                           </button>
                         </div>
                         
-                        <div className="space-y-2">
+                        <div 
+                          className="space-y-2 relative"
+                          onDragLeave={handleDragLeave}
+                          onDrop={handleDrop}
+                        >
                           {tasks.length === 0 ? (
                             <div className="text-center py-12 text-gray-400">
                               <p className="text-sm">No tasks yet</p>
                               <p className="text-xs mt-1">Click "Add Task" to create one</p>
                             </div>
                           ) : (
-                            tasks.map((task, index) => (
-                              <div
-                                key={task.id}
-                                draggable={task.taskStatus !== 'locked'}
-                                onDragStart={() => handleDragStart(index)}
-                                onDragOver={(e) => handleDragOver(e, index)}
-                                onDragLeave={handleDragLeave}
-                                onDrop={(e) => handleDrop(e, index)}
-                                className={`
-                                  relative flex items-center gap-2 p-2.5 bg-white border rounded-lg shadow-sm hover:shadow-md transition-shadow
-                                  ${dragOverIndex === index ? 'border-indigo-300 bg-indigo-50/50' : 'border-gray-100'}
-                                  ${task.taskStatus === 'locked' ? 'opacity-50' : 'cursor-move'}
-                                  ${task.taskStatus === 'low_priority' ? 'opacity-70' : ''}
-                                `}
-                                style={{
-                                  background: getScoreGradient(task.aiScore)
-                                }}
-                              >
-                                {/* Drag Handle */}
-                                <div className={`flex-shrink-0 ${task.taskStatus === 'locked' ? 'invisible' : ''}`}>
-                                  <GripVertical className="w-3 h-3 text-gray-300" />
+                            <>
+                              {/* Drop indicator at the top */}
+                              {dropPosition === 0 && (
+                                <div className="h-0.5 bg-indigo-500 rounded-full -my-1 relative z-20">
+                                  <div className="absolute -top-1 -left-1 w-2 h-2 bg-indigo-500 rounded-full"></div>
                                 </div>
-                                
-                                {/* Task Status Toggle */}
-                                <button
-                                  onClick={() => handleTaskStatusToggle(task.id)}
-                                  className="p-1.5 rounded-md hover:bg-gray-100 transition-all flex-shrink-0"
-                                  title={getTaskStatusTooltip(task.taskStatus)}
-                                >
-                                  {getTaskStatusIcon(task.taskStatus)}
-                                </button>
-                                
-                                {/* Task Text */}
-                                <input
-                                  type="text"
-                                  value={task.text}
-                                  onChange={(e) => handleTaskTextChange(task.id, e.target.value)}
-                                  disabled={task.taskStatus === 'locked'}
-                                  className={`
-                                    flex-1 px-2 py-1 bg-transparent border-none outline-none text-gray-700 placeholder-gray-400
-                                    ${task.taskStatus === 'locked' ? 'cursor-not-allowed' : 'cursor-text'}
-                                    focus:bg-white focus:bg-opacity-60 rounded transition-all
-                                  `}
-                                  placeholder="Enter task description"
-                                />
-                                
-                                {/* Delete Button */}
-                                <button
-                                  onClick={() => handleDeleteTask(task.id)}
-                                  className="p-1.5 rounded-md hover:bg-gray-50 text-gray-400 hover:text-red-500 transition-all flex-shrink-0"
-                                  title="Delete task"
-                                >
-                                  <Trash2 className="w-4 h-4" />
-                                </button>
-                              </div>
-                            ))
+                              )}
+                              
+                              {tasks.map((task, index) => (
+                                <React.Fragment key={task.id}>
+                                  <div
+                                    onDragOver={(e) => handleDragOver(e, index)}
+                                    onDragEnd={handleDragEnd}
+                                    className={`
+                                      relative flex items-center gap-2 p-2.5 bg-white border rounded-lg shadow-sm hover:shadow-md transition-shadow
+                                      ${task.taskStatus === 'locked' ? 'opacity-50' : ''}
+                                      ${task.taskStatus === 'low_priority' ? 'opacity-70' : ''}
+                                      ${draggedTask === index ? 'opacity-50' : ''}
+                                      border-gray-100
+                                    `}
+                                    style={{
+                                      background: getScoreGradient(task.aiScore)
+                                    }}
+                                  >
+                                    {/* Drag Handle */}
+                                    <div 
+                                      draggable={task.taskStatus !== 'locked'}
+                                      onDragStart={(e) => {
+                                        setIsDraggingHandle(true);
+                                        handleDragStart(e, index);
+                                      }}
+                                      className={`flex-shrink-0 cursor-move ${task.taskStatus === 'locked' ? 'invisible' : ''}`}
+                                    >
+                                      <GripVertical className="w-3 h-3 text-gray-300" />
+                                    </div>
+                                    
+                                    {/* Task Status Toggle */}
+                                    <button
+                                      onClick={() => handleTaskStatusToggle(task.id)}
+                                      className="p-1.5 rounded-md hover:bg-gray-100 transition-all flex-shrink-0"
+                                      title={getTaskStatusTooltip(task.taskStatus)}
+                                    >
+                                      {getTaskStatusIcon(task.taskStatus)}
+                                    </button>
+                                    
+                                    {/* Task Text */}
+                                    <input
+                                      type="text"
+                                      value={task.text}
+                                      onChange={(e) => handleTaskTextChange(task.id, e.target.value)}
+                                      disabled={task.taskStatus === 'locked'}
+                                      className={`
+                                        flex-1 px-2 py-1 bg-transparent border-none outline-none text-gray-700 placeholder-gray-400
+                                        ${task.taskStatus === 'locked' ? 'cursor-not-allowed' : 'cursor-text'}
+                                        focus:bg-white focus:bg-opacity-60 rounded transition-all select-text
+                                      `}
+                                      placeholder="Enter task description"
+                                      style={{ userSelect: 'text' }}
+                                    />
+                                    
+                                    {/* Delete Button */}
+                                    <button
+                                      onClick={() => handleDeleteTask(task.id)}
+                                      className="p-1.5 rounded-md hover:bg-gray-50 text-gray-400 hover:text-red-500 transition-all flex-shrink-0"
+                                      title="Delete task"
+                                    >
+                                      <Trash2 className="w-4 h-4" />
+                                    </button>
+                                  </div>
+                                  
+                                  {/* Drop indicator between tasks */}
+                                  {dropPosition === index + 1 && index !== tasks.length - 1 && (
+                                    <div className="h-0.5 bg-indigo-500 rounded-full -my-1 relative z-20">
+                                      <div className="absolute -top-1 -left-1 w-2 h-2 bg-indigo-500 rounded-full"></div>
+                                    </div>
+                                  )}
+                                </React.Fragment>
+                              ))}
+                              
+                              {/* Drop indicator at the bottom */}
+                              {dropPosition === tasks.length && tasks.length > 0 && (
+                                <div className="h-0.5 bg-indigo-500 rounded-full -my-1 relative z-20">
+                                  <div className="absolute -top-1 -left-1 w-2 h-2 bg-indigo-500 rounded-full"></div>
+                                </div>
+                              )}
+                            </>
                           )}
                         </div>
                       </div>
                     </div>
                   ) : (
                     <div className="flex-1 overflow-y-auto min-h-0 p-4">
-                      <h3 className="font-semibold mb-3">Update History</h3>
+                      <h3 className="font-semibold mb-3">Activity Log</h3>
                       <div className="space-y-3">
                         {editedNode.updateHistory?.map((update, idx) => (
                           <div key={idx} className="border border-gray-200 rounded-md p-3">
@@ -759,11 +820,11 @@ output = {
                   )}
                 </div>
                 
-                {/* Version History */}
+                {/* Saved Versions */}
                 <div className="border-t p-4">
                   <h3 className="font-semibold mb-2 flex items-center gap-2">
                     <Clock className="w-4 h-4" />
-                    Version History
+                    Saved Versions
                   </h3>
                   <div className="space-y-2 max-h-48 overflow-y-auto">
                     {versions.length > 0 ? (
@@ -782,7 +843,7 @@ output = {
                         </div>
                       ))
                     ) : (
-                      <div className="text-gray-500 text-sm">No version history available</div>
+                      <div className="text-gray-500 text-sm">No saved versions available</div>
                     )}
                   </div>
                 </div>

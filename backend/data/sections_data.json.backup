@@ -16,11 +16,15 @@
         "isDeactivated": false,
         "tasks": null,
         "connectedTo": [
-          "output-preproduction-script"
+          "output-preproduction-script",
+          "worker-1749232940791"
         ],
         "connectedFrom": null,
         "code": null,
-        "output": null,
+        "output": {
+          "text": "hello",
+          "type": "script"
+        },
         "error": null,
         "model": null,
         "vectorDB": null,
@@ -74,15 +78,15 @@
         "isDeactivated": false,
         "tasks": [
           {
-            "id": "task-1749232940791",
-            "text": "fgyhfghfgh",
+            "id": "task-1749281920183",
+            "text": "Enter tassdfsdfsdfsss",
             "status": "pending",
             "taskStatus": "editable",
             "aiScore": 50.0
           },
           {
-            "id": "task-1749281920183",
-            "text": "Enter tassdfsdfsdfsss",
+            "id": "task-1749232940791",
+            "text": "ddddd",
             "status": "pending",
             "taskStatus": "editable",
             "aiScore": 50.0
@@ -96,7 +100,7 @@
           },
           {
             "id": "task-1749281919998",
-            "text": "Enter task description",
+            "text": "Enter task descri",
             "status": "pending",
             "taskStatus": "editable",
             "aiScore": 50.0
@@ -112,7 +116,9 @@
         "connectedTo": [
           "worker-1749282008123"
         ],
-        "connectedFrom": [],
+        "connectedFrom": [
+          "input-preproduction-script"
+        ],
         "code": null,
         "output": null,
         "error": null,
