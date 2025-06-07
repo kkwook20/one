@@ -140,7 +140,7 @@ output = {
 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-      <div className="bg-white rounded-lg w-[90%] max-w-7xl h-[90%] flex flex-col">
+      <div className="bg-white rounded-lg w-full max-w-7xl h-[95%] flex flex-col">
         <div className="p-4 border-b flex justify-between items-center">
           <div className="flex items-center gap-2">
             <span className="text-2xl">👷</span>
@@ -172,15 +172,7 @@ output = {
               </div>
             ) : (
               <h2 className="text-xl font-bold group flex items-center gap-1">
-                <span 
-                  onClick={() => {
-                    setIsEditingName(true);
-                    setTempName(editedNode.label);
-                  }}
-                  className="cursor-pointer hover:text-blue-600"
-                >
-                  {editedNode.label}
-                </span>
+                <span>{editedNode.label}</span>
                 <button
                   onClick={() => {
                     setIsEditingName(true);
@@ -416,7 +408,7 @@ output = {
       {/* JSON Viewer Modal */}
       {showJsonViewer && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[60]">
-          <div className="bg-white rounded-lg w-[60%] max-w-3xl h-[90%] flex flex-col">
+          <div className="bg-white rounded-lg w-[60%] max-w-3xl h-[95%] flex flex-col">
             <div className="p-4 border-b flex justify-between items-center">
               <h2 className="text-xl font-bold flex items-center gap-2">
                 <FileText className="w-5 h-5" />

@@ -5,19 +5,46 @@
     "group": "preproduction",
     "nodes": [
       {
+        "id": "input-preproduction-script",
+        "type": "input",
+        "label": "Input",
+        "position": {
+          "x": 100.0,
+          "y": 200.0
+        },
+        "isRunning": false,
+        "isDeactivated": false,
+        "tasks": null,
+        "connectedTo": [
+          "worker-1749232940791"
+        ],
+        "connectedFrom": null,
+        "code": null,
+        "output": null,
+        "error": null,
+        "model": null,
+        "vectorDB": null,
+        "supervisedNodes": null,
+        "updateHistory": null,
+        "aiScore": null,
+        "modificationHistory": null,
+        "evaluationHistory": null,
+        "plannerRecommendations": null
+      },
+      {
         "id": "output-preproduction-script",
         "type": "output",
         "label": "Output",
         "position": {
-          "x": 1082.0,
-          "y": 451.0
+          "x": 700.0,
+          "y": 200.0
         },
         "isRunning": false,
         "isDeactivated": false,
         "tasks": null,
         "connectedTo": null,
         "connectedFrom": [
-          "supervisor-1749213389309"
+          "worker-1749232940791"
         ],
         "code": null,
         "output": null,
@@ -32,219 +59,28 @@
         "plannerRecommendations": null
       },
       {
-        "id": "worker-1749213323805",
-        "type": "worker",
-        "label": "Worker",
-        "position": {
-          "x": 553.0,
-          "y": 225.0
-        },
-        "isRunning": false,
-        "isDeactivated": false,
-        "tasks": [
-          {
-            "id": "task-1749213323805",
-            "text": "",
-            "status": "pending"
-          }
-        ],
-        "connectedTo": [],
-        "connectedFrom": [],
-        "code": null,
-        "output": null,
-        "error": null,
-        "model": null,
-        "vectorDB": null,
-        "supervisedNodes": null,
-        "updateHistory": null,
-        "aiScore": null,
-        "modificationHistory": null,
-        "evaluationHistory": null,
-        "plannerRecommendations": null
-      },
-      {
-        "id": "supervisor-1749213369469",
-        "type": "supervisor",
-        "label": "Supervisor",
-        "position": {
-          "x": 289.0,
-          "y": 1097.0
-        },
-        "isRunning": false,
-        "isDeactivated": false,
-        "tasks": null,
-        "connectedTo": [],
-        "connectedFrom": [],
-        "code": null,
-        "output": null,
-        "error": null,
-        "model": null,
-        "vectorDB": null,
-        "supervisedNodes": null,
-        "updateHistory": null,
-        "aiScore": null,
-        "modificationHistory": null,
-        "evaluationHistory": null,
-        "plannerRecommendations": null
-      },
-      {
-        "id": "supervisor-1749213389309",
-        "type": "supervisor",
-        "label": "Supervisor",
-        "position": {
-          "x": 899.0,
-          "y": 1161.0
-        },
-        "isRunning": false,
-        "isDeactivated": false,
-        "tasks": null,
-        "connectedTo": [
-          "output-preproduction-script"
-        ],
-        "connectedFrom": [],
-        "code": null,
-        "output": null,
-        "error": null,
-        "model": null,
-        "vectorDB": null,
-        "supervisedNodes": null,
-        "updateHistory": null,
-        "aiScore": null,
-        "modificationHistory": null,
-        "evaluationHistory": null,
-        "plannerRecommendations": null
-      },
-      {
-        "id": "worker-1749218763898",
-        "type": "worker",
-        "label": "Worker",
-        "position": {
-          "x": 1265.0,
-          "y": 909.0
-        },
-        "isRunning": false,
-        "isDeactivated": false,
-        "tasks": [
-          {
-            "id": "task-1749218763898",
-            "text": "",
-            "status": "pending"
-          }
-        ],
-        "connectedTo": null,
-        "connectedFrom": null,
-        "code": null,
-        "output": null,
-        "error": null,
-        "model": null,
-        "vectorDB": null,
-        "supervisedNodes": null,
-        "updateHistory": null,
-        "aiScore": null,
-        "modificationHistory": null,
-        "evaluationHistory": null,
-        "plannerRecommendations": null
-      },
-      {
-        "id": "worker-1749218778694",
-        "type": "worker",
-        "label": "Worker",
-        "position": {
-          "x": 569.0,
-          "y": 666.0
-        },
-        "isRunning": false,
-        "isDeactivated": false,
-        "tasks": [
-          {
-            "id": "task-1749218778695",
-            "text": "",
-            "status": "pending"
-          }
-        ],
-        "connectedTo": null,
-        "connectedFrom": null,
-        "code": null,
-        "output": null,
-        "error": null,
-        "model": null,
-        "vectorDB": null,
-        "supervisedNodes": null,
-        "updateHistory": null,
-        "aiScore": null,
-        "modificationHistory": null,
-        "evaluationHistory": null,
-        "plannerRecommendations": null
-      },
-      {
-        "id": "supervisor-1749218779019",
-        "type": "supervisor",
-        "label": "Supervisor",
-        "position": {
-          "x": 629.0,
-          "y": 726.0
-        },
-        "isRunning": false,
-        "isDeactivated": false,
-        "tasks": null,
-        "connectedTo": null,
-        "connectedFrom": null,
-        "code": null,
-        "output": null,
-        "error": null,
-        "model": null,
-        "vectorDB": null,
-        "supervisedNodes": null,
-        "updateHistory": null,
-        "aiScore": null,
-        "modificationHistory": null,
-        "evaluationHistory": null,
-        "plannerRecommendations": null
-      },
-      {
-        "id": "planner-1749218779259",
-        "type": "planner",
-        "label": "Planner",
-        "position": {
-          "x": 689.0,
-          "y": 786.0
-        },
-        "isRunning": false,
-        "isDeactivated": false,
-        "tasks": null,
-        "connectedTo": null,
-        "connectedFrom": null,
-        "code": null,
-        "output": null,
-        "error": null,
-        "model": null,
-        "vectorDB": null,
-        "supervisedNodes": null,
-        "updateHistory": null,
-        "aiScore": null,
-        "modificationHistory": null,
-        "evaluationHistory": null,
-        "plannerRecommendations": null
-      },
-      {
-        "id": "worker-1749227573396",
+        "id": "worker-1749232940791",
         "type": "worker",
         "label": "Worker 1",
         "position": {
-          "x": 343.0,
-          "y": 892.0
+          "x": 911.0,
+          "y": 933.0
         },
         "isRunning": false,
         "isDeactivated": false,
         "tasks": [
           {
-            "id": "task-1749227573396",
+            "id": "task-1749232940791",
             "text": "",
             "status": "pending"
           }
         ],
-        "connectedTo": null,
-        "connectedFrom": null,
+        "connectedTo": [
+          "output-preproduction-script"
+        ],
+        "connectedFrom": [
+          "input-preproduction-script"
+        ],
         "code": null,
         "output": null,
         "error": null,
@@ -258,24 +94,43 @@
         "plannerRecommendations": null
       },
       {
-        "id": "worker-1749227780924",
-        "type": "worker",
-        "label": "Worker 2",
+        "id": "supervisor-1749265918836",
+        "type": "supervisor",
+        "label": "Supervisor",
         "position": {
-          "x": 675.0,
-          "y": 977.0
+          "x": 791.0,
+          "y": 813.0
         },
         "isRunning": false,
         "isDeactivated": false,
-        "tasks": [
-          {
-            "id": "task-1749227780924",
-            "text": "",
-            "status": "pending"
-          }
-        ],
+        "tasks": null,
         "connectedTo": null,
-        "connectedFrom": null,
+        "connectedFrom": [],
+        "code": null,
+        "output": null,
+        "error": null,
+        "model": null,
+        "vectorDB": null,
+        "supervisedNodes": null,
+        "updateHistory": null,
+        "aiScore": null,
+        "modificationHistory": null,
+        "evaluationHistory": null,
+        "plannerRecommendations": null
+      },
+      {
+        "id": "planner-1749265919253",
+        "type": "planner",
+        "label": "Planner",
+        "position": {
+          "x": 851.0,
+          "y": 873.0
+        },
+        "isRunning": false,
+        "isDeactivated": false,
+        "tasks": null,
+        "connectedTo": [],
+        "connectedFrom": [],
         "code": null,
         "output": null,
         "error": null,
