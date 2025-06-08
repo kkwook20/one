@@ -32,6 +32,7 @@ class Node(BaseModel):
     position: Position
     isRunning: bool = False
     isDeactivated: bool = False
+    supervised: bool = False 
     
     # 노드별 데이터
     tasks: Optional[List[TaskItem]] = None

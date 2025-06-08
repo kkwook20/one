@@ -1,10 +1,11 @@
-// frontend/src/components/modals/WorkerEditModal.tsx - 정리된 버전
+// frontend/src/components/modals/WorkerEditModal.tsx - Base/Exp Code 분리 버전
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Save, Play, Database, Clock, Award, Loader, X, Pencil, FileText, FileInput, FileOutput, Plus, Trash2, GripVertical, Lock, Circle, Triangle, Target, FileJson, CheckCircle, Square } from 'lucide-react';
+import { Save, Play, Database, Clock, Award, Loader, X, Pencil, FileText, FileInput, FileOutput, Plus, Trash2, GripVertical, Lock, Circle, Triangle, Target, FileJson, CheckCircle, Square, Code, GitBranch, FileCode } from 'lucide-react';
 import { Node, Section, Version, TaskItem } from '../../types';
 import { apiClient } from '../../api/client';
 import { CodeEditor } from '../CodeEditor';
 import { AIModelSelector } from '../AIModelSelector';
+import { baseCodeTemplates, getTemplate, processTemplate } from '../../templates/baseCode';
 
 interface WorkerEditModalProps {
   node: Node;
@@ -23,6 +24,15 @@ interface ExecutionLog {
   details?: any;
 }
 
+// Node 타입 확장 - Base/Exp Code 필드 추가
+interface ExtendedNode extends Node {
+  executionHistory?: ExecutionLog[];
+  currentExecutionStartTime?: string | null;
+  baseCode?: string;
+  expCode?: string;
+  baseCodeTemplate?: string;
+}
+
 export const WorkerEditModal: React.FC<WorkerEditModalProps> = ({
   node,
   section,
@@ -31,15 +41,18 @@ export const WorkerEditModal: React.FC<WorkerEditModalProps> = ({
   onSave,
   onUpdate
 }) => {
-  const [editedNode, setEditedNode] = useState<Node & { executionHistory?: ExecutionLog[]; currentExecutionStartTime?: string | null }>({
+  const [editedNode, setEditedNode] = useState<ExtendedNode>({
     ...node,
     executionHistory: (node as any).executionHistory || [],
-    currentExecutionStartTime: (node as any).currentExecutionStartTime || null
+    currentExecutionStartTime: (node as any).currentExecutionStartTime || null,
+    baseCode: (node as any).baseCode,
+    expCode: (node as any).expCode || '',
+    baseCodeTemplate: (node as any).baseCodeTemplate || 'default'
   });
   const [selectedInput, setSelectedInput] = useState<string>(node.connectedFrom?.[0] || '');
   const [connectedNodeData, setConnectedNodeData] = useState<any>(null);
   const [versions, setVersions] = useState<Version[]>([]);
-  const [activeTab, setActiveTab] = useState<'code' | 'tasks' | 'history'>('code');
+  const [activeTab, setActiveTab] = useState<'base_code' | 'exp_code' | 'merged_code' | 'tasks' | 'history'>('tasks');
   
   // 노드가 실행 중인지 확인하고 초기 상태 설정
   const [isExecuting, setIsExecuting] = useState(node.isRunning || false);
@@ -85,6 +98,71 @@ export const WorkerEditModal: React.FC<WorkerEditModalProps> = ({
   // Task 자동 저장을 위한 ref
   const taskSaveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   
+  // 템플릿 내용 상태
+  const [baseCodeContent, setBaseCodeContent] = useState<string>('');
+  const [isLoadingTemplate, setIsLoadingTemplate] = useState<boolean>(true);
+  
+  // Base Code 템플릿 로드
+  useEffect(() => {
+    const loadBaseCode = async () => {
+      setIsLoadingTemplate(true);
+      try {
+        const template = await getTemplate(editedNode.baseCodeTemplate || 'default');
+        if (template) {
+          const variables = {
+            MODEL_NAME: editedNode.model || 'none',
+            LM_STUDIO_URL: editedNode.lmStudioUrl || ''
+          };
+          setBaseCodeContent(processTemplate(template, variables));
+        }
+      } catch (error) {
+        console.error('Failed to load template:', error);
+        setBaseCodeContent('# Failed to load template');
+      } finally {
+        setIsLoadingTemplate(false);
+      }
+    };
+    
+    loadBaseCode();
+  }, [editedNode.baseCodeTemplate, editedNode.model, editedNode.lmStudioUrl]);
+  
+  // Base Code 생성 함수 (템플릿이 로드된 후 사용)
+  const generateBaseCode = () => {
+    return baseCodeContent || '# Loading template...';
+  };
+
+  // 병합된 코드 생성 함수
+  const getMergedCode = () => {
+    const baseCode = baseCodeContent;
+    const expCode = editedNode.expCode || '';
+    
+    if (!expCode.trim()) {
+      return baseCode;
+    }
+    
+    // EXP_CODE_MERGE_POINT를 찾아서 Exp Code 삽입
+    const mergePoint = '# EXP_CODE_MERGE_POINT - 이 부분에서 Exp Code가 병합됩니다';
+    const mergedCode = baseCode.replace(mergePoint, `${mergePoint}
+    
+    # ========================================================================
+    # EXPERIMENTAL CODE - 노드별 특수 처리 로직
+    # ========================================================================
+    ${expCode}
+    
+    # ========================================================================
+    # AI 프롬프트에 추가 지시사항 병합
+    # ========================================================================
+    if 'exp_prompt_addition' in locals():
+        base_prompt += "\\n\\n**추가 지시사항:**\\n" + exp_prompt_addition
+    
+    # Exp Code에서 입력 데이터 가공이 있었다면 반영
+    if 'processed_input' in locals():
+        combined_input = processed_input
+    `);
+    
+    return mergedCode;
+  };
+
   const addExecutionLog = useCallback((type: ExecutionLog['type'], message: string, details?: any) => {
     const newLog: ExecutionLog = {
       timestamp: new Date().toISOString(),
@@ -202,7 +280,7 @@ export const WorkerEditModal: React.FC<WorkerEditModalProps> = ({
             isRunning: false,
             currentExecutionStartTime: null
           };
-          setEditedNode(clearedNode);
+          setEditedNode(clearedNode as ExtendedNode);
           
           // 원본 node 객체도 업데이트
           node.isRunning = false;
@@ -738,7 +816,8 @@ export const WorkerEditModal: React.FC<WorkerEditModalProps> = ({
         ...editedNode, 
         tasks: updatedTasks,
         purpose: updatedPurpose !== undefined ? updatedPurpose : purpose,
-        outputFormat: updatedOutputFormat !== undefined ? updatedOutputFormat : outputFormat
+        outputFormat: updatedOutputFormat !== undefined ? updatedOutputFormat : outputFormat,
+        baseCodeTemplate: editedNode.baseCodeTemplate
       };
       if (onUpdate) {
         onUpdate(updatedNode);
@@ -781,7 +860,8 @@ export const WorkerEditModal: React.FC<WorkerEditModalProps> = ({
       if (executionLogs.length > 0 && onUpdate) {
         const nodeWithLogs = {
           ...editedNode,
-          executionHistory: executionLogs
+          executionHistory: executionLogs,
+          baseCodeTemplate: editedNode.baseCodeTemplate
         };
         onUpdate(nodeWithLogs);
       }
@@ -799,12 +879,15 @@ export const WorkerEditModal: React.FC<WorkerEditModalProps> = ({
   }, [executionLogs, editedNode, onUpdate]);
 
   const handleSave = () => {
-    // Code 저장 시에만 사용
+    // 모든 데이터 저장 (Base Code는 저장하지 않음 - 항상 동적 생성)
     onSave({ 
       ...editedNode, 
       tasks,
       purpose,
-      outputFormat
+      outputFormat,
+      expCode: editedNode.expCode,
+      baseCodeTemplate: editedNode.baseCodeTemplate,
+      code: getMergedCode() // 병합된 코드를 code 필드에 저장
     } as Node);
     onClose();
   };
@@ -833,7 +916,9 @@ export const WorkerEditModal: React.FC<WorkerEditModalProps> = ({
       ...updatedNode, 
       tasks, 
       purpose,
-      outputFormat
+      outputFormat,
+      baseCodeTemplate: editedNode.baseCodeTemplate,
+      code: getMergedCode()
     };
     if (onUpdate) {
       onUpdate(nodeToSave);
@@ -923,6 +1008,12 @@ export const WorkerEditModal: React.FC<WorkerEditModalProps> = ({
   }, [node, section.nodes, isExecuting, editedNode, onUpdate, addExecutionLog]); // node.id 제거
 
   const executeCode = async () => {
+    // 템플릿이 아직 로딩 중이면 대기
+    if (isLoadingTemplate) {
+      alert('Template is still loading. Please wait...');
+      return;
+    }
+    
     // 이미 실행 중이면 중지
     if (isExecuting) {
       return;
@@ -965,11 +1056,14 @@ export const WorkerEditModal: React.FC<WorkerEditModalProps> = ({
 
       addExecutionLog('start', '🚀 Starting code execution...');
       addExecutionLog('start', `🤖 Using AI model: ${editedNode.model || 'none'}`);
+      
+      // 병합된 코드 실행
+      const mergedCode = getMergedCode();
 
       const response = await apiClient.executeNode(
         node.id,
         section.id,
-        editedNode.code || node.code || '',  // 저장된 코드 우선 사용
+        mergedCode,
         connectedOutputs
       );
       
@@ -1095,138 +1189,6 @@ export const WorkerEditModal: React.FC<WorkerEditModalProps> = ({
       console.error('Failed to restore version:', error);
       alert('Failed to restore version');
     }
-  };
-
-  const getDefaultCode = () => {
-    return `# ${node.label} Implementation
-# Access input data via 'inputs' variable or get_connected_outputs()
-# Set results in 'output' variable
-# AI model is available via: model_name = "${editedNode.model || 'none'}"
-
-import json
-import time
-
-# Get connected outputs
-data = get_connected_outputs()
-print("Connected inputs:", json.dumps(data, ensure_ascii=False, indent=2))
-
-# Get AI model configuration
-model_name = "${editedNode.model || 'none'}"
-lm_studio_url = "${editedNode.lmStudioUrl || ''}"
-
-# Get current node information
-print("Current node:", json.dumps(current_node, ensure_ascii=False, indent=2))
-print("Node purpose:", node_purpose)
-print("Output format:", output_format_description)
-
-# ========================================================================
-# AI 모델을 활용한 자동 처리
-# ========================================================================
-
-# 입력 데이터 가져오기
-input_text = ""
-for key, value in data.items():
-    if isinstance(value, dict) and 'text' in value:
-        input_text += value['text'] + "\\n"
-    elif isinstance(value, str):
-        input_text += value + "\\n"
-
-# Tasks 기반 처리를 위한 프롬프트 구성
-tasks_prompt = ""
-if 'tasks' in current_node:
-    tasks_list = []
-    for i, task in enumerate(current_node['tasks'], 1):
-        tasks_list.append(f"{i}. {task['text']}")
-    tasks_prompt = "\\n다음 작업들을 순서대로 수행하세요:\\n" + "\\n".join(tasks_list)
-
-# 기본 AI 프롬프트 구성 (Node Purpose + Output Format + Tasks)
-base_prompt = f"""
-목적: {node_purpose}
-
-입력 텍스트:
-{input_text}
-
-{tasks_prompt}
-
-출력 형식:
-{output_format_description}
-
-위의 목적과 출력 형식에 따라 입력 텍스트를 분석하고 결과를 JSON 형식으로 반환하세요.
-"""
-
-# ========================================================================
-# AI 모델 호출 및 자동 output 설정
-# ========================================================================
-
-if model_name != 'none':
-    print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Calling AI model: {model_name}")
-    
-    try:
-        # AI 모델 호출
-        ai_response = call_ai_model(base_prompt)
-        print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] AI response received")
-        
-        # AI 응답 처리 및 자동으로 output 설정
-        if isinstance(ai_response, dict) and 'error' in ai_response:
-            # AI 호출 에러
-            output = ai_response
-        elif isinstance(ai_response, str):
-            # 문자열 응답 처리
-            # JSON 형식 찾기
-            json_start = ai_response.find('{')
-            json_end = ai_response.rfind('}') + 1
-            
-            if json_start != -1 and json_end > json_start:
-                try:
-                    # JSON 파싱 시도
-                    output = json.loads(ai_response[json_start:json_end])
-                except json.JSONDecodeError:
-                    # JSON 파싱 실패 시 텍스트 그대로 반환
-                    output = {"result": ai_response, "type": "text"}
-            else:
-                # JSON이 없으면 텍스트로 반환
-                output = {"result": ai_response, "type": "text"}
-        else:
-            # 이미 딕셔너리나 다른 형태인 경우
-            output = ai_response
-            
-        print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Output automatically set from AI response")
-        
-    except Exception as e:
-        print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Error during AI processing: {e}")
-        output = {
-            "error": f"AI processing failed: {str(e)}",
-            "type": "error",
-            "timestamp": time.strftime('%Y-%m-%d %H:%M:%S')
-        }
-else:
-    # AI 모델이 설정되지 않은 경우
-    output = {
-        "error": "No AI model configured",
-        "hint": "Please connect to LM Studio and select a model",
-        "timestamp": time.strftime('%Y-%m-%d %H:%M:%S')
-    }
-
-# ========================================================================
-# 추가 처리 로직 (필요한 경우)
-# ========================================================================
-
-# 여기에 AI 응답을 추가로 가공하거나 처리하는 로직을 작성할 수 있습니다
-# 예시:
-# if 'result' in output:
-#     output['processed'] = True
-#     output['processing_time'] = time.strftime('%Y-%m-%d %H:%M:%S')
-
-# ========================================================================
-# 최종 출력 확인
-# ========================================================================
-
-print(f"\\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] Final output type: {type(output)}")
-print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Final output:")
-print(json.dumps(output, ensure_ascii=False, indent=2))
-
-# output 변수가 설정되었음을 명시적으로 표시
-print(f"\\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] ✅ Output variable has been automatically set from AI response")`;
   };
 
   const getNodeIcon = (nodeType: string) => {
@@ -1533,16 +1495,30 @@ print(f"\\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] ✅ Output variable has been a
               <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
                 <div className="flex border-b flex-shrink-0">
                   <button
-                    onClick={() => setActiveTab('code')}
-                    className={`px-4 py-2 font-medium transition-all ${activeTab === 'code' ? 'bg-gray-50 border-b-2 border-indigo-500 text-indigo-600' : 'text-gray-600 hover:text-gray-900'}`}
-                  >
-                    Code
-                  </button>
-                  <button
                     onClick={() => setActiveTab('tasks')}
                     className={`px-4 py-2 font-medium transition-all ${activeTab === 'tasks' ? 'bg-gray-50 border-b-2 border-indigo-500 text-indigo-600' : 'text-gray-600 hover:text-gray-900'}`}
                   >
                     Tasks
+                  </button>
+                  <button
+                    onClick={() => setActiveTab('base_code')}
+                    className={`px-4 py-2 font-medium transition-all flex items-center gap-2 ${activeTab === 'base_code' ? 'bg-gray-50 border-b-2 border-indigo-500 text-indigo-600' : 'text-gray-600 hover:text-gray-900'}`}
+                  >
+                    <Code className="w-4 h-4" />
+                    Base Code
+                  </button>
+                  <button
+                    onClick={() => setActiveTab('exp_code')}
+                    className={`px-4 py-2 font-medium transition-all flex items-center gap-2 ${activeTab === 'exp_code' ? 'bg-gray-50 border-b-2 border-indigo-500 text-indigo-600' : 'text-gray-600 hover:text-gray-900'}`}
+                  >
+                    <GitBranch className="w-4 h-4" />
+                    Exp Code
+                  </button>
+                  <button
+                    onClick={() => setActiveTab('merged_code')}
+                    className={`px-4 py-2 font-medium transition-all ${activeTab === 'merged_code' ? 'bg-gray-50 border-b-2 border-indigo-500 text-indigo-600' : 'text-gray-600 hover:text-gray-900'}`}
+                  >
+                    Merged
                   </button>
                   <button
                     onClick={() => setActiveTab('history')}
@@ -1553,12 +1529,122 @@ print(f"\\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] ✅ Output variable has been a
                 </div>
                 
                 <div className="flex-1 overflow-hidden flex flex-col min-h-0">
-                  {activeTab === 'code' ? (
-                    <div className="flex-1 min-h-0">
-                      <CodeEditor
-                        value={editedNode.code || node.code || getDefaultCode()}
-                        onChange={(code) => setEditedNode({ ...editedNode, code })}
-                      />
+                  {activeTab === 'base_code' ? (
+                    <div className="flex-1 min-h-0 flex flex-col">
+                      <div className="bg-blue-50 border-b border-blue-200 px-4 py-2 flex-shrink-0">
+                        <div className="flex justify-between items-center">
+                          <div>
+                            <p className="text-sm text-blue-700">
+                              <strong>Base Code</strong> - This is the common execution code for all Worker nodes (read-only)
+                            </p>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <label className="text-sm text-blue-600">Template:</label>
+                            <select
+                              value={editedNode.baseCodeTemplate || 'default'}
+                              onChange={(e) => {
+                                const updatedNode = { ...editedNode, baseCodeTemplate: e.target.value };
+                                setEditedNode(updatedNode);
+                                // 템플릿 변경시 자동 저장
+                                if (onUpdate) {
+                                  onUpdate({ ...updatedNode, tasks, purpose, outputFormat });
+                                }
+                              }}
+                              className="px-3 py-1 text-sm border border-blue-300 rounded-md bg-white text-blue-700 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                            >
+                              {Object.values(baseCodeTemplates).map(template => (
+                                <option key={template.id} value={template.id}>
+                                  {template.name}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                        </div>
+                        {/* 선택된 템플릿 설명 표시 */}
+                        {baseCodeTemplates[editedNode.baseCodeTemplate || 'default'] && (
+                          <p className="text-xs text-blue-600 mt-1 flex items-center gap-1">
+                            <FileCode className="w-3 h-3" />
+                            {baseCodeTemplates[editedNode.baseCodeTemplate || 'default'].description}
+                          </p>
+                        )}
+                      </div>
+                      <div className="flex-1 min-h-0">
+                        {isLoadingTemplate ? (
+                          <div className="flex items-center justify-center h-full">
+                            <Loader className="w-6 h-6 animate-spin text-blue-500" />
+                            <span className="ml-2 text-gray-600">Loading template...</span>
+                          </div>
+                        ) : (
+                          <CodeEditor
+                            value={generateBaseCode()}
+                            onChange={() => {}} // Read-only
+                            readOnly={true}
+                          />
+                        )}
+                      </div>
+                    </div>
+                  ) : activeTab === 'exp_code' ? (
+                    <div className="flex-1 min-h-0 flex flex-col">
+                      <div className="bg-amber-50 border-b border-amber-200 px-4 py-2 flex-shrink-0">
+                        <p className="text-sm text-amber-700">
+                          <strong>Experimental Code</strong> - Add custom logic specific to this node
+                        </p>
+                        <p className="text-xs text-amber-600 mt-1">
+                          Available variables: <code>input_data</code>, <code>combined_input</code>, <code>base_prompt</code>
+                        </p>
+                        <p className="text-xs text-amber-600">
+                          Set <code>exp_prompt_addition</code> to add instructions, or <code>processed_input</code> to modify input
+                        </p>
+                      </div>
+                      <div className="flex-1 min-h-0">
+                        <CodeEditor
+                          value={editedNode.expCode || `# Example: Add custom processing logic here
+# You can access and modify:
+# - input_data: Raw connected node outputs
+# - combined_input: Formatted input text
+# - base_prompt: The AI prompt being built
+
+# Example 1: Add extra instructions to the AI
+exp_prompt_addition = """
+Additionally, please ensure that:
+1. All names are properly capitalized
+2. Dates are in ISO format
+3. Include confidence scores for each result
+"""
+
+# Example 2: Process input data before sending to AI
+# processed_input = combined_input.upper()  # Convert to uppercase
+
+# Example 3: Filter or transform specific inputs
+# if 'customer_data' in input_data:
+#     # Custom processing for customer data
+#     pass
+`}
+                          onChange={(code) => setEditedNode({ ...editedNode, expCode: code })}
+                        />
+                      </div>
+                    </div>
+                  ) : activeTab === 'merged_code' ? (
+                    <div className="flex-1 min-h-0 flex flex-col">
+                      <div className="bg-green-50 border-b border-green-200 px-4 py-2 flex-shrink-0">
+                        <p className="text-sm text-green-700">
+                          <strong>Merged Code</strong> - This is the final code that will be executed (read-only)
+                        </p>
+                      </div>
+                      <div className="flex-1 min-h-0">
+                        {isLoadingTemplate ? (
+                          <div className="flex items-center justify-center h-full">
+                            <Loader className="w-6 h-6 animate-spin text-green-500" />
+                            <span className="ml-2 text-gray-600">Loading merged code...</span>
+                          </div>
+                        ) : (
+                          <CodeEditor
+                            value={getMergedCode()}
+                            onChange={() => {}} // Read-only
+                            readOnly={true}
+                          />
+                        )}
+                      </div>
                     </div>
                   ) : activeTab === 'tasks' ? (
                     <div className="flex-1 overflow-y-auto min-h-0">
@@ -1844,7 +1930,7 @@ print(f"\\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] ✅ Output variable has been a
                     className="flex items-center gap-2 bg-indigo-500 text-white rounded-md px-4 py-2 hover:bg-indigo-600 transition-colors"
                   >
                     <Save className="w-4 h-4" />
-                    Save Code
+                    Save All
                   </button>
                   <button
                     onClick={executeCode}
@@ -2091,7 +2177,11 @@ print(f"\\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] ✅ Output variable has been a
                   ...editedNode, 
                   tasks,
                   purpose,
-                  outputFormat
+                  outputFormat,
+                  baseCode: undefined, // Base code는 항상 동적 생성이므로 제외
+                  baseCodeTemplate: editedNode.baseCodeTemplate,
+                  expCode: editedNode.expCode,
+                  code: getMergedCode()
                 }, null, 2)}
               </pre>
             </div>
@@ -2103,7 +2193,11 @@ print(f"\\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] ✅ Output variable has been a
                     ...editedNode, 
                     tasks,
                     purpose,
-                    outputFormat
+                    outputFormat,
+                    baseCode: undefined,
+                    baseCodeTemplate: editedNode.baseCodeTemplate,
+                    expCode: editedNode.expCode,
+                    code: getMergedCode()
                   }, null, 2));
                   alert('JSON copied to clipboard');
                 }}
@@ -2145,7 +2239,10 @@ print(f"\\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] ✅ Output variable has been a
                     ...editedNode, 
                     tasks,
                     purpose,
-                    outputFormat
+                    outputFormat,
+                    expCode: editedNode.expCode,
+                    baseCodeTemplate: editedNode.baseCodeTemplate,
+                    code: getMergedCode()
                   } as Node);
                   // 새로운 노드의 편집창 열기를 위해 잠시 후 처리
                   setSelectedNodeForEdit(null);
