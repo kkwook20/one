@@ -1,40 +1,19 @@
-# ========================================================================
-# BASE CODE - 공통 실행 코드 (수정 불가)
-# 이 코드는 모든 Worker 노드가 공통으로 사용하는 기본 실행 코드입니다.
-# ========================================================================
+# BASE CODE - Worker 노드 공통 실행 코드
+# 프로젝트 정보 출력
+print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Project root: {project_root}")
+print(f"Node: {current_node.get('label', 'Unknown')}")
 
-import json
-import time
-
-# 연결된 입력 데이터 가져오기
+# 입력 데이터 가져오기
 input_data = get_connected_outputs()
-print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Connected inputs received")
-print(json.dumps(input_data, ensure_ascii=False, indent=2))
 
-# 현재 노드 정보 출력
-print(f"\nNode: {current_node.get('label', 'Unknown')}")
-print(f"Purpose: {node_purpose}")
-print(f"Expected Output Format: {output_format_description}")
-
-# AI 모델 설정 확인 - execution.py에서 노드 설정으로부터 제공됨
-print(f"\n[DEBUG] model_name: {model_name}")
-print(f"[DEBUG] lm_studio_url: {lm_studio_url}")
-print(f"[DEBUG] current_node['model']: {current_node.get('model', 'Not found')}")
-print(f"[DEBUG] current_node['lmStudioUrl']: {current_node.get('lmStudioUrl', 'Not found')}")
-
+# AI 모델 확인
 if model_name == 'none' or not model_name or not lm_studio_url:
-    print("\n⚠️  No AI model configured!")
     output = {
         "error": "No AI model configured",
-        "hint": "Please connect to LM Studio and select a model",
-        "timestamp": time.strftime('%Y-%m-%d %H:%M:%S')
+        "hint": "Please connect to LM Studio and select a model"
     }
 else:
-    print(f"\n✅ Using AI model: {model_name}")
-    
-    # ========================================================================
     # 입력 데이터 통합
-    # ========================================================================
     combined_input = ""
     for key, value in input_data.items():
         if isinstance(value, dict):
@@ -49,52 +28,45 @@ else:
         else:
             combined_input += f"[{key}]\n{str(value)}\n\n"
     
-    # ========================================================================
     # AI 프롬프트 구성
-    # ========================================================================
-    base_prompt = f"""당신은 다음 목적을 달성해야 하는 AI 어시스턴트입니다:
+    base_prompt = f"""You are an AI assistant that must achieve the following purpose:
 
-**목적 (Purpose):**
+**Purpose:**
 {node_purpose}
 
-**입력 데이터:**
+**Input Data:**
 {combined_input.strip()}
 
-**수행할 작업들 (Tasks):**"""
+**Tasks to Perform:**"""
     
     # Tasks 추가
     if 'tasks' in current_node and current_node['tasks']:
         for i, task in enumerate(current_node['tasks'], 1):
             base_prompt += f"\n{i}. {task['text']}"
-            # Task status에 따른 추가 지시
-            if task.get('taskStatus') == 'locked':
-                base_prompt += " [필수 - 반드시 수행]"
-            elif task.get('taskStatus') == 'low_priority':
-                base_prompt += " [선택적 - 가능한 경우 수행]"
     else:
-        base_prompt += "\n(작업이 정의되지 않았습니다)"
+        base_prompt += "\n(No tasks defined)"
     
-    base_prompt += f"""\n\n**기대하는 출력 형식:**
+    base_prompt += f"""\n\n**Expected Output Format:**
 {output_format_description}
 
-위의 목적과 작업들을 수행하고, 지정된 출력 형식에 맞춰 결과를 생성해주세요.
+Please perform the above purpose and tasks, and generate results according to the specified output format.
 """
 
     # ========================================================================
-    # Experimental Code 병합 (있는 경우)
+    # Experimental Code 병합 지점
     # ========================================================================
     # EXP_CODE_MERGE_POINT - 이 부분에서 Exp Code가 병합됩니다
     
-    # ========================================================================
+    # exp_prompt_addition이 있으면 프롬프트에 추가
+    if 'exp_prompt_addition' in locals() or 'exp_prompt_addition' in globals():
+        exp_addition = locals().get('exp_prompt_addition') or globals().get('exp_prompt_addition')
+        if exp_addition:
+            base_prompt += "\n\n**Additional Instructions:**\n" + exp_addition
+    
     # AI 모델 호출
-    # ========================================================================
     try:
-        print(f"\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] Sending request to AI model...")
-        print(f"Prompt length: {len(base_prompt)} characters")
-        
-        # AI 응답 받기
+        print(f"\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] Calling AI model...")
         ai_response = call_ai_model(base_prompt)
-        print(f"\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] AI response received")
         
         # 응답 처리
         if isinstance(ai_response, dict) and 'error' in ai_response:
@@ -110,8 +82,7 @@ else:
                 except json.JSONDecodeError:
                     output = {
                         "result": ai_response,
-                        "type": "text",
-                        "raw_response": True
+                        "type": "text"
                     }
             else:
                 output = {
@@ -120,8 +91,32 @@ else:
                 }
         else:
             output = ai_response
-            
+        
         # 메타데이터 추가
+        if isinstance(output, dict):
+            output['_metadata'] = {
+                'model': model_name,
+                'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
+                'node': current_node.get('label', 'Unknown')
+            }
+        
+        # 디버깅: EXP_POST_PROCESS_FUNCTION 확인
+        print(f"\n[DEBUG] Checking for EXP_POST_PROCESS_FUNCTION...")
+        print(f"[DEBUG] In locals: {'EXP_POST_PROCESS_FUNCTION' in locals()}")
+        print(f"[DEBUG] In globals: {'EXP_POST_PROCESS_FUNCTION' in globals()}")
+        
+        # 후처리 함수 실행 (Experimental Code에서 정의된 경우)
+        if 'EXP_POST_PROCESS_FUNCTION' in globals() and callable(globals()['EXP_POST_PROCESS_FUNCTION']):
+            print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Running post-process function...")
+            try:
+                output = globals()['EXP_POST_PROCESS_FUNCTION'](output)
+                print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Post-process completed")
+            except Exception as e:
+                print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Post-process error: {str(e)}")
+                import traceback
+                traceback.print_exc()
+        else:
+            print(f"[DEBUG] EXP_POST_PROCESS_FUNCTION not found or not callable")
         if isinstance(output, dict):
             output['_metadata'] = {
                 'model': model_name,
@@ -130,21 +125,7 @@ else:
             }
             
     except Exception as e:
-        print(f"\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] ❌ Error: {str(e)}")
         output = {
             "error": f"AI processing failed: {str(e)}",
-            "type": "error",
-            "timestamp": time.strftime('%Y-%m-%d %H:%M:%S')
+            "type": "error"
         }
-
-# ========================================================================
-# 최종 출력
-# ========================================================================
-print(f"\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] Final output:")
-print(json.dumps(output, ensure_ascii=False, indent=2))
-print(f"\n✅ Execution completed successfully")
-
-# output 변수가 설정되었음을 확인
-print(f"\n[DEBUG] Output is set: {'output' in locals()}")
-print(f"[DEBUG] Output value type: {type(output)}")
-print(f"[DEBUG] Output is None: {output is None}")

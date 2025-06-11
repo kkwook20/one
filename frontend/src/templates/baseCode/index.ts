@@ -45,7 +45,7 @@ async function loadTemplates() {
 export const baseCodeTemplates: Record<string, Omit<BaseCodeTemplate, 'content'>> = {
   default: {
     id: 'default',
-    name: '기본 템플릿',
+    name: 'default',
     description: 'Tasks 기반 AI 처리를 위한 표준 템플릿'
   },
   advanced: {

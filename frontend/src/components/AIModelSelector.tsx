@@ -25,7 +25,7 @@ export const AIModelSelector: React.FC<AIModelSelectorProps> = ({
   const [retryCount, setRetryCount] = useState(0);
   const [retryTimeoutId, setRetryTimeoutId] = useState<NodeJS.Timeout | null>(null);
 
-  const connectWithRetry = useCallback(async (url: string, attempt: number = 1) => {
+  const connectWithRetry = useCallback(async (url: string, attempt: number = 1): Promise<boolean> => {
     try {
       const response = await apiClient.connectLMStudio(url);
       

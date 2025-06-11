@@ -51,5 +51,3 @@ else:
 
 # 결과 출력
 print(json.dumps(output, ensure_ascii=False, indent=2))
-
-globals()['output'] = output

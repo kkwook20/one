@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Argosa - AI Analysis Platform</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+        
+        * {
+            font-family: 'Inter', system-ui, -apple-system, sans-serif;
+        }
+        
+        /* Custom animations */
+        @keyframes fadeInUp {
+            from {
+                opacity: 0;
+                transform: translateY(20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+        
+        .animate-fade-in-up {
+            animation: fadeInUp 0.4s ease-out;
+        }
+        
+        /* Smooth transitions */
+        * {
+            transition-property: color, background-color, border-color, text-decoration-color, fill, stroke, opacity, box-shadow, transform, filter, backdrop-filter;
+            transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+            transition-duration: 150ms;
+        }
+        
+        /* Button hover effects */
+        .btn-hover-effect {
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .btn-hover-effect::before {
+            content: '';
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            width: 0;
+            height: 0;
+            border-radius: 50%;
+            background: rgba(0, 0, 0, 0.05);
+            transform: translate(-50%, -50%);
+            transition: width 0.3s, height 0.3s;
+        }
+        
+        .btn-hover-effect:hover::before {
+            width: 300px;
+            height: 300px;
+        }
+        
+        /* Scrollbar styling */
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+        
+        ::-webkit-scrollbar-track {
+            background: transparent;
+        }
+        
+        ::-webkit-scrollbar-thumb {
+            background: #e5e7eb;
+            border-radius: 4px;
+        }
+        
+        ::-webkit-scrollbar-thumb:hover {
+            background: #d1d5db;
+        }
+    </style>
+</head>
+<body class="min-h-screen w-full bg-gray-50 text-gray-800">
+    <div class="flex">
+        <!-- Sidebar -->
+        <aside class="w-56 border-r bg-white/80 backdrop-blur-xl p-4 h-screen sticky top-0">
+            <!-- Logo -->
+            <div class="flex items-center gap-2 px-2 py-4 mb-4">
+                <div class="w-8 h-8 bg-gray-900 rounded-md flex items-center justify-center text-white font-bold">
+                    A
+                </div>
+                <span class="font-semibold text-lg">Argosa</span>
+            </div>
+            
+            <nav class="flex flex-col gap-2">
+                <button onclick="setActiveSection('sources')" class="nav-btn flex items-center justify-start text-left px-3 py-2 rounded-md text-sm font-medium bg-gray-100 text-gray-900 btn-hover-effect">
+                    Data Sources
+                </button>
+                <button onclick="setActiveSection('analysis')" class="nav-btn flex items-center justify-start text-left px-3 py-2 rounded-md text-sm font-medium text-gray-700 hover:bg-gray-100 hover:text-gray-900 btn-hover-effect">
+                    Analysis
+                </button>
+                <button onclick="setActiveSection('prediction')" class="nav-btn flex items-center justify-start text-left px-3 py-2 rounded-md text-sm font-medium text-gray-700 hover:bg-gray-100 hover:text-gray-900 btn-hover-effect">
+                    Prediction
+                </button>
+                <button onclick="setActiveSection('schedule')" class="nav-btn flex items-center justify-start text-left px-3 py-2 rounded-md text-sm font-medium text-gray-700 hover:bg-gray-100 hover:text-gray-900 btn-hover-effect">
+                    Scheduler
+                </button>
+                <button onclick="setActiveSection('code')" class="nav-btn flex items-center justify-start text-left px-3 py-2 rounded-md text-sm font-medium text-gray-700 hover:bg-gray-100 hover:text-gray-900 btn-hover-effect">
+                    Code Review
+                </button>
+                <button onclick="setActiveSection('feedback')" class="nav-btn flex items-center justify-start text-left px-3 py-2 rounded-md text-sm font-medium text-gray-700 hover:bg-gray-100 hover:text-gray-900 btn-hover-effect">
+                    Feedback
+                </button>
+            </nav>
+        </aside>
+        
+        <!-- Main content -->
+        <main class="flex-1 p-8 overflow-y-auto">
+            <!-- Sources Panel -->
+            <section id="sources" class="animate-fade-in-up space-y-6">
+                <h2 class="text-2xl font-semibold tracking-tight">Data Source Manager</h2>
+                
+                <div class="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
+                    <!-- Web Crawler Card -->
+                    <div class="bg-white rounded-lg border shadow-sm hover:shadow-lg transition-shadow">
+                        <div class="p-6">
+                            <h3 class="font-semibold text-lg">Web Crawler</h3>
+                        </div>
+                        <div class="px-6 pb-6 text-sm text-gray-600">
+                            Configure crawl targets, frequency, and parsing rules.
+                            <div class="mt-4 flex justify-end">
+                                <button class="inline-flex items-center justify-center rounded-md text-sm font-medium bg-gray-900 text-white hover:bg-gray-800 h-9 px-4 py-2">
+                                    Configure
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- File Uploads Card -->
+                    <div class="bg-white rounded-lg border shadow-sm hover:shadow-lg transition-shadow">
+                        <div class="p-6">
+                            <h3 class="font-semibold text-lg">File Uploads</h3>
+                        </div>
+                        <div class="px-6 pb-6 text-sm text-gray-600">
+                            Drag & drop CSV, JSON, or log files.
+                            <div class="mt-4 flex justify-end">
+                                <button class="inline-flex items-center justify-center rounded-md text-sm font-medium bg-gray-900 text-white hover:bg-gray-800 h-9 px-4 py-2">
+                                    Configure
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Live API Feeds Card -->
+                    <div class="bg-white rounded-lg border shadow-sm hover:shadow-lg transition-shadow">
+                        <div class="p-6">
+                            <h3 class="font-semibold text-lg">Live API Feeds</h3>
+                        </div>
+                        <div class="px-6 pb-6 text-sm text-gray-600">
+                            Register REST/WebSocket endpoints for streaming data.
+                            <div class="mt-4 flex justify-end">
+                                <button class="inline-flex items-center justify-center rounded-md text-sm font-medium bg-gray-900 text-white hover:bg-gray-800 h-9 px-4 py-2">
+                                    Configure
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+            
+            <!-- Analysis Panel -->
+            <section id="analysis" class="animate-fade-in-up space-y-6 hidden">
+                <h2 class="text-2xl font-semibold tracking-tight">AI Analysis & Insight</h2>
+                
+                <div class="w-full">
+                    <div class="inline-flex h-10 items-center justify-center rounded-md bg-gray-100 p-1 text-gray-500">
+                        <button onclick="setActiveTab(this, 'patterns')" class="tab-btn inline-flex items-center justify-center whitespace-nowrap rounded-sm px-3 py-1.5 text-sm font-medium ring-offset-white transition-all bg-white text-gray-950 shadow-sm">
+                            Pattern Recognition
+                        </button>
+                        <button onclick="setActiveTab(this, 'trends')" class="tab-btn inline-flex items-center justify-center whitespace-nowrap rounded-sm px-3 py-1.5 text-sm font-medium ring-offset-white transition-all hover:bg-white/50">
+                            Trend Analysis
+                        </button>
+                        <button onclick="setActiveTab(this, 'insights')" class="tab-btn inline-flex items-center justify-center whitespace-nowrap rounded-sm px-3 py-1.5 text-sm font-medium ring-offset-white transition-all hover:bg-white/50">
+                            Insights
+                        </button>
+                    </div>
+                    
+                    <div class="mt-6">
+                        <div id="patterns" class="tab-content">
+                            <div class="h-48 bg-white rounded-lg border flex items-center justify-center">
+                                <span class="text-gray-400 italic">Visualize discovered patterns.</span>
+                            </div>
+                        </div>
+                        <div id="trends" class="tab-content hidden">
+                            <div class="h-48 bg-white rounded-lg border flex items-center justify-center">
+                                <span class="text-gray-400 italic">Time‑series trend charts appear here.</span>
+                            </div>
+                        </div>
+                        <div id="insights" class="tab-content hidden">
+                            <div class="h-48 bg-white rounded-lg border flex items-center justify-center">
+                                <span class="text-gray-400 italic">Natural‑language insight summaries.</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+            
+            <!-- Prediction Panel -->
+            <section id="prediction" class="animate-fade-in-up space-y-6 hidden">
+                <h2 class="text-2xl font-semibold tracking-tight">Forecast & Probabilistic Models</h2>
+                
+                <div class="grid md:grid-cols-2 gap-4">
+                    <div class="h-48 bg-white rounded-lg border flex items-center justify-center">
+                        <span class="text-gray-400 italic">Forecast chart: upcoming metrics.</span>
+                    </div>
+                    <div class="h-48 bg-white rounded-lg border flex items-center justify-center">
+                        <span class="text-gray-400 italic">Model configuration & tuning controls.</span>
+                    </div>
+                </div>
+            </section>
+            
+            <!-- Schedule Panel -->
+            <section id="schedule" class="animate-fade-in-up space-y-6 hidden">
+                <h2 class="text-2xl font-semibold tracking-tight">Automated Scheduler</h2>
+                
+                <div class="grid md:grid-cols-3 gap-4">
+                    <div class="h-48 bg-white rounded-lg border flex items-center justify-center">
+                        <span class="text-gray-400 italic">Calendar view with AI suggestions.</span>
+                    </div>
+                    <div class="h-48 bg-white rounded-lg border flex items-center justify-center">
+                        <span class="text-gray-400 italic">Task priority queue.</span>
+                    </div>
+                    <div class="h-48 bg-white rounded-lg border flex items-center justify-center">
+                        <span class="text-gray-400 italic">Dependency graph visualization.</span>
+                    </div>
+                </div>
+            </section>
+            
+            <!-- Code Panel -->
+            <section id="code" class="animate-fade-in-up space-y-6 hidden">
+                <h2 class="text-2xl font-semibold tracking-tight">AI Code Review & Optimization</h2>
+                
+                <div class="w-full">
+                    <div class="inline-flex h-10 items-center justify-center rounded-md bg-gray-100 p-1 text-gray-500">
+                        <button onclick="setActiveTab(this, 'review')" class="tab-btn inline-flex items-center justify-center whitespace-nowrap rounded-sm px-3 py-1.5 text-sm font-medium ring-offset-white transition-all bg-white text-gray-950 shadow-sm">
+                            Review
+                        </button>
+                        <button onclick="setActiveTab(this, 'diffs')" class="tab-btn inline-flex items-center justify-center whitespace-nowrap rounded-sm px-3 py-1.5 text-sm font-medium ring-offset-white transition-all hover:bg-white/50">
+                            Diffs
+                        </button>
+                        <button onclick="setActiveTab(this, 'refactor')" class="tab-btn inline-flex items-center justify-center whitespace-nowrap rounded-sm px-3 py-1.5 text-sm font-medium ring-offset-white transition-all hover:bg-white/50">
+                            Refactor Suggestions
+                        </button>
+                    </div>
+                    
+                    <div class="mt-6">
+                        <div id="review" class="tab-content">
+                            <div class="h-48 bg-white rounded-lg border flex items-center justify-center">
+                                <span class="text-gray-400 italic">Inline comments & quality metrics.</span>
+                            </div>
+                        </div>
+                        <div id="diffs" class="tab-content hidden">
+                            <div class="h-48 bg-white rounded-lg border flex items-center justify-center">
+                                <span class="text-gray-400 italic">Before / After code comparison.</span>
+                            </div>
+                        </div>
+                        <div id="refactor" class="tab-content hidden">
+                            <div class="h-48 bg-white rounded-lg border flex items-center justify-center">
+                                <span class="text-gray-400 italic">Automated patch proposals.</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+            
+            <!-- Feedback Panel -->
+            <section id="feedback" class="animate-fade-in-up space-y-6 hidden">
+                <h2 class="text-2xl font-semibold tracking-tight">User Feedback & Continuous Learning</h2>
+                
+                <div class="grid md:grid-cols-2 gap-4">
+                    <div class="h-48 bg-white rounded-lg border flex items-center justify-center">
+                        <span class="text-gray-400 italic">Feedback form components.</span>
+                    </div>
+                    <div class="h-48 bg-white rounded-lg border flex items-center justify-center">
+                        <span class="text-gray-400 italic">Model fine‑tuning status & dataset overview.</span>
+                    </div>
+                </div>
+            </section>
+        </main>
+    </div>
+    
+    <script>
+        // Section navigation
+        function setActiveSection(sectionId) {
+            // Hide all sections
+            document.querySelectorAll('main > section').forEach(section => {
+                section.classList.add('hidden');
+            });
+            
+            // Show selected section
+            const targetSection = document.getElementById(sectionId);
+            if (targetSection) {
+                targetSection.classList.remove('hidden');
+                // Re-trigger animation
+                targetSection.style.animation = 'none';
+                requestAnimationFrame(() => {
+                    targetSection.style.animation = '';
+                });
+            }
+            
+            // Update nav buttons
+            document.querySelectorAll('.nav-btn').forEach(btn => {
+                btn.classList.remove('bg-gray-100', 'text-gray-900');
+                btn.classList.add('text-gray-700', 'hover:bg-gray-100', 'hover:text-gray-900');
+            });
+            
+            event.target.classList.remove('text-gray-700', 'hover:bg-gray-100', 'hover:text-gray-900');
+            event.target.classList.add('bg-gray-100', 'text-gray-900');
+        }
+        
+        // Tab navigation
+        function setActiveTab(button, tabId) {
+            // Update tab buttons
+            const tabContainer = button.parentElement;
+            tabContainer.querySelectorAll('.tab-btn').forEach(btn => {
+                btn.classList.remove('bg-white', 'text-gray-950', 'shadow-sm');
+                btn.classList.add('hover:bg-white/50');
+            });
+            
+            button.classList.remove('hover:bg-white/50');
+            button.classList.add('bg-white', 'text-gray-950', 'shadow-sm');
+            
+            // Update tab content
+            const section = button.closest('section');
+            section.querySelectorAll('.tab-content').forEach(content => {
+                content.classList.add('hidden');
+            });
+            
+            const targetContent = section.querySelector(`#${tabId}`);
+            if (targetContent) {
+                targetContent.classList.remove('hidden');
+            }
+        }
+    </script>
+</body>
+</html>

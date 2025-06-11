@@ -48,9 +48,16 @@ class Node(BaseModel):
     purpose: Optional[str] = None  # 노드의 목적
     outputFormat: Optional[str] = None  # output 형식 설명 (AI에게 요청할 텍스트)
     
+    # Base/Exp Code 분리 관련 필드 (추가됨)
+    expCode: Optional[str] = None  # Experimental Code
+    baseCodeTemplate: Optional[str] = 'default'  # Base Code 템플릿 ID
+    
     # AI Model Configuration
     lmStudioUrl: Optional[str] = None
     lmStudioConnectionId: Optional[str] = None
+    
+    # Project Configuration (추가됨)
+    projectId: Optional[str] = None  # Input 노드에서 선택한 프로젝트 ID
     
     # Supervisor/Planner 전용
     supervisedNodes: Optional[List[str]] = None
@@ -59,6 +66,10 @@ class Node(BaseModel):
     modificationHistory: Optional[List[Dict[str, Any]]] = None
     evaluationHistory: Optional[List[Dict[str, Any]]] = None
     plannerRecommendations: Optional[List[str]] = None
+    
+    # Execution tracking (추가됨)
+    executionHistory: Optional[List[Dict[str, Any]]] = None
+    currentExecutionStartTime: Optional[str] = None
 
 class Connection(BaseModel):
     """연결 정보"""
@@ -73,6 +84,7 @@ class SectionConfig(BaseModel):
     """섹션 입력 설정"""
     sources: List[str] = []
     selectedItems: List[str] = []
+    projectId: Optional[str] = None  # 추가됨
 
 class OutputConfig(BaseModel):
     """섹션 출력 설정"""

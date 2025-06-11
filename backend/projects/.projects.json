@@ -1,0 +1,17 @@
+[
+  {
+    "id": "bb03d6f6-8bc0-4ea0-b56a-8b5e93ee5441",
+    "name": "Test1",
+    "path": "./projects",
+    "created": "2025-06-08T20:01:31.061179",
+    "modified": "2025-06-08T20:01:31.061179",
+    "settings": {
+      "description": "sdfsdfsdfsdf",
+      "author": "KKW",
+      "version": "1.0.0",
+      "tags": [
+        "full_3d_animation"
+      ]
+    }
+  }
+]

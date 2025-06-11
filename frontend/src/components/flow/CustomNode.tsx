@@ -14,7 +14,7 @@ import {
   Circle,
   Triangle
 } from 'lucide-react';
-import { Node, TaskItem } from '../../types';
+import { Node, } from '../../types';
 
 interface CustomNodeData extends Node {
   onEdit?: () => void;

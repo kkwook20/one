@@ -43,6 +43,10 @@ export interface Node {
   purpose?: string; // 노드의 목적
   outputFormat?: string; // output 형식 설명 (AI에게 요청할 텍스트)
   
+  // Base/Exp Code 분리 관련 필드 (추가됨)
+  expCode?: string; // Experimental Code
+  baseCodeTemplate?: string; // Base Code 템플릿 ID
+  
   // AI Model Configuration
   lmStudioUrl?: string;
   lmStudioConnectionId?: string;
@@ -56,6 +60,13 @@ export interface Node {
   modificationHistory?: any[];
   evaluationHistory?: any[];
   plannerRecommendations?: string[];
+  
+  // Execution tracking (추가됨)
+  executionHistory?: any[];
+  currentExecutionStartTime?: string | null;
+  
+  // Project related (추가됨)
+  projectId?: string; // Input 노드에서 선택한 프로젝트 ID
 }
 
 export interface Connection {
@@ -68,7 +79,11 @@ export interface Section {
   name: string;
   group: 'preproduction' | 'postproduction' | 'director';
   nodes: Node[];
-  inputConfig?: { sources: string[]; selectedItems: string[] };
+  inputConfig?: { 
+    sources: string[]; 
+    selectedItems: string[];
+    projectId?: string; // 추가됨
+  };
   outputConfig?: { format: string; autoSave: boolean };
 }
 

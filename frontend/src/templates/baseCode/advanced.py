@@ -302,5 +302,3 @@ else:
     log("info", "Final output", output)
 
 print(f"\n✅ Node execution completed")
-
-globals()['output'] = output
