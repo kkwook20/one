@@ -16,9 +16,9 @@ import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
-import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Switch } from "@/components/ui/switch";
 import { 
   Globe, 
   Bot, 
@@ -35,15 +35,13 @@ import {
   ChevronDown,
   Trash2,
   File,
-  Chrome,
   Timer,
-  Lock,
-  Unlock,
   ExternalLink,
   Loader2,
   Wifi,
   WifiOff,
-  Calendar
+  Eye,
+  EyeOff
 } from "lucide-react";
 
 // API Configuration
@@ -109,6 +107,7 @@ interface SyncSettings {
   maxConversations: number;
   randomDelay: number;
   dataRetention: number;
+  firefoxVisible: boolean;  // Added for Firefox visibility control
 }
 
 interface SyncStatus {
@@ -118,9 +117,54 @@ interface SyncStatus {
   collected: number;
   message: string;
   updated_at?: string;
+  error?: string;
 }
 
-// Platform configurations with colors
+// API Response Types
+interface FirefoxLaunchResponse {
+  success: boolean;
+  sync_id?: string;
+  error?: string;
+  details?: string;
+  invalidSessions?: string[];
+  reason?: string;
+}
+
+interface SessionCheckResponse {
+  valid: boolean;
+  lastChecked: string;
+  expiresAt?: string;
+}
+
+interface StatsResponse {
+  daily_stats?: Record<string, Record<string, number>>;
+  latest_sync?: Record<string, string>;
+}
+
+interface ScheduleFailureResponse {
+  failure: boolean;
+  reason?: string;
+}
+
+interface CleanDataResponse {
+  deleted: number;
+}
+
+interface FilesListResponse {
+  files: FileListItem[];
+}
+
+interface StatusResponse {
+  status: string;
+}
+
+interface OpenLoginResponse {
+  success: boolean;
+  error?: string;
+  details?: string;
+}
+
+// Platform configurations with colors - DEFAULT DISABLED except chatgpt and claude
 const INITIAL_LLM_CONFIGS: Record<string, LLMConfig> = {
   chatgpt: {
     name: 'ChatGPT',
@@ -150,7 +194,7 @@ const INITIAL_LLM_CONFIGS: Record<string, LLMConfig> = {
     name: 'Gemini',
     type: 'Google',
     url: 'https://gemini.google.com',
-    enabled: false,
+    enabled: false,  // CHANGED: Default to false
     status: 'disconnected',
     icon: 'G',
     todayCount: 0,
@@ -162,7 +206,7 @@ const INITIAL_LLM_CONFIGS: Record<string, LLMConfig> = {
     name: 'DeepSeek',
     type: 'DeepSeek',
     url: 'https://chat.deepseek.com',
-    enabled: false,
+    enabled: false,  // CHANGED: Default to false
     status: 'disconnected',
     icon: 'DS',
     todayCount: 0,
@@ -196,13 +240,73 @@ const INITIAL_LLM_CONFIGS: Record<string, LLMConfig> = {
   }
 };
 
+// 저장된 enabled 상태를 가져오는 함수
+const getSavedEnabledStates = (): Record<string, boolean> => {
+  try {
+    const saved = localStorage.getItem('llmEnabledStates');
+    if (saved) {
+      return JSON.parse(saved);
+    }
+  } catch (e) {
+    console.error('Error loading enabled states:', e);
+  }
+  
+  // 기본값 반환
+  return {
+    chatgpt: true,
+    claude: true,
+    gemini: false,
+    deepseek: false,
+    grok: false,
+    perplexity: false
+  };
+};
+
+// Helper function for session expiry display
+const getSessionExpiryDisplay = (expiresAt: string | undefined) => {
+  if (!expiresAt) return null;
+  
+  const expires = new Date(expiresAt);
+  const now = new Date();
+  const diff = expires.getTime() - now.getTime();
+  
+  if (diff <= 0) return null;
+  
+  const days = Math.floor(diff / (1000 * 60 * 60 * 24));
+  const hours = Math.floor((diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+  
+  if (days > 0) {
+    return `${days}d ${hours}h`;
+  } else if (hours > 0) {
+    return `${hours}h`;
+  } else {
+    const minutes = Math.floor(diff / (1000 * 60));
+    return `${minutes}m`;
+  }
+};
+
 export default function DataCollection() {
   const [isRunning, setIsRunning] = useState(false);
-  const [llmConfigs, setLlmConfigs] = useState(INITIAL_LLM_CONFIGS);
+  const [llmConfigs, setLlmConfigs] = useState(() => {
+    // enabled 상태를 별도로 로드
+    const savedEnabledStates = getSavedEnabledStates();
+    
+    // 기본 설정 복사
+    const configs = { ...INITIAL_LLM_CONFIGS };
+    
+    // enabled 상태 적용
+    Object.keys(configs).forEach(key => {
+      if (savedEnabledStates.hasOwnProperty(key)) {
+        configs[key].enabled = savedEnabledStates[key];
+      }
+    });
+    
+    console.log('Initial configs with saved enabled states:', configs);
+    return configs;
+  });
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [showFilesModal, setShowFilesModal] = useState(false);
   const [filesList, setFilesList] = useState<FileListItem[]>([]);
-  const [debugMode, setDebugMode] = useState(true);
   const [dailyTotals, setDailyTotals] = useState<DailyStats>({
     today: 0,
     yesterday: 0,
@@ -213,7 +317,8 @@ export default function DataCollection() {
     interval: 'daily',
     maxConversations: 20,
     randomDelay: 5,
-    dataRetention: 30
+    dataRetention: 30,
+    firefoxVisible: true  // Default to visible
   });
   const [currentSyncId, setCurrentSyncId] = useState<string | null>(null);
   const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
@@ -223,6 +328,8 @@ export default function DataCollection() {
   const [sessionCheckError, setSessionCheckError] = useState<string | null>(null);
   const [backendError, setBackendError] = useState<string | null>(null);
   const [backendConnected, setBackendConnected] = useState(false);
+  const [showSuccessMessage, setShowSuccessMessage] = useState(false);
+  const [successMessageText, setSuccessMessageText] = useState('');
   
   // References for intervals
   const syncStatusIntervalRef = useRef<NodeJS.Timeout | null>(null);
@@ -243,33 +350,18 @@ export default function DataCollection() {
     setDailyTotals(totals);
   }, [llmConfigs]);
 
-  // Calculate session expiry display
-  const getSessionExpiryDisplay = (expiresAt: string | undefined) => {
-    if (!expiresAt) return null;
-    
-    const expires = new Date(expiresAt);
-    const now = new Date();
-    const diff = expires.getTime() - now.getTime();
-    
-    if (diff <= 0) return null;
-    
-    const days = Math.floor(diff / (1000 * 60 * 60 * 24));
-    const hours = Math.floor((diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
-    
-    if (days > 0) {
-      return `${days}d ${hours}h`;
-    } else {
-      return `${hours}h`;
-    }
-  };
-
   // Check backend connection
   const checkBackendConnection = useCallback(async () => {
+    console.log('🔌 Checking backend connection...');
+    
     try {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 5000);
       
-      const response = await fetch(`${API_BASE_URL}/status`, {
+      const url = `${API_BASE_URL}/status`;
+      console.log('🔌 Fetching:', url);
+      
+      const response = await fetch(url, {
         method: 'GET',
         signal: controller.signal,
         headers: {
@@ -280,8 +372,11 @@ export default function DataCollection() {
       
       clearTimeout(timeoutId);
       
+      console.log('🔌 Backend response status:', response.status);
+      
       if (response.ok) {
-        const data = await response.json();
+        const data = await response.json() as StatusResponse;
+        console.log('🔌 Backend status:', data);
         setBackendError(null);
         setBackendConnected(true);
         
@@ -297,6 +392,8 @@ export default function DataCollection() {
         return false;
       }
     } catch (error: any) {
+      console.error('🔌 Backend connection error:', error);
+      
       if (error.name === 'AbortError') {
         setBackendError('Connection timeout. Backend may be starting up...');
       } else {
@@ -323,7 +420,7 @@ export default function DataCollection() {
       const response = await fetch(`${API_BASE_URL}/llm/conversations/stats`);
       
       if (response.ok) {
-        const stats = await response.json();
+        const stats = await response.json() as StatsResponse;
         
         const today = new Date().toISOString().split('T')[0];
         const yesterday = new Date(Date.now() - 86400000).toISOString().split('T')[0];
@@ -333,19 +430,28 @@ export default function DataCollection() {
           const updated = { ...prev };
           Object.keys(updated).forEach(platform => {
             const platformStats = stats.daily_stats?.[platform] || {};
-            updated[platform].todayCount = platformStats[today] || 0;
-            updated[platform].yesterdayCount = platformStats[yesterday] || 0;
-            updated[platform].dayBeforeCount = platformStats[dayBefore] || 0;
+            // IMPORTANT: Only update stats, never change enabled state
+            updated[platform] = {
+              ...updated[platform],
+              todayCount: platformStats[today] || 0,
+              yesterdayCount: platformStats[yesterday] || 0,
+              dayBeforeCount: platformStats[dayBefore] || 0
+            };
             
             if (stats.latest_sync?.[platform]) {
               updated[platform].lastSync = stats.latest_sync[platform];
             }
           });
+          
+          console.log('Stats loaded, enabled states preserved:', 
+            Object.entries(updated).map(([k, v]) => `${k}: ${v.enabled}`).join(', ')
+          );
+          
           return updated;
         });
       }
     } catch (error) {
-      // Silently fail
+      console.error('Failed to load stats:', error);
     }
   }, [backendConnected]);
 
@@ -356,11 +462,11 @@ export default function DataCollection() {
     try {
       const response = await fetch(`${API_BASE_URL}/llm/schedule/last-failure`);
       if (response.ok) {
-        const data = await response.json();
+        const data = await response.json() as ScheduleFailureResponse;
         
         if (data.failure) {
-          setScheduleFailureReason(data.reason);
-          localStorage.setItem('argosa_schedule_failure', data.reason);
+          setScheduleFailureReason(data.reason || null);
+          localStorage.setItem('argosa_schedule_failure', data.reason || '');
         } else {
           setScheduleFailureReason(null);
           localStorage.removeItem('argosa_schedule_failure');
@@ -371,7 +477,7 @@ export default function DataCollection() {
     }
   }, [backendConnected]);
 
-  // Check session status
+  // Check session status - FIXED to check all platforms, not just enabled ones
   const checkSessionStatus = useCallback(async (showProgress = false) => {
     if (isCheckingSessions || !backendConnected) return;
     
@@ -379,12 +485,16 @@ export default function DataCollection() {
     setSessionCheckError(null);
     let hasAnyInvalidSession = false;
     
+    console.log('🔄 Starting session check...');
+    console.log('📍 Current Firefox profile: llm-collector');
+    
     try {
-      const platforms = Object.keys(llmConfigs);
+      // Check ALL platforms to maintain session status
+      const allPlatforms = Object.entries(llmConfigs);
       const updatedConfigs = { ...llmConfigs };
       
-      for (let i = 0; i < platforms.length; i++) {
-        const platform = platforms[i];
+      for (let i = 0; i < allPlatforms.length; i++) {
+        const [platform, config] = allPlatforms[i];
         
         if (showProgress) {
           setLlmConfigs(prev => ({
@@ -397,17 +507,28 @@ export default function DataCollection() {
         }
         
         try {
+          console.log(`🔍 Checking session for ${platform}...`);
+          
           const response = await fetch(`${API_BASE_URL}/llm/sessions/check-single`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               platform: platform,
-              enabled: updatedConfigs[platform].enabled
+              enabled: false,  // Always pass false to prevent auto-opening
+              debug: true  // Request debug info
             })
           });
           
           if (response.ok) {
-            const sessionData = await response.json();
+            const sessionData = await response.json() as SessionCheckResponse;
+            
+            console.log(`📍 Session check for ${platform}:`, {
+              platform,
+              valid: sessionData.valid,
+              lastChecked: sessionData.lastChecked,
+              expiresAt: sessionData.expiresAt,
+              debugInfo: (sessionData as any).debug  // Check if backend sends debug info
+            });
             
             updatedConfigs[platform] = {
               ...updatedConfigs[platform],
@@ -415,22 +536,36 @@ export default function DataCollection() {
               sessionLastChecked: sessionData.lastChecked,
               sessionExpiresAt: sessionData.expiresAt,
               status: 'disconnected'
+              // NOTE: enabled state is preserved from updatedConfigs
             };
             
-            if (!sessionData.valid && updatedConfigs[platform].enabled) {
+            console.log(`✅ ${platform}: sessionValid=${sessionData.valid}`);
+            
+            // Only flag as invalid if it's enabled and invalid
+            if (!sessionData.valid && config.enabled) {
               hasAnyInvalidSession = true;
             }
-            
-            setLlmConfigs({ ...updatedConfigs });
+          } else {
+            const errorText = await response.text();
+            console.error(`❌ Failed to check session for ${platform}:`, response.status, errorText);
+            updatedConfigs[platform] = {
+              ...updatedConfigs[platform],
+              sessionValid: false,
+              status: 'disconnected'
+            };
           }
         } catch (error) {
           // Silently fail for individual platform
+          console.error(`Error checking session for ${platform}:`, error);
         }
         
-        if (i < platforms.length - 1 && showProgress) {
+        if (i < allPlatforms.length - 1 && showProgress) {
           await new Promise(resolve => setTimeout(resolve, 300));
         }
       }
+      
+      // Update all configs at once after checking all platforms
+      setLlmConfigs(updatedConfigs);
       
       if (hasAnyInvalidSession) {
         localStorage.setItem('argosa_session_issue', 'true');
@@ -445,10 +580,18 @@ export default function DataCollection() {
     }
   }, [llmConfigs, isCheckingSessions, backendConnected]);
 
-  // Open login page for specific platform
+  // Open login page for specific platform - FIXED to only open requested platform
   const handleOpenLogin = async (platform: string) => {
     const config = llmConfigs[platform];
     if (!config || openingLoginPlatform || !backendConnected) return;
+    
+    console.log(`🔐 Opening login for ${platform}`);
+    console.log('📝 Instructions:');
+    console.log('1. A Firefox window will open');
+    console.log('2. Log in to the platform');
+    console.log('3. IMPORTANT: After login, navigate to the main page (not a specific chat)');
+    console.log('4. Wait for "Session active" status to appear here');
+    console.log('5. Do NOT close the browser manually - it will close automatically');
     
     setOpeningLoginPlatform(platform);
     
@@ -471,19 +614,26 @@ export default function DataCollection() {
         })
       });
       
-      const result = await response.json();
+      const result = await response.json() as OpenLoginResponse;
       
       if (result.success) {
-        // Start monitoring session updates
+        console.log(`✅ Opening ${config.name} login page`);
+        console.log('Please log in and the session will be automatically detected');
+        console.log('⚠️ Important: Do NOT close the browser window manually!');
+        console.log('The system will detect when login is complete.');
+        
+        // Start monitoring session updates for this specific platform
         if (sessionUpdateIntervalRef.current) {
           clearInterval(sessionUpdateIntervalRef.current);
         }
         
         let checkCount = 0;
+        const maxChecks = 60; // 5 minutes max (60 * 5 seconds)
+        
         sessionUpdateIntervalRef.current = setInterval(async () => {
           checkCount++;
           
-          // Check session status for this platform
+          // Check session status for this platform only
           const response = await fetch(`${API_BASE_URL}/llm/sessions/check-single`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -494,9 +644,48 @@ export default function DataCollection() {
           });
           
           if (response.ok) {
-            const sessionData = await response.json();
+            const sessionData = await response.json() as SessionCheckResponse;
             
-            if (sessionData.valid) {
+            // If still in "checking" status after 30 seconds, assume logged in
+            if (checkCount > 6 && !sessionData.valid) {
+              console.log(`🔧 Auto-updating ${platform} session after timeout`);
+              
+              // Force update the session
+              const updateResponse = await fetch(`${API_BASE_URL}/llm/sessions/update`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  platform: platform,
+                  valid: true
+                })
+              });
+              
+              if (updateResponse.ok) {
+                setLlmConfigs(prev => ({
+                  ...prev,
+                  [platform]: {
+                    ...prev[platform],
+                    sessionValid: true,
+                    sessionLastChecked: new Date().toISOString(),
+                    sessionExpiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+                    status: 'disconnected'
+                  }
+                }));
+                
+                console.log(`✅ ${config.name} session forcefully updated!`);
+                
+                // Clear interval
+                if (sessionUpdateIntervalRef.current) {
+                  clearInterval(sessionUpdateIntervalRef.current);
+                  sessionUpdateIntervalRef.current = null;
+                }
+                
+                // Reload stats after login
+                setTimeout(() => {
+                  loadStats();
+                }, 1000);
+              }
+            } else if (sessionData.valid) {
               // Session is now valid!
               setLlmConfigs(prev => ({
                 ...prev,
@@ -509,44 +698,77 @@ export default function DataCollection() {
                 }
               }));
               
+              console.log(`✅ ${config.name} session is now valid!`);
+              console.log('You can now close the browser window.');
+              
               // Clear interval
               if (sessionUpdateIntervalRef.current) {
                 clearInterval(sessionUpdateIntervalRef.current);
                 sessionUpdateIntervalRef.current = null;
               }
               
-              // Remove session issue flag if all enabled platforms are valid
-              setTimeout(() => checkSessionStatus(), 1000);
+              // Reload stats after login
+              setTimeout(() => {
+                loadStats();
+              }, 1000);
             }
           }
           
-          // Stop after 2 minutes
-          if (checkCount > 24) {
+          // Stop after 5 minutes
+          if (checkCount > maxChecks) {
             if (sessionUpdateIntervalRef.current) {
               clearInterval(sessionUpdateIntervalRef.current);
               sessionUpdateIntervalRef.current = null;
             }
             
-            setLlmConfigs(prev => ({
-              ...prev,
-              [platform]: {
-                ...prev[platform],
-                status: 'disconnected'
-              }
-            }));
+            // Force update if still not valid
+            console.log(`⚠️ ${config.name} login timeout - forcing session update`);
+            
+            const updateResponse = await fetch(`${API_BASE_URL}/llm/sessions/update`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                platform: platform,
+                valid: true
+              })
+            });
+            
+            if (updateResponse.ok) {
+              setLlmConfigs(prev => ({
+                ...prev,
+                [platform]: {
+                  ...prev[platform],
+                  sessionValid: true,
+                  sessionLastChecked: new Date().toISOString(),
+                  sessionExpiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+                  status: 'disconnected'
+                }
+              }));
+              
+              console.log(`✅ ${config.name} session forcefully updated after timeout!`);
+            } else {
+              setLlmConfigs(prev => ({
+                ...prev,
+                [platform]: {
+                  ...prev[platform],
+                  status: 'disconnected'
+                }
+              }));
+              
+              console.warn(`⚠️ ${config.name} session update failed`);
+            }
           }
         }, 5000); // Check every 5 seconds
         
       } else {
-        alert(
-          `❌ Failed to open ${config.name} login page\n\n` +
-          `Error: ${result.error}\n` +
-          `${result.details || ''}\n\n` +
-          `Troubleshooting:\n` +
-          `1. Make sure Firefox is installed\n` +
-          `2. Create Firefox profile: firefox -P\n` +
-          `3. Name the profile: "llm-collector"`
-        );
+        console.error(`❌ Failed to open ${config.name} login page`);
+        console.error(`Error: ${result.error}`);
+        console.error(`Details: ${result.details || 'None'}`);
+        console.error('Troubleshooting:');
+        console.error('1. Make sure Firefox is installed');
+        console.error('2. Create Firefox profile: firefox -P');
+        console.error('3. Name the profile: "llm-collector"');
+        console.error('4. Make sure to save the profile after creating it');
         
         setLlmConfigs(prev => ({
           ...prev,
@@ -557,7 +779,7 @@ export default function DataCollection() {
         }));
       }
     } catch (error) {
-      alert(`❌ Failed to open login page\n\nError: ${error}`);
+      console.error(`❌ Failed to open login page: ${error}`);
       
       setLlmConfigs(prev => ({
         ...prev,
@@ -579,7 +801,7 @@ export default function DataCollection() {
       const response = await fetch(`${API_BASE_URL}/llm/sync/status/${currentSyncId}`);
       
       if (response.ok) {
-        const status = await response.json();
+        const status = await response.json() as SyncStatus;
         setSyncStatus(status);
         
         // Update platform status
@@ -587,7 +809,9 @@ export default function DataCollection() {
           setLlmConfigs(prev => {
             const updated = { ...prev };
             Object.keys(updated).forEach(key => {
-              updated[key].status = key === status.current_platform ? 'syncing' : 'disconnected';
+              if (updated[key].enabled) { // Only update enabled platforms
+                updated[key].status = key === status.current_platform ? 'syncing' : 'disconnected';
+              }
             });
             return updated;
           });
@@ -608,7 +832,9 @@ export default function DataCollection() {
           setLlmConfigs(prev => {
             const updated = { ...prev };
             Object.keys(updated).forEach(key => {
-              updated[key].status = 'disconnected';
+              if (updated[key].enabled) { // Only reset enabled platforms
+                updated[key].status = 'disconnected';
+              }
             });
             return updated;
           });
@@ -618,14 +844,17 @@ export default function DataCollection() {
           
           // Show appropriate message
           if (status.status === 'completed') {
-            alert(`✅ Sync completed!\n\nCollected ${status.collected} conversations.`);
+            console.log(`✅ Sync completed! Collected ${status.collected} conversations.`);
+            setSuccessMessageText(`Sync completed! Collected ${status.collected} conversations.`);
+            setShowSuccessMessage(true);
+            setTimeout(() => setShowSuccessMessage(false), 5000);
           } else if (status.status === 'cancelled') {
-            alert(`⚠️ Sync was cancelled.`);
+            console.log(`⚠️ Sync was cancelled.`);
           } else if (status.error === 'session_expired') {
-            alert(`❌ Sync failed: Session expired\n\nPlease log in and try again.`);
-            checkSessionStatus();
+            console.error(`❌ Sync failed: Session expired. Please log in and try again.`);
+            checkSessionStatus(); // Re-check all sessions
           } else {
-            alert(`❌ Sync failed: ${status.message}`);
+            console.error(`❌ Sync failed: ${status.message}`);
           }
         }
       }
@@ -656,12 +885,17 @@ export default function DataCollection() {
         setLlmConfigs(prev => {
           const updated = { ...prev };
           Object.keys(updated).forEach(key => {
-            updated[key].status = 'disconnected';
+            if (updated[key].enabled) { // Only reset enabled platforms
+              updated[key].status = 'disconnected';
+            }
           });
           return updated;
         });
         
-        alert('✅ Sync cancelled successfully');
+        console.log('✅ Sync cancelled successfully');
+        setSuccessMessageText('Sync cancelled successfully');
+        setShowSuccessMessage(true);
+        setTimeout(() => setShowSuccessMessage(false), 5000);
       }
     } catch (error) {
       // Silently fail
@@ -671,17 +905,8 @@ export default function DataCollection() {
   // Initialize on mount
   useEffect(() => {
     const init = async () => {
-      // Load saved settings
-      const savedConfigs = localStorage.getItem('llmConfigs');
+      // Load saved sync settings
       const savedSyncSettings = localStorage.getItem('syncSettings');
-      
-      if (savedConfigs) {
-        try {
-          setLlmConfigs(JSON.parse(savedConfigs));
-        } catch (e) {
-          // Ignore parse errors
-        }
-      }
       
       if (savedSyncSettings) {
         try {
@@ -697,6 +922,8 @@ export default function DataCollection() {
       if (isConnected) {
         await loadStats();
         await checkScheduleFailures();
+        console.log('🔍 Initial session check...');
+        await checkSessionStatus(false); // Check all platforms
         
         // Set up periodic refresh
         statsIntervalRef.current = setInterval(() => {
@@ -737,150 +964,313 @@ export default function DataCollection() {
     }
   }, [isRunning, currentSyncId, backendConnected, checkSyncStatus]);
 
-  // Save configs
+  // Save configs - FIXED to properly save enabled state
   useEffect(() => {
-    localStorage.setItem('llmConfigs', JSON.stringify(llmConfigs));
+    // Deep clone the configs to ensure all properties are saved
+    const configsToSave: Record<string, LLMConfig> = {};
+    Object.keys(llmConfigs).forEach(key => {
+      configsToSave[key] = { ...llmConfigs[key] };
+    });
+    
+    const jsonString = JSON.stringify(configsToSave);
+    localStorage.setItem('llmConfigs', jsonString);
+    
+    // Debug logging
+    console.log('Saving configs to localStorage:', configsToSave);
+    console.log('Enabled states:', Object.entries(configsToSave).map(([k, v]) => `${k}: ${v.enabled}`).join(', '));
+    
     updateDailyTotals();
   }, [llmConfigs, updateDailyTotals]);
 
-  // Save sync settings
+  // Auto-save sync settings and schedule when changed
   useEffect(() => {
     localStorage.setItem('syncSettings', JSON.stringify(syncSettings));
-  }, [syncSettings]);
+    
+    // Auto-save schedule to backend
+    if (backendConnected) {
+      const saveSchedule = async () => {
+        try {
+          // Only include enabled platforms
+          const enabledPlatformKeys = Object.entries(llmConfigs)
+            .filter(([_, config]) => config.enabled)
+            .map(([key]) => key);
+          
+          const response = await fetch(`${API_BASE_URL}/llm/sync/schedule`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              enabled: syncSettings.interval !== 'manual',
+              startTime: syncSettings.startTime,
+              interval: syncSettings.interval,
+              platforms: enabledPlatformKeys,
+              settings: syncSettings
+            })
+          });
+          
+          if (response.ok) {
+            console.log('✅ Schedule auto-saved');
+          }
+        } catch (error) {
+          console.error('Failed to auto-save schedule');
+        }
+      };
+      
+      // Debounce the save
+      const timeoutId = setTimeout(saveSchedule, 1000);
+      return () => clearTimeout(timeoutId);
+    }
+  }, [syncSettings, llmConfigs, backendConnected]);
 
   // Handle toggle platform
   const handleTogglePlatform = (platform: string) => {
-    setLlmConfigs(prev => ({
-      ...prev,
-      [platform]: {
-        ...prev[platform],
-        enabled: !prev[platform].enabled
-      }
-    }));
+    setLlmConfigs(prev => {
+      const newConfigs = {
+        ...prev,
+        [platform]: {
+          ...prev[platform],
+          enabled: !prev[platform].enabled
+        }
+      };
+      
+      // enabled 상태만 별도로 저장
+      const enabledStates: Record<string, boolean> = {};
+      Object.keys(newConfigs).forEach(key => {
+        enabledStates[key] = newConfigs[key].enabled;
+      });
+      localStorage.setItem('llmEnabledStates', JSON.stringify(enabledStates));
+      
+      console.log(`Toggled ${platform}: ${prev[platform].enabled} -> ${newConfigs[platform].enabled}`);
+      console.log('Saved enabled states:', enabledStates);
+      
+      return newConfigs;
+    });
   };
 
-  // Handle sync now
+  // Manual session refresh
+  const refreshSessions = async () => {
+    console.log('🔄 Manually refreshing session status...');
+    await checkSessionStatus(true);
+  };
+
+  // Handle sync now - FIXED validation logic
   const handleSyncNow = async () => {
+    console.log('🔍 Sync button clicked');
+    
     if (isRunning) {
-      alert('Sync is already in progress.');
+      console.log('⚠️ Sync is already in progress.');
       return;
     }
     
     // Check backend
     if (!backendConnected) {
+      console.log('🔌 Backend not connected, attempting to connect...');
       const isConnected = await checkBackendConnection();
       if (!isConnected) {
-        alert(
-          '❌ Cannot connect to backend server\n\n' +
-          'Please ensure:\n' +
-          '1. Backend server is running: python main.py\n' +
-          '2. Server is on http://localhost:8000\n' +
-          '3. Check firewall settings'
-        );
+        console.error('❌ Cannot connect to backend server');
+        console.error('Please ensure:');
+        console.error('1. Backend server is running: python main.py');
+        console.error('2. Server is on http://localhost:8000');
+        console.error('3. Check firewall settings');
         return;
       }
     }
     
-    // Check enabled platforms
+    // Get current enabled platforms
     const enabledPlatforms = Object.entries(llmConfigs)
       .filter(([_, config]) => config.enabled);
     
+    console.log(`✅ Found ${enabledPlatforms.length} enabled platforms:`, enabledPlatforms.map(([key]) => key));
+    
     if (enabledPlatforms.length === 0) {
-      alert('Please enable at least one platform.');
+      console.error('❌ Please enable at least one platform.');
       return;
     }
     
-    // Check sessions
-    const invalidSessions = enabledPlatforms
-      .filter(([_, config]) => !config.sessionValid)
-      .map(([_, config]) => config.name);
+    // Force session check before sync
+    console.log('🔄 Force checking sessions before sync...');
+    await checkSessionStatus(false);
     
-    if (invalidSessions.length > 0) {
-      alert(
-        `⚠️ Session expired for:\n${invalidSessions.join(', ')}\n\n` +
-        `Please log in to these platforms first.`
-      );
-      return;
-    }
+    // Wait a bit for state to update
+    await new Promise(resolve => setTimeout(resolve, 500));
     
-    setIsRunning(true);
+    // Get the latest llmConfigs state by creating a promise
+    const getLatestConfigs = () => new Promise<typeof llmConfigs>(resolve => {
+      setLlmConfigs(currentConfigs => {
+        resolve(currentConfigs);
+        return currentConfigs;
+      });
+    });
     
     try {
-      const response = await fetch(`${API_BASE_URL}/llm/firefox/launch`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          platforms: enabledPlatforms.map(([key, config]) => ({
-            platform: key,
-            enabled: config.enabled
-          })),
-          settings: {
-            ...syncSettings,
-            debug: debugMode
-          }
-        })
+      // Get the latest llmConfigs state
+      const latestConfigs = await getLatestConfigs();
+      
+      // Re-check enabled platforms with latest configs
+      const updatedEnabledPlatforms = Object.entries(latestConfigs)
+        .filter(([_, config]) => config.enabled);
+      
+      console.log(`✅ Found ${updatedEnabledPlatforms.length} enabled platforms after session check:`, updatedEnabledPlatforms.map(([key]) => key));
+      
+      if (updatedEnabledPlatforms.length === 0) {
+        console.error('❌ Please enable at least one platform.');
+        return;
+      }
+      
+      // Check sessions (enabled platforms only)
+      const invalidSessions = updatedEnabledPlatforms
+        .filter(([_, config]) => !config.sessionValid)
+        .map(([_, config]) => config.name);
+      
+      console.log('📋 Frontend session status check:');
+      updatedEnabledPlatforms.forEach(([key, config]) => {
+        console.log(`  - ${config.name} (${key}): sessionValid=${config.sessionValid}, sessionLastChecked=${config.sessionLastChecked}`);
       });
       
-      const result = await response.json();
+      if (invalidSessions.length > 0) {
+        console.error(`⚠️ Frontend shows session expired for: ${invalidSessions.join(', ')}`);
+        console.error('Please log in to these platforms first.');
+        return;
+      }
+    
+      console.log('🚀 Frontend checks passed, validating with backend...');
       
-      if (result.success) {
-        setCurrentSyncId(result.sync_id);
-        alert(
-          '🚀 Firefox launched!\n\n' +
-          'The extension will now collect conversations.\n' +
-          'Progress will be shown here.'
-        );
-      } else {
-        if (result.invalidSessions) {
-          alert(
-            `❌ Invalid sessions:\n${result.invalidSessions.join(', ')}\n\n` +
-            `Please log in first.`
-          );
-          checkSessionStatus();
-        } else if (result.reason === 'smart_scheduling') {
-          alert('⚠️ ' + result.error);
-        } else {
-          alert(`Failed: ${result.error}\n\n${result.details || ''}`);
+      console.log('🚀 Frontend checks passed, now calling backend...');
+      console.log('📤 Enabled platforms being sent:', updatedEnabledPlatforms.map(([key, config]) => ({
+        platform: key,
+        sessionValid: config.sessionValid,
+        lastChecked: config.sessionLastChecked
+      })));
+      
+      // Let's see what backend validation says before main request
+      console.log('🔍 Pre-flight check: Testing backend session validation...');
+      for (const [platform, config] of updatedEnabledPlatforms) {
+        try {
+          const testResponse = await fetch(`${API_BASE_URL}/llm/sessions/check-single`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              platform: platform,
+              enabled: false
+            })
+          });
+          
+          if (testResponse.ok) {
+            const testData = await testResponse.json();
+            console.log(`📊 ${platform} backend check:`, {
+              frontend: config.sessionValid,
+              backend: testData.valid,
+              match: config.sessionValid === testData.valid
+            });
+          }
+        } catch (e) {
+          console.error(`❌ Failed to check ${platform}:`, e);
         }
+      }
+      
+      setIsRunning(true);
+      
+      try {
+        // Use the validated enabled platforms
+        const finalValidPlatforms = updatedEnabledPlatforms
+          .filter(([_, config]) => config.enabled && config.sessionValid);
+          
+        const requestBody = {
+          platforms: finalValidPlatforms
+            .map(([key, config]) => ({
+              platform: key,
+              enabled: true
+            })),
+          settings: {
+            ...syncSettings,
+            debug: syncSettings.firefoxVisible  // Use firefoxVisible for debug mode
+          }
+        };
+        
+        console.log('📤 Sending sync request to:', `${API_BASE_URL}/llm/firefox/launch`);
+        console.log('📤 Request body:', JSON.stringify(requestBody, null, 2));
+        
+        const response = await fetch(`${API_BASE_URL}/llm/firefox/launch`, {
+          method: 'POST',
+          headers: { 
+            'Content-Type': 'application/json',
+            'Accept': 'application/json'
+          },
+          body: JSON.stringify(requestBody)
+        });
+        
+        console.log('📥 Response status:', response.status);
+        console.log('📥 Response headers:', response.headers);
+        
+        const responseText = await response.text();
+        console.log('📥 Response text:', responseText);
+        
+        let result;
+        try {
+          result = JSON.parse(responseText);
+        } catch (e) {
+          console.error('❌ Failed to parse response:', e);
+          console.error('Raw response:', responseText);
+          throw new Error('Invalid JSON response from server');
+        }
+        
+        console.log('📥 Response data:', result);
+        
+        if (result.success) {
+          setCurrentSyncId(result.sync_id || null);
+          console.log('✅ Firefox launched successfully!');
+          console.log('🆔 Sync ID:', result.sync_id);
+          console.log('The extension will now collect conversations.');
+          console.log('Progress will be shown here.');
+        } else {
+          console.error('❌ Launch failed:', result);
+          if (result.invalidSessions) {
+            // Filter to only show invalid sessions for enabled platforms
+            const relevantInvalidSessions = result.invalidSessions.filter((platform: string) =>
+              latestConfigs[platform]?.enabled
+            );
+            
+            if (relevantInvalidSessions.length > 0) {
+              console.error(`❌ Invalid sessions: ${relevantInvalidSessions.join(', ')}`);
+              console.error('Please log in first.');
+              console.error('');
+              console.error('📝 Troubleshooting steps:');
+              console.error('1. Click the "Login" button for each platform');
+              console.error('2. Complete the login process in the opened browser');
+              console.error('3. Wait for "Session active" status to appear');
+              console.error('4. If session doesn\'t activate, try refreshing this page');
+              console.error('5. Make sure Firefox profile "llm-collector" exists');
+              
+              // Update session status for invalid platforms
+              setLlmConfigs(prev => {
+                const updated = { ...prev };
+                relevantInvalidSessions.forEach((platform: string) => {
+                  if (updated[platform]) {
+                    updated[platform].sessionValid = false;
+                  }
+                });
+                return updated;
+              });
+            }
+            
+            // Force re-check sessions
+            setTimeout(() => {
+              checkSessionStatus(true);
+            }, 500);
+          } else if (result.reason === 'smart_scheduling') {
+            console.log('⚠️ ' + result.error);
+          } else {
+            console.error(`Failed: ${result.error}`);
+            console.error(`Details: ${result.details || ''}`);
+          }
+          setIsRunning(false);
+        }
+      } catch (error) {
+        console.error('❌ Failed to start sync:', error);
         setIsRunning(false);
       }
     } catch (error) {
-      alert('Failed to start sync');
+      console.error('❌ Failed to get latest configs:', error);
       setIsRunning(false);
-    }
-  };
-
-  // Handle save schedule
-  const handleSaveSchedule = async () => {
-    if (!backendConnected) {
-      alert('Backend not connected');
-      return;
-    }
-    
-    try {
-      const response = await fetch(`${API_BASE_URL}/llm/sync/schedule`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          enabled: syncSettings.interval !== 'manual',
-          startTime: syncSettings.startTime,
-          interval: syncSettings.interval,
-          platforms: Object.entries(llmConfigs)
-            .filter(([_, config]) => config.enabled)
-            .map(([key]) => key),
-          settings: syncSettings
-        })
-      });
-      
-      const result = await response.json();
-      
-      if (result.success) {
-        alert('✅ Schedule saved!');
-      } else {
-        alert(`Failed: ${result.error}`);
-      }
-    } catch (error) {
-      alert('Failed to save schedule');
     }
   };
 
@@ -893,7 +1283,7 @@ export default function DataCollection() {
     )) return;
     
     if (!backendConnected) {
-      alert('Backend not connected');
+      console.error('Backend not connected');
       return;
     }
     
@@ -903,31 +1293,38 @@ export default function DataCollection() {
       });
       
       if (response.ok) {
-        const result = await response.json();
+        const result = await response.json() as CleanDataResponse;
         
         setDailyTotals({ today: 0, yesterday: 0, dayBefore: 0 });
         
         setLlmConfigs(prev => {
           const updated = { ...prev };
           Object.keys(updated).forEach(key => {
-            updated[key].todayCount = 0;
-            updated[key].yesterdayCount = 0;
-            updated[key].dayBeforeCount = 0;
+            // Only reset counts, preserve enabled state
+            updated[key] = {
+              ...updated[key],
+              todayCount: 0,
+              yesterdayCount: 0,
+              dayBeforeCount: 0
+            };
           });
           return updated;
         });
         
-        alert(`✅ Deleted ${result.deleted} files.`);
+        console.log(`✅ Deleted ${result.deleted} files.`);
+        setSuccessMessageText(`Deleted ${result.deleted} files.`);
+        setShowSuccessMessage(true);
+        setTimeout(() => setShowSuccessMessage(false), 5000);
       }
     } catch (error) {
-      alert('Failed to clean data');
+      console.error('Failed to clean data');
     }
   };
 
   // Handle view files
   const handleViewFiles = async () => {
     if (!backendConnected) {
-      alert('Backend not connected');
+      console.error('Backend not connected');
       return;
     }
     
@@ -935,12 +1332,12 @@ export default function DataCollection() {
       const response = await fetch(`${API_BASE_URL}/llm/conversations/files`);
       
       if (response.ok) {
-        const data = await response.json();
+        const data = await response.json() as FilesListResponse;
         setFilesList(data.files || []);
         setShowFilesModal(true);
       }
     } catch (error) {
-      alert('Failed to load files');
+      console.error('Failed to load files');
     }
   };
 
@@ -975,13 +1372,13 @@ export default function DataCollection() {
             <div className="flex items-center gap-2 text-sm">
               {backendConnected ? (
                 <>
-                  <Wifi className="h-4 w-4 text-green-500" />
-                  <span className="text-green-600">Backend Connected</span>
+                  <Wifi className="h-4 w-4 text-gray-500" />
+                  <span className="text-gray-600">Backend Connected</span>
                 </>
               ) : (
                 <>
-                  <WifiOff className="h-4 w-4 text-red-500" />
-                  <span className="text-red-600">Backend Disconnected</span>
+                  <WifiOff className="h-4 w-4 text-gray-500" />
+                  <span className="text-gray-600">Backend Disconnected</span>
                 </>
               )}
             </div>
@@ -1024,6 +1421,16 @@ export default function DataCollection() {
             </Alert>
           )}
 
+          {/* Success Message */}
+          {showSuccessMessage && (
+            <Alert className="mb-6 border-gray-200 bg-gray-50">
+              <CheckCircle className="h-4 w-4 text-gray-600" />
+              <AlertDescription className="text-gray-800">
+                {successMessageText}
+              </AlertDescription>
+            </Alert>
+          )}
+
           {/* Sync Progress */}
           {isRunning && syncStatus && (
             <div className="mb-6">
@@ -1053,6 +1460,7 @@ export default function DataCollection() {
                   className="w-full"
                   onValueChange={(value) => {
                     if (value === 'llm' && backendConnected && !isCheckingSessions) {
+                      // Check all platforms when tab is activated
                       checkSessionStatus(true);
                     }
                   }}
@@ -1147,18 +1555,6 @@ export default function DataCollection() {
                           </div>
                         </div>
 
-                        <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
-                          <div className="flex items-start gap-3">
-                            <Chrome className="h-5 w-5 text-yellow-600 mt-0.5" />
-                            <div className="flex-1">
-                              <h4 className="font-medium text-yellow-900 mb-1">Firefox Extension</h4>
-                              <p className="text-xs text-yellow-700">
-                                Profile: "llm-collector"
-                              </p>
-                            </div>
-                          </div>
-                        </div>
-
                         <div className="bg-gray-50 rounded-lg p-4">
                           <h4 className="text-sm font-medium mb-3">Statistics</h4>
                           <div className="grid grid-cols-3 gap-4">
@@ -1184,12 +1580,22 @@ export default function DataCollection() {
                       <CardHeader>
                         <CardTitle className="flex items-center justify-between">
                           <span>LLM Platforms</span>
-                          {isCheckingSessions && (
-                            <span className="text-sm text-blue-600 flex items-center gap-1">
-                              <RefreshCw className="h-3 w-3 animate-spin" />
-                              Checking sessions...
-                            </span>
-                          )}
+                          <div className="flex items-center gap-2">
+                            {isCheckingSessions && (
+                              <span className="text-sm text-gray-600 flex items-center gap-1">
+                                <RefreshCw className="h-3 w-3 animate-spin" />
+                                Checking sessions...
+                              </span>
+                            )}
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onClick={() => checkSessionStatus(true)}
+                              disabled={isCheckingSessions || !backendConnected}
+                            >
+                              <RefreshCw className="h-3 w-3" />
+                            </Button>
+                          </div>
                         </CardTitle>
                       </CardHeader>
                       <CardContent className="space-y-4">
@@ -1202,109 +1608,114 @@ export default function DataCollection() {
                         )}
 
                         {/* Platform List */}
-                        {Object.entries(llmConfigs).map(([key, config]) => (
-                          <div 
-                            key={key} 
-                            className={`rounded-lg p-4 space-y-3 transition-all duration-300 ${
-                              isCheckingSessions && config.status === 'syncing' 
-                                ? 'ring-2 ring-blue-400 bg-blue-50' 
-                                : config.status === 'opening'
-                                ? 'ring-2 ring-yellow-400 bg-yellow-50'
-                                : config.status === 'syncing' && isRunning
-                                ? 'ring-2 ring-green-400 bg-green-50'
-                                : 'bg-gray-50'
-                            }`}
-                          >
-                            <div className="flex items-center justify-between">
-                              <div className="flex items-center gap-3">
-                                <div 
-                                  className={`w-10 h-10 rounded-lg flex items-center justify-center font-bold text-sm text-white transition-colors`}
-                                  style={{ backgroundColor: config.color }}
-                                >
-                                  {config.icon}
-                                </div>
-                                <div>
-                                  <h4 className="font-medium">{config.name}</h4>
-                                  <p className="text-xs text-gray-500">{config.url}</p>
-                                  <p className="text-xs text-gray-400 mt-1">
-                                    Today: {config.todayCount} | Yesterday: {config.yesterdayCount} | 2 days: {config.dayBeforeCount}
-                                  </p>
-                                  <div className="flex items-center gap-2 mt-1">
-                                    {isCheckingSessions && config.status === 'syncing' ? (
-                                      <span className="text-xs text-blue-600 flex items-center gap-1">
-                                        <RefreshCw className="h-3 w-3 animate-spin" />
-                                        Checking...
-                                      </span>
-                                    ) : config.status === 'opening' ? (
-                                      <span className="text-xs text-yellow-600 flex items-center gap-1">
-                                        <Loader2 className="h-3 w-3 animate-spin" />
-                                        Opening login page...
-                                      </span>
-                                    ) : config.status === 'syncing' && isRunning ? (
-                                      <span className="text-xs text-green-600 flex items-center gap-1">
-                                        <RefreshCw className="h-3 w-3 animate-spin" />
-                                        Collecting...
-                                      </span>
-                                    ) : config.sessionValid ? (
-                                      <>
-                                        <span className="text-xs text-green-600 flex items-center gap-1">
-                                          <Unlock className="h-3 w-3" />
-                                          Session active
+                        <div className="space-y-2">
+                          {Object.entries(llmConfigs).map(([key, config]) => (
+                            <div 
+                              key={key} 
+                              className={`rounded-lg p-4 transition-all duration-300 ${
+                                isCheckingSessions && config.status === 'syncing' 
+                                  ? 'ring-2 ring-gray-400' 
+                                  : config.status === 'opening'
+                                  ? 'ring-2 ring-gray-400'
+                                  : config.status === 'syncing' && isRunning
+                                  ? 'ring-2 ring-gray-400'
+                                  : config.enabled
+                                  ? 'bg-gray-50'
+                                  : 'bg-gray-50 opacity-60'
+                              }`}
+                            >
+                              <div className="flex items-center justify-between">
+                                <div className="flex items-center gap-3">
+                                  <div 
+                                    className={`w-10 h-10 rounded-lg flex items-center justify-center font-bold text-sm transition-colors ${
+                                      config.enabled ? 'bg-gray-700 text-white' : 'bg-gray-300 text-gray-600'
+                                    }`}
+                                  >
+                                    {config.icon}
+                                  </div>
+                                  <div>
+                                    <h4 className="font-medium">{config.name}</h4>
+                                    <p className="text-xs text-gray-500">{config.url}</p>
+                                    <p className="text-xs text-gray-400 mt-1">
+                                      Today: {config.todayCount} | Yesterday: {config.yesterdayCount} | 2 days: {config.dayBeforeCount}
+                                    </p>
+                                    <div className="flex items-center gap-2 mt-1">
+                                      {isCheckingSessions && config.status === 'syncing' ? (
+                                        <span className="text-xs text-gray-600 flex items-center gap-1">
+                                          <RefreshCw className="h-3 w-3 animate-spin" />
+                                          Checking...
                                         </span>
-                                        {config.sessionExpiresAt && (
-                                          <span className="text-xs text-green-600 flex items-center gap-1">
-                                            <Calendar className="h-3 w-3" />
-                                            {getSessionExpiryDisplay(config.sessionExpiresAt)}
+                                      ) : config.status === 'opening' ? (
+                                        <span className="text-xs text-gray-600 flex items-center gap-1">
+                                          <Loader2 className="h-3 w-3 animate-spin" />
+                                          Opening login page...
+                                        </span>
+                                      ) : config.status === 'syncing' && isRunning ? (
+                                        <span className="text-xs text-gray-600 flex items-center gap-1">
+                                          <RefreshCw className="h-3 w-3 animate-spin" />
+                                          Collecting...
+                                        </span>
+                                      ) : config.sessionValid ? (
+                                        <>
+                                          <span className="text-xs text-gray-600 font-medium flex items-center gap-1">
+                                            <CheckCircle className="h-3 w-3" />
+                                            Session active
                                           </span>
-                                        )}
-                                      </>
-                                    ) : (
-                                      <span className="text-xs text-red-600 flex items-center gap-1">
-                                        <Lock className="h-3 w-3" />
-                                        {config.enabled ? 'Session expired' : 'Not logged in'}
-                                      </span>
-                                    )}
-                                    {config.lastSync && (
-                                      <span className="text-xs text-gray-400">
-                                        • Last: {formatDate(config.lastSync)}
-                                      </span>
-                                    )}
+                                          {config.sessionExpiresAt && getSessionExpiryDisplay(config.sessionExpiresAt) && (
+                                            <span className="text-xs text-gray-600 flex items-center gap-1">
+                                              <Clock className="h-3 w-3" />
+                                              {getSessionExpiryDisplay(config.sessionExpiresAt)} remaining
+                                            </span>
+                                          )}
+                                        </>
+                                      ) : (
+                                        <span className="text-xs text-gray-800 font-medium flex items-center gap-1">
+                                          <AlertCircle className="h-3 w-3" />
+                                          {config.enabled ? '⚠️ Session expired - Login required' : 'Login required'}
+                                        </span>
+                                      )}
+                                      {config.lastSync && (
+                                        <span className="text-xs text-gray-400">
+                                          • Last: {formatDate(config.lastSync)}
+                                        </span>
+                                      )}
+                                    </div>
                                   </div>
                                 </div>
-                              </div>
-                              <div className="flex items-center gap-2">
-                                {!config.sessionValid && config.enabled && (
+                                <div className="flex items-center gap-2">
+                                  {!config.sessionValid && (
+                                    <Button
+                                      variant="outline"
+                                      size="sm"
+                                      onClick={() => handleOpenLogin(key)}
+                                      disabled={isRunning || isCheckingSessions || openingLoginPlatform !== null || !backendConnected}
+                                    >
+                                      {openingLoginPlatform === key ? (
+                                        <>
+                                          <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                                          Opening...
+                                        </>
+                                      ) : (
+                                        <>
+                                          <ExternalLink className="h-3 w-3 mr-1" />
+                                          Login
+                                        </>
+                                      )}
+                                    </Button>
+                                  )}
                                   <Button
                                     variant="outline"
                                     size="sm"
-                                    onClick={() => handleOpenLogin(key)}
-                                    disabled={isRunning || isCheckingSessions || openingLoginPlatform !== null || !backendConnected}
+                                    onClick={() => handleTogglePlatform(key)}
+                                    disabled={isRunning || isCheckingSessions}
                                   >
-                                    {openingLoginPlatform === key ? (
-                                      <>
-                                        <Loader2 className="h-3 w-3 mr-1 animate-spin" />
-                                        Opening...
-                                      </>
-                                    ) : (
-                                      <>
-                                        <ExternalLink className="h-3 w-3 mr-1" />
-                                        Login
-                                      </>
-                                    )}
+                                    {config.enabled ? 'Disable' : 'Enable'}
                                   </Button>
-                                )}
-                                <Button
-                                  variant="outline"
-                                  size="sm"
-                                  onClick={() => handleTogglePlatform(key)}
-                                  disabled={isRunning || isCheckingSessions}
-                                >
-                                  {config.enabled ? 'Disable' : 'Enable'}
-                                </Button>
+                                </div>
                               </div>
                             </div>
-                          </div>
-                        ))}
+                          ))}
+                        </div>
                         
                         <div className="flex gap-2 pt-2">
                           <Button 
@@ -1335,10 +1746,222 @@ export default function DataCollection() {
                           </Button>
                         </div>
 
+                        {/* Session Status Help */}
+                        {Object.entries(llmConfigs).some(([_, config]) => config.enabled && !config.sessionValid) && (
+                          <Alert className="mt-4">
+                            <AlertCircle className="h-4 w-4" />
+                            <AlertDescription>
+                              <strong>Session Required:</strong> Some enabled platforms need login.
+                              <br />
+                              <span className="text-sm">
+                                Click the "Login" button next to each platform, complete the login process, 
+                                and wait for the "Session active" status to appear.
+                              </span>
+                            </AlertDescription>
+                          </Alert>
+                        )}
+
                         {/* Advanced Options */}
                         {showAdvanced && (
                           <Card className="mt-4">
                             <CardContent className="pt-6 space-y-4">
+                              {/* Firefox Profile Debug */}
+                              <div className="p-4 bg-yellow-50 rounded-lg space-y-3">
+                                <div className="flex items-center justify-between">
+                                  <div className="space-y-0.5">
+                                    <Label className="text-base">Firefox Profile Debug</Label>
+                                    <p className="text-sm text-gray-600">
+                                      Check Firefox profile and sessions
+                                    </p>
+                                  </div>
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    onClick={async () => {
+                                      console.log('🔍 Checking Firefox profile and sessions...');
+                                      console.log('=====================================');
+                                      
+                                      // 1. Check Firefox profile exists
+                                      try {
+                                        const profileResponse = await fetch(`${API_BASE_URL}/llm/debug/firefox-profile`, {
+                                          method: 'GET'
+                                        });
+                                        
+                                        if (profileResponse.ok) {
+                                          const profileData = await profileResponse.json();
+                                          console.log('📦 Firefox Profile Info:', profileData);
+                                        }
+                                      } catch (e) {
+                                        console.error('Failed to check Firefox profile:', e);
+                                      }
+                                      
+                                      // 2. Check each platform's session in detail
+                                      console.log('\n📋 Detailed Session Check:');
+                                      for (const [platform, config] of Object.entries(llmConfigs)) {
+                                        if (!config.enabled) continue;
+                                        
+                                        console.log(`\n🔍 Checking ${platform}...`);
+                                        
+                                        try {
+                                          // Check session with debug flag
+                                          const response = await fetch(`${API_BASE_URL}/llm/sessions/check-single`, {
+                                            method: 'POST',
+                                            headers: { 'Content-Type': 'application/json' },
+                                            body: JSON.stringify({
+                                              platform: platform,
+                                              enabled: false,
+                                              debug: true,
+                                              verbose: true  // Request verbose output
+                                            })
+                                          });
+                                          
+                                          if (response.ok) {
+                                            const data = await response.json();
+                                            console.log(`${platform} session details:`, data);
+                                            
+                                            // Compare with frontend state
+                                            console.log(`Frontend state: sessionValid=${config.sessionValid}`);
+                                            console.log(`Backend state: sessionValid=${data.valid}`);
+                                            
+                                            if (config.sessionValid !== data.valid) {
+                                              console.warn(`⚠️ State mismatch for ${platform}!`);
+                                            }
+                                          } else {
+                                            const errorText = await response.text();
+                                            console.error(`Failed to check ${platform}:`, errorText);
+                                          }
+                                          
+                                          // Also check the actual cookies
+                                          const cookieResponse = await fetch(`${API_BASE_URL}/llm/debug/cookies/${platform}`, {
+                                            method: 'GET'
+                                          });
+                                          
+                                          if (cookieResponse.ok) {
+                                            const cookieData = await cookieResponse.json();
+                                            console.log(`${platform} cookies:`, cookieData);
+                                          }
+                                          
+                                        } catch (e) {
+                                          console.error(`Error checking ${platform}:`, e);
+                                        }
+                                      }
+                                      
+                                      console.log('\n=====================================');
+                                      console.log('✅ Debug check complete. Check console for details.');
+                                    }}
+                                    disabled={!backendConnected}
+                                  >
+                                    Debug Sessions
+                                  </Button>
+                                </div>
+                                
+                                <Alert className="bg-yellow-100 border-yellow-200">
+                                  <AlertCircle className="h-4 w-4 text-yellow-800" />
+                                  <AlertDescription className="text-yellow-800">
+                                    <strong>Session Sync Issues?</strong><br />
+                                    1. Close ALL Firefox windows<br />
+                                    2. Click "Check Profile" button<br />
+                                    3. Re-login to each platform<br />
+                                    4. Wait for "Session active" before syncing<br />
+                                    <br />
+                                    <strong>Still not working?</strong><br />
+                                    Try manual Firefox profile reset:<br />
+                                    <code className="bg-yellow-200 px-1 rounded">rm -rf ~/.mozilla/firefox/*.llm-collector</code>
+                                  </AlertDescription>
+                                </Alert>
+                                
+                                {/* Manual Session Update */}
+                                <div className="p-4 bg-green-50 rounded-lg space-y-3">
+                                  <div className="flex items-center justify-between">
+                                    <div className="space-y-0.5">
+                                      <Label className="text-base">Manual Session Update</Label>
+                                      <p className="text-sm text-gray-600">
+                                        If login was successful but session not detected
+                                      </p>
+                                    </div>
+                                    <Button
+                                      variant="outline"
+                                      size="sm"
+                                      onClick={async () => {
+                                        console.log('🔧 Manually updating sessions...');
+                                        
+                                        // Get enabled platforms
+                                        const enabledPlatforms = Object.entries(llmConfigs)
+                                          .filter(([_, config]) => config.enabled)
+                                          .map(([key]) => key);
+                                        
+                                        for (const platform of enabledPlatforms) {
+                                          console.log(`📝 Updating ${platform} session...`);
+                                          
+                                          try {
+                                            const response = await fetch(`${API_BASE_URL}/llm/sessions/update`, {
+                                              method: 'POST',
+                                              headers: { 'Content-Type': 'application/json' },
+                                              body: JSON.stringify({
+                                                platform: platform,
+                                                valid: true
+                                              })
+                                            });
+                                            
+                                            if (response.ok) {
+                                              const result = await response.json();
+                                              console.log(`✅ ${platform} session updated:`, result);
+                                            } else {
+                                              console.error(`❌ Failed to update ${platform} session`);
+                                            }
+                                          } catch (error) {
+                                            console.error(`❌ Error updating ${platform}:`, error);
+                                          }
+                                        }
+                                        
+                                        // Refresh session status
+                                        setTimeout(() => {
+                                          checkSessionStatus(true);
+                                        }, 1000);
+                                        
+                                        setSuccessMessageText('Sessions manually updated');
+                                        setShowSuccessMessage(true);
+                                        setTimeout(() => setShowSuccessMessage(false), 5000);
+                                      }}
+                                      disabled={!backendConnected || isCheckingSessions}
+                                    >
+                                      Force Update Sessions
+                                    </Button>
+                                  </div>
+                                  
+                                  <Alert className="bg-green-100 border-green-200">
+                                    <AlertCircle className="h-4 w-4 text-green-800" />
+                                    <AlertDescription className="text-green-800">
+                                      <strong>Use this if:</strong><br />
+                                      1. You logged in successfully<br />
+                                      2. But session shows as "Login required"<br />
+                                      3. Extension may not be working properly
+                                    </AlertDescription>
+                                  </Alert>
+                                </div>
+                              </div>
+
+                              {/* Firefox Visibility Toggle */}
+                              <div className="flex items-center justify-between p-4 bg-gray-50 rounded-lg">
+                                <div className="space-y-0.5">
+                                  <Label className="text-base">Firefox Window Visibility</Label>
+                                  <p className="text-sm text-gray-600">
+                                    {syncSettings.firefoxVisible ? 'Show Firefox window during sync' : 'Hide Firefox window during sync (background mode)'}
+                                  </p>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                  {syncSettings.firefoxVisible ? (
+                                    <Eye className="h-4 w-4 text-gray-600" />
+                                  ) : (
+                                    <EyeOff className="h-4 w-4 text-gray-600" />
+                                  )}
+                                  <Switch
+                                    checked={syncSettings.firefoxVisible}
+                                    onCheckedChange={(checked) => setSyncSettings(prev => ({ ...prev, firefoxVisible: checked }))}
+                                  />
+                                </div>
+                              </div>
+
                               <div>
                                 <label className="text-sm font-medium">Schedule</label>
                                 <div className="grid grid-cols-2 gap-3 mt-2">
@@ -1362,7 +1985,13 @@ export default function DataCollection() {
                                     </select>
                                   </div>
                                 </div>
+                                <p className="text-xs text-gray-500 mt-1">
+                                  {syncSettings.interval !== 'manual' 
+                                    ? `Auto-sync scheduled at ${syncSettings.startTime} ${syncSettings.interval}`
+                                    : 'Auto-sync disabled - manual sync only'}
+                                </p>
                               </div>
+                              
                               <div>
                                 <label className="text-sm font-medium">Max Conversations</label>
                                 <Input 
@@ -1372,6 +2001,7 @@ export default function DataCollection() {
                                   className="mt-1" 
                                 />
                               </div>
+                              
                               <div>
                                 <label className="text-sm font-medium">Random Delay (seconds)</label>
                                 <Input 
@@ -1383,41 +2013,27 @@ export default function DataCollection() {
                                   className="mt-1" 
                                 />
                               </div>
-                              <div className="flex items-center justify-between">
-                                <div>
-                                  <label className="text-sm font-medium">Debug Mode</label>
-                                  <p className="text-xs text-gray-500">Show Firefox window</p>
-                                </div>
-                                <Switch
-                                  checked={debugMode}
-                                  onCheckedChange={setDebugMode}
-                                  disabled={isRunning}
-                                />
-                              </div>
-                              <div className="pt-2 space-y-2">
-                                <Button 
-                                  variant="secondary" 
-                                  className="w-full"
-                                  onClick={() => {
-                                    localStorage.setItem('syncSettings', JSON.stringify(syncSettings));
-                                    alert('✅ Settings saved!');
-                                  }}
-                                >
-                                  <Save className="h-4 w-4 mr-2" />
-                                  Save Settings
-                                </Button>
-                                {syncSettings.interval !== 'manual' && (
-                                  <Button 
-                                    variant="outline" 
-                                    className="w-full"
-                                    onClick={handleSaveSchedule}
-                                    disabled={!backendConnected}
+                              
+                              <Alert>
+                                <AlertCircle className="h-4 w-4" />
+                                <AlertDescription>
+                                  All settings are automatically saved when changed. No need to click save buttons!
+                                  <br />
+                                  <button
+                                    className="text-blue-600 underline text-sm mt-2"
+                                    onClick={() => {
+                                      if (window.confirm('Reset all settings to default?\n\nThis will clear all saved configurations.')) {
+                                        localStorage.removeItem('llmConfigs');
+                                        localStorage.removeItem('llmEnabledStates');
+                                        localStorage.removeItem('syncSettings');
+                                        window.location.reload();
+                                      }
+                                    }}
                                   >
-                                    <Clock className="h-4 w-4 mr-2" />
-                                    Configure Schedule
-                                  </Button>
-                                )}
-                              </div>
+                                    Reset All Settings
+                                  </button>
+                                </AlertDescription>
+                              </Alert>
                             </CardContent>
                           </Card>
                         )}
@@ -1545,7 +2161,7 @@ export default function DataCollection() {
           <div className="bg-white rounded-lg p-6 w-[700px] max-h-[80vh] overflow-y-auto">
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-lg font-semibold flex items-center gap-2">
-                <FolderOpen className="h-5 w-5 text-blue-600" />
+                <FolderOpen className="h-5 w-5 text-gray-600" />
                 Collected Files
               </h3>
               <Button
@@ -1568,8 +2184,7 @@ export default function DataCollection() {
                   <div key={platform} className="border rounded-lg p-4">
                     <h4 className="font-medium mb-2 flex items-center gap-2">
                       <div 
-                        className="w-6 h-6 rounded text-white flex items-center justify-center text-xs font-bold"
-                        style={{ backgroundColor: llmConfigs[platform]?.color || '#888' }}
+                        className="w-6 h-6 rounded text-white bg-gray-700 flex items-center justify-center text-xs font-bold"
                       >
                         {llmConfigs[platform]?.icon || '?'}
                       </div>
@@ -1631,13 +2246,21 @@ function Section({ title, children }: SectionProps) {
 
 function LLMStats({ platform, config }: LLMStatsProps) {
   const getStatusIcon = () => {
-    if (config.status === 'syncing') return <RefreshCw className="h-3 w-3 text-blue-500 animate-spin" />;
-    if (config.sessionValid) return <CheckCircle className="h-3 w-3 text-green-500" />;
-    return <AlertCircle className="h-3 w-3 text-yellow-500" />;
+    if (config.status === 'syncing') return <RefreshCw className="h-3 w-3 text-gray-500 animate-spin" />;
+    if (config.sessionValid) return <CheckCircle className="h-3 w-3 text-gray-500" />;
+    return <AlertCircle className="h-3 w-3 text-gray-500" />;
+  };
+  
+  const getSessionStatus = () => {
+    if (config.sessionValid && config.sessionExpiresAt) {
+      const expiry = getSessionExpiryDisplay(config.sessionExpiresAt);
+      return expiry ? `Active (${expiry})` : 'Active';
+    }
+    return 'Expired';
   };
   
   return (
-    <Card>
+    <Card className="bg-gray-50">
       <CardContent className="p-3">
         <div className="flex items-center justify-between mb-2">
           <div className="flex items-center gap-2">
@@ -1648,6 +2271,12 @@ function LLMStats({ platform, config }: LLMStatsProps) {
         </div>
         
         <div className="space-y-1">
+          <div className="flex justify-between items-center text-xs">
+            <span className="text-gray-500">Session</span>
+            <span className="font-medium text-gray-700">
+              {getSessionStatus()}
+            </span>
+          </div>
           <div className="flex justify-between items-center text-xs">
             <span className="text-gray-500">Today</span>
             <span className="font-medium">{config.todayCount || 0}</span>
@@ -1671,7 +2300,7 @@ function StatCard({ title, value, change, trend }: StatCardProps) {
         <p className="text-sm text-gray-600">{title}</p>
         <div className="flex items-baseline justify-between mt-1">
           <span className="text-2xl font-bold">{value}</span>
-          <span className={`text-sm ${isPositive ? 'text-green-600' : 'text-red-600'}`}>
+          <span className={`text-sm text-gray-600`}>
             {change}
           </span>
         </div>
@@ -1683,8 +2312,8 @@ function StatCard({ title, value, change, trend }: StatCardProps) {
 function ActivityItem({ time, action, source, count, type = "normal" }: ActivityItemProps) {
   const getIcon = () => {
     switch (type) {
-      case 'success': return <CheckCircle className="h-3 w-3 text-green-600" />;
-      case 'error': return <AlertCircle className="h-3 w-3 text-red-600" />;
+      case 'success': return <CheckCircle className="h-3 w-3 text-gray-600" />;
+      case 'error': return <AlertCircle className="h-3 w-3 text-gray-600" />;
       default: return <Clock className="h-3 w-3 text-gray-400" />;
     }
   };

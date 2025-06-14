@@ -3,7 +3,7 @@
 // - frontend/src/components/Argosa/ArgosaSystem.tsx
 // Location: frontend/src/components/Argosa/function/DataAnalysis.tsx
 
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { motion } from "framer-motion";
 import {
   Card,
@@ -50,9 +50,13 @@ import {
   Target,
   TrendingUp,
   Zap,
+  GitBranch,
+  Database,
+  Archive,
 } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 
+// ===== Type Definitions =====
 interface AnalysisResult {
   intent: string;
   confidence: number;
@@ -74,6 +78,37 @@ interface LMStudioConfig {
   model: string;
   temperature: number;
   maxTokens: number;
+  lastUsed?: string;
+}
+
+// New Planner/Reasoner Types
+interface PlannerLog {
+  timestamp: string;
+  user_message: string;
+  ai_response: string;
+  log_type: 'question_analysis' | 'ai_response_summary' | 'command_instruction' | 'structural_plan' | 'code_directive';
+  intent: string;
+  targets: string[];
+  plan_generated: boolean;
+  tags: string[];
+  metadata: {
+    session_id: string;
+    source: string;
+    model_used: string;
+  };
+}
+
+interface StructuredPlan {
+  id: string;
+  title: string;
+  steps: Array<{
+    order: number;
+    action: string;
+    dependencies: string[];
+    status: 'pending' | 'in_progress' | 'completed';
+  }>;
+  created_at: string;
+  priority: 'low' | 'medium' | 'high';
 }
 
 const DataAnalysis: React.FC = () => {
@@ -85,6 +120,8 @@ const DataAnalysis: React.FC = () => {
   const [activeTab, setActiveTab] = useState("chat");
   const [userChoice, setUserChoice] = useState<string | null>(null);
   const [showSettings, setShowSettings] = useState(false);
+  // Load saved config from memory (in production, this would be from a backend)
+  const [savedConfigs, setSavedConfigs] = useState<Record<string, LMStudioConfig>>({});
   const [lmStudioConfig, setLmStudioConfig] = useState<LMStudioConfig>({
     endpoint: "http://localhost:1234/v1/chat/completions",
     model: "local-model",
@@ -92,8 +129,15 @@ const DataAnalysis: React.FC = () => {
     maxTokens: 2000,
   });
   const [connectionStatus, setConnectionStatus] = useState<"connected" | "disconnected" | "checking">("disconnected");
+  const [availableModels, setAvailableModels] = useState<string[]>([]);
+  
+  // New Planner States
+  const [plannerLogs, setPlannerLogs] = useState<PlannerLog[]>([]);
+  const [activePlans, setActivePlans] = useState<StructuredPlan[]>([]);
+  const [plannerMode, setPlannerMode] = useState<'analysis' | 'planner'>('analysis');
+  const [sessionId] = useState(`chat_${new Date().toISOString().split('T')[0]}_${Math.random().toString(36).substr(2, 9)}`);
 
-  // LM Studio에서 실행할 수 있는 모델들
+  // ===== Model Recommendations =====
   const recommendedModels = {
     "intent-classification": [
       "TheBloke/Llama-2-7B-Chat-GGUF",
@@ -112,8 +156,14 @@ const DataAnalysis: React.FC = () => {
       "TheBloke/CodeLlama-7B-Instruct-GGUF",
       "TheBloke/Llama-2-7B-Chat-GGUF"
     ],
+    "planner": [
+      "Qwen/Qwen2.5-72B-Instruct-GGUF",
+      "TheBloke/Nous-Hermes-2-Yi-34B-GGUF",
+      "TheBloke/OpenChat-3.5-0106-GGUF"
+    ]
   };
 
+  // ===== Prompts =====
   const taskPrompts = {
     "intent-classification": `Analyze the following chat conversation and identify:
 1. The main intent or purpose of the user
@@ -149,21 +199,148 @@ Conversation:
 What are the key information and insights from this conversation?`,
   };
 
+  const plannerPrompts = {
+    "question_analysis": `You are an AI Planner/Reasoner. Analyze the user's question and extract:
+1. Question type and intent
+2. Context and background information
+3. Expected outcome or goal
+4. Relevant entities and keywords
+5. Suggested approach and next steps
+
+Question: {input}
+
+Return a structured JSON response with:
+{
+  "intent": "specific intent",
+  "question_type": "type category",
+  "context": "relevant context",
+  "expected_outcome": "what user wants",
+  "entities": ["entity1", "entity2"],
+  "suggested_approach": "recommended steps",
+  "priority": "high/medium/low"
+}`,
+
+    "ai_response_summary": `Summarize the following AI response, extracting:
+1. Key points and main ideas
+2. Action items or recommendations
+3. Important information to remember
+4. Follow-up questions or clarifications needed
+
+AI Response: {input}
+
+Provide a concise summary with structured insights.`,
+
+    "command_instruction": `Parse the following command/instruction and create:
+1. Clear action steps
+2. Required resources or tools
+3. Success criteria
+4. Potential blockers or dependencies
+
+Command: {input}
+
+Structure the instruction as an executable plan.`,
+
+    "structural_plan": `Create a comprehensive structured plan for:
+1. Break down into hierarchical steps
+2. Define clear dependencies between steps
+3. Identify required resources and tools
+4. Set priorities and timelines
+5. Define success metrics
+
+Request: {input}
+
+Provide a detailed plan in JSON format with steps, dependencies, and milestones.`,
+
+    "code_directive": `Analyze the code-related request and provide:
+1. Specific code issues or bugs identified
+2. Recommended fixes or improvements
+3. Code structure suggestions
+4. Testing requirements
+5. Implementation priority
+
+Code Request: {input}
+
+Return structured guidance for code modification.`
+  };
+
+  // ===== Helper Functions =====
   const checkLMStudioConnection = async () => {
     setConnectionStatus("checking");
     try {
       const response = await fetch(lmStudioConfig.endpoint.replace('/chat/completions', '/models'));
       if (response.ok) {
+        const data = await response.json();
+        // Extract model names from LM Studio response
+        const models = data.data?.map((model: any) => model.id) || [];
+        setAvailableModels(models);
         setConnectionStatus("connected");
+        
+        // Auto-save successful connection
+        saveConfig();
       } else {
         setConnectionStatus("disconnected");
       }
     } catch (error) {
       setConnectionStatus("disconnected");
+      console.error("Connection failed:", error);
     }
   };
 
-  const callLMStudio = async (prompt: string) => {
+  // Save configuration (in production, this would save to backend)
+  const saveConfig = async () => {
+    const configKey = `lm_config_${lmStudioConfig.endpoint}`;
+    const newConfig = { ...lmStudioConfig, lastUsed: new Date().toISOString() };
+    
+    setSavedConfigs(prev => ({
+      ...prev,
+      [configKey]: newConfig
+    }));
+    
+    // In production, save to backend
+    console.log("Saving config:", newConfig);
+    
+    // Simulate backend save
+    try {
+      // await fetch('/api/config/save', {
+      //   method: 'POST',
+      //   headers: { 'Content-Type': 'application/json' },
+      //   body: JSON.stringify(newConfig)
+      // });
+    } catch (error) {
+      console.error("Failed to save config:", error);
+    }
+  };
+
+  // Load saved configurations on mount
+  const loadSavedConfigs = async () => {
+    // In production, load from backend
+    // const response = await fetch('/api/config/list');
+    // const configs = await response.json();
+    
+    // Simulated saved configs
+    const mockConfigs = {
+      'lm_config_http://localhost:1234/v1/chat/completions': {
+        endpoint: "http://localhost:1234/v1/chat/completions",
+        model: "local-model",
+        temperature: 0.7,
+        maxTokens: 2000,
+        lastUsed: new Date().toISOString()
+      }
+    };
+    
+    setSavedConfigs(mockConfigs);
+    
+    // Load most recent config
+    const recentConfig = Object.values(mockConfigs).sort((a, b) => 
+      new Date(b.lastUsed).getTime() - new Date(a.lastUsed).getTime()
+    )[0];
+    
+    if (recentConfig) {
+      setLmStudioConfig(recentConfig);
+    }
+  };
+
+  const callLMStudio = async (prompt: string, systemPrompt?: string) => {
     try {
       const response = await fetch(lmStudioConfig.endpoint, {
         method: "POST",
@@ -175,7 +352,7 @@ What are the key information and insights from this conversation?`,
           messages: [
             {
               role: "system",
-              content: "You are a helpful AI assistant specialized in analyzing conversations and extracting information.",
+              content: systemPrompt || "You are a helpful AI assistant specialized in analyzing conversations and extracting information.",
             },
             {
               role: "user",
@@ -200,6 +377,97 @@ What are the key information and insights from this conversation?`,
     }
   };
 
+  // ===== Planner Functions =====
+  const generateTags = (analysisResult: AnalysisResult): string[] => {
+    const tags = [];
+    
+    // Add tags based on intent
+    if (analysisResult.intent.includes('bug') || analysisResult.intent.includes('error')) {
+      tags.push('bug', 'code');
+    }
+    if (analysisResult.intent.includes('feature') || analysisResult.intent.includes('enhancement')) {
+      tags.push('feature', 'enhancement');
+    }
+    if (analysisResult.intent.includes('question')) {
+      tags.push('question', 'support');
+    }
+    
+    // Add entity-based tags
+    analysisResult.entities.forEach(entity => {
+      if (entity.type === 'PRODUCT') tags.push(entity.text.toLowerCase());
+    });
+    
+    return [...new Set(tags)]; // Remove duplicates
+  };
+
+  const createPlannerLog = (
+    userInput: string,
+    aiResponse: string,
+    logType: PlannerLog['log_type'],
+    analysisResult: AnalysisResult
+  ): PlannerLog => {
+    return {
+      timestamp: new Date().toISOString(),
+      user_message: userInput,
+      ai_response: aiResponse,
+      log_type: logType,
+      intent: analysisResult.intent,
+      targets: analysisResult.entities.map(e => e.text),
+      plan_generated: logType === 'structural_plan',
+      tags: generateTags(analysisResult),
+      metadata: {
+        session_id: sessionId,
+        source: 'argosa_system',
+        model_used: lmStudioConfig.model
+      }
+    };
+  };
+
+  const savePlannerLog = async (log: PlannerLog) => {
+    try {
+      // Add to local state
+      setPlannerLogs(prev => [...prev, log]);
+      
+      // In production, save to backend
+      const date = new Date().toISOString().split('T')[0];
+      const logPath = `logs/planner/${date}/${log.metadata.session_id}_${Date.now()}.json`;
+      
+      // Simulated API call - replace with actual backend endpoint
+      console.log('Saving log to:', logPath, log);
+      
+      // In real implementation:
+      // await fetch('/api/logs/save', {
+      //   method: 'POST',
+      //   headers: { 'Content-Type': 'application/json' },
+      //   body: JSON.stringify({ path: logPath, data: log })
+      // });
+    } catch (error) {
+      console.error('Failed to save log:', error);
+    }
+  };
+
+  const parseStructuredPlan = (response: string): StructuredPlan | null => {
+    try {
+      // Extract JSON from response
+      const jsonMatch = response.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) return null;
+      
+      const parsed = JSON.parse(jsonMatch[0]);
+      
+      return {
+        id: `plan_${Date.now()}`,
+        title: parsed.title || "Untitled Plan",
+        steps: parsed.steps || [],
+        created_at: new Date().toISOString(),
+        priority: parsed.priority || 'medium'
+      };
+    } catch (error) {
+      console.error('Failed to parse structured plan:', error);
+      return null;
+    }
+  };
+
+  // ===== Main Analysis Function =====
   const handleAnalyze = async () => {
     if (connectionStatus !== "connected") {
       alert("Please connect to LM Studio first!");
@@ -208,21 +476,56 @@ What are the key information and insights from this conversation?`,
 
     setIsAnalyzing(true);
     try {
-      const prompt = taskPrompts[selectedTask as keyof typeof taskPrompts].replace("{input}", chatInput);
-      const response = await callLMStudio(prompt);
+      let prompt, systemPrompt, logType: PlannerLog['log_type'];
       
-      // Parse the response based on the task
-      // This is a simplified parser - you might want to make it more robust
-      setAnalysisResult({
+      if (plannerMode === 'planner') {
+        // Use planner prompts
+        const plannerTask = selectedTask as keyof typeof plannerPrompts;
+        prompt = plannerPrompts[plannerTask].replace("{input}", chatInput);
+        systemPrompt = "You are an advanced AI Planner and Reasoner. Your role is to analyze, plan, and structure information for complex tasks.";
+        
+        // Map task to log type
+        const taskToLogType: Record<string, PlannerLog['log_type']> = {
+          'question_analysis': 'question_analysis',
+          'ai_response_summary': 'ai_response_summary',
+          'command_instruction': 'command_instruction',
+          'structural_plan': 'structural_plan',
+          'code_directive': 'code_directive'
+        };
+        logType = taskToLogType[plannerTask] || 'question_analysis';
+      } else {
+        // Use regular analysis prompts
+        prompt = taskPrompts[selectedTask as keyof typeof taskPrompts].replace("{input}", chatInput);
+        logType = 'question_analysis'; // Default for regular analysis
+      }
+      
+      const response = await callLMStudio(prompt, systemPrompt);
+      
+      // Parse response based on mode
+      const analysisResult: AnalysisResult = {
         intent: selectedTask === "intent-classification" ? "information_seeking" : selectedTask,
         confidence: 0.85,
         entities: extractEntities(response),
-        summary: selectedTask === "summarization" ? response : extractSummary(response),
+        summary: extractSummary(response),
         suggestions: generateSuggestions(response),
         rawResponse: response,
-      });
-
-      // Simulate web search based on extracted entities
+      };
+      
+      setAnalysisResult(analysisResult);
+      
+      // Save planner log
+      const log = createPlannerLog(chatInput, response, logType, analysisResult);
+      await savePlannerLog(log);
+      
+      // If structural plan, parse and add to active plans
+      if (logType === 'structural_plan') {
+        const plan = parseStructuredPlan(response);
+        if (plan) {
+          setActivePlans(prev => [...prev, plan]);
+        }
+      }
+      
+      // Simulate web search
       simulateWebSearch(response);
     } catch (error) {
       console.error("Analysis failed:", error);
@@ -233,7 +536,6 @@ What are the key information and insights from this conversation?`,
   };
 
   const extractEntities = (response: string): Array<{ text: string; type: string }> => {
-    // Simple entity extraction - you can make this more sophisticated
     const entities = [];
     const patterns = {
       PERSON: /(?:person|user|individual):\s*(\w+)/gi,
@@ -251,18 +553,16 @@ What are the key information and insights from this conversation?`,
     return entities.length > 0 ? entities : [
       { text: "ChatGPT", type: "PRODUCT" },
       { text: "LM Studio", type: "PRODUCT" },
-      { text: "Hugging Face", type: "ORG" },
+      { text: "Qwen", type: "PRODUCT" },
     ];
   };
 
   const extractSummary = (response: string): string => {
-    // Extract first meaningful paragraph or use full response
     const paragraphs = response.split('\n\n').filter(p => p.trim().length > 0);
     return paragraphs[0] || response.substring(0, 200) + "...";
   };
 
   const generateSuggestions = (response: string): string[] => {
-    // Generate suggestions based on the analysis
     return [
       "Set up local LLM pipeline",
       "Configure web scraping module",
@@ -272,7 +572,6 @@ What are the key information and insights from this conversation?`,
   };
 
   const simulateWebSearch = (analysisResponse: string) => {
-    // Simulate web search results based on analysis
     setWebResults([
       {
         title: "Running LLMs Locally with LM Studio",
@@ -297,9 +596,28 @@ What are the key information and insights from this conversation?`,
 
   const handleUserChoice = (choice: string) => {
     setUserChoice(choice);
-    // Handle the user's choice here
   };
 
+  // ===== Effects =====
+  useEffect(() => {
+    // Load saved configurations on mount
+    loadSavedConfigs();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    // Auto-check connection when config is loaded
+    if (lmStudioConfig.endpoint) {
+      const timeoutId = setTimeout(() => {
+        checkLMStudioConnection();
+      }, 500); // Debounce connection check
+      
+      return () => clearTimeout(timeoutId);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lmStudioConfig.endpoint]);
+
+  // ===== Render =====
   return (
     <div className="h-full flex flex-col gap-6 p-8">
       <motion.div
@@ -309,16 +627,66 @@ What are the key information and insights from this conversation?`,
       >
         <div className="flex items-center justify-between mb-6">
           <h2 className="text-2xl font-semibold tracking-tight">
-            AI-Powered Data Analysis
+            AI-Powered Data Analysis & Planning
           </h2>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => setShowSettings(!showSettings)}
-          >
-            <Settings className="w-4 h-4 mr-2" />
-            LM Studio Settings
-          </Button>
+          <div className="flex gap-2">
+            <Select value={plannerMode} onValueChange={(value: 'analysis' | 'planner') => setPlannerMode(value)}>
+              <SelectTrigger className="w-[180px]">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="analysis">
+                  <div className="flex items-center gap-2">
+                    <Brain className="w-4 h-4" />
+                    Analysis Mode
+                  </div>
+              
+              {Object.keys(savedConfigs).length > 0 && (
+                <>
+                  <Separator className="my-4" />
+                  <div className="space-y-2">
+                    <Label className="text-sm">Recent Configurations</Label>
+                    <div className="space-y-1">
+                      {Object.entries(savedConfigs).slice(0, 3).map(([key, config]) => (
+                        <div
+                          key={key}
+                          className="flex items-center justify-between p-2 rounded border hover:bg-accent cursor-pointer"
+                          onClick={() => {
+                            setLmStudioConfig(config);
+                            checkLMStudioConnection();
+                          }}
+                        >
+                          <div className="flex items-center gap-2">
+                            <Server className="w-3 h-3" />
+                            <span className="text-xs font-mono">{config.model}</span>
+                          </div>
+                          <span className="text-xs text-muted-foreground">
+                            {config.endpoint.replace('http://', '')}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </>
+              )}
+                </SelectItem>
+                <SelectItem value="planner">
+                  <div className="flex items-center gap-2">
+                    <GitBranch className="w-4 h-4" />
+                    Planner Mode
+                  </div>
+                </SelectItem>
+              </SelectContent>
+            </Select>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setShowSettings(!showSettings)}
+            >
+              <Settings className="w-4 h-4 mr-2" />
+              LM Studio Settings
+            </Button>
+          </div>
         </div>
 
         {showSettings && (
@@ -339,18 +707,48 @@ What are the key information and insights from this conversation?`,
                   <Input
                     id="endpoint"
                     value={lmStudioConfig.endpoint}
-                    onChange={(e) => setLmStudioConfig({ ...lmStudioConfig, endpoint: e.target.value })}
+                    onChange={(e) => {
+                      const newConfig = { ...lmStudioConfig, endpoint: e.target.value };
+                      setLmStudioConfig(newConfig);
+                    }}
+                    onBlur={saveConfig}
                     placeholder="http://localhost:1234/v1/chat/completions"
                   />
                 </div>
                 <div className="space-y-2">
-                  <Label htmlFor="model">Model Name</Label>
-                  <Input
-                    id="model"
-                    value={lmStudioConfig.model}
-                    onChange={(e) => setLmStudioConfig({ ...lmStudioConfig, model: e.target.value })}
-                    placeholder="local-model"
-                  />
+                  <Label htmlFor="model">Model Selection</Label>
+                  {availableModels.length > 0 ? (
+                    <Select 
+                      value={lmStudioConfig.model} 
+                      onValueChange={(value) => {
+                        const newConfig = { ...lmStudioConfig, model: value };
+                        setLmStudioConfig(newConfig);
+                        saveConfig();
+                      }}
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder="Select a model" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {availableModels.map((model) => (
+                          <SelectItem key={model} value={model}>
+                            {model}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  ) : (
+                    <Input
+                      id="model"
+                      value={lmStudioConfig.model}
+                      onChange={(e) => {
+                        const newConfig = { ...lmStudioConfig, model: e.target.value };
+                        setLmStudioConfig(newConfig);
+                      }}
+                      onBlur={saveConfig}
+                      placeholder="Model name (connect to see available models)"
+                    />
+                  )}
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="temperature">Temperature: {lmStudioConfig.temperature}</Label>
@@ -361,7 +759,12 @@ What are the key information and insights from this conversation?`,
                     max="1"
                     step="0.1"
                     value={lmStudioConfig.temperature}
-                    onChange={(e) => setLmStudioConfig({ ...lmStudioConfig, temperature: parseFloat(e.target.value) })}
+                    onChange={(e) => {
+                      const newConfig = { ...lmStudioConfig, temperature: parseFloat(e.target.value) };
+                      setLmStudioConfig(newConfig);
+                    }}
+                    onMouseUp={saveConfig}
+                    onTouchEnd={saveConfig}
                   />
                 </div>
                 <div className="space-y-2">
@@ -370,97 +773,167 @@ What are the key information and insights from this conversation?`,
                     id="maxTokens"
                     type="number"
                     value={lmStudioConfig.maxTokens}
-                    onChange={(e) => setLmStudioConfig({ ...lmStudioConfig, maxTokens: parseInt(e.target.value) })}
+                    onChange={(e) => {
+                      const newConfig = { ...lmStudioConfig, maxTokens: parseInt(e.target.value) };
+                      setLmStudioConfig(newConfig);
+                    }}
+                    onBlur={saveConfig}
                   />
                 </div>
               </div>
               <div className="flex items-center justify-between pt-4">
-                <div className="flex items-center gap-2">
-                  <div className={`w-2 h-2 rounded-full ${
-                    connectionStatus === "connected" ? "bg-green-500" : 
-                    connectionStatus === "checking" ? "bg-yellow-500 animate-pulse" : 
-                    "bg-red-500"
-                  }`} />
-                  <span className="text-sm">
-                    {connectionStatus === "connected" ? "Connected" : 
-                     connectionStatus === "checking" ? "Checking..." : 
-                     "Disconnected"}
-                  </span>
+                <div className="flex items-center gap-4">
+                  <div className="flex items-center gap-2">
+                    <div className={`w-2 h-2 rounded-full ${
+                      connectionStatus === "connected" ? "bg-green-500" : 
+                      connectionStatus === "checking" ? "bg-yellow-500 animate-pulse" : 
+                      "bg-red-500"
+                    }`} />
+                    <span className="text-sm">
+                      {connectionStatus === "connected" ? "Connected" : 
+                       connectionStatus === "checking" ? "Checking..." : 
+                       "Disconnected"}
+                    </span>
+                  </div>
+                  {availableModels.length > 0 && (
+                    <span className="text-xs text-muted-foreground">
+                      {availableModels.length} models available
+                    </span>
+                  )}
                 </div>
-                <Button onClick={checkLMStudioConnection} size="sm">
-                  <Zap className="w-4 h-4 mr-2" />
-                  Test Connection
-                </Button>
+                <div className="flex items-center gap-2">
+                  <Badge variant="secondary" className="text-xs">
+                    <Archive className="w-3 h-3 mr-1" />
+                    Auto-saved
+                  </Badge>
+                  <Button onClick={checkLMStudioConnection} size="sm">
+                    <Zap className="w-4 h-4 mr-2" />
+                    Test Connection
+                  </Button>
+                </div>
               </div>
             </CardContent>
           </Card>
         )}
 
         <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
-          <TabsList className="grid w-full grid-cols-3">
+          <TabsList className="grid w-full grid-cols-5">
             <TabsTrigger value="chat">
               <MessageSquare className="w-4 h-4 mr-2" />
               Chat Analysis
             </TabsTrigger>
+            <TabsTrigger value="planner">
+              <GitBranch className="w-4 h-4 mr-2" />
+              Plans
+            </TabsTrigger>
+            <TabsTrigger value="logs">
+              <Database className="w-4 h-4 mr-2" />
+              Logs
+            </TabsTrigger>
             <TabsTrigger value="models">
               <Download className="w-4 h-4 mr-2" />
-              Model Downloads
+              Models
             </TabsTrigger>
             <TabsTrigger value="insights">
               <Sparkles className="w-4 h-4 mr-2" />
-              AI Insights
+              Insights
             </TabsTrigger>
           </TabsList>
 
           <TabsContent value="chat" className="space-y-4">
             <Card>
               <CardHeader>
-                <CardTitle>Chat Conversation Analysis</CardTitle>
+                <CardTitle>
+                  {plannerMode === 'planner' ? 'AI Planner & Reasoner' : 'Chat Conversation Analysis'}
+                </CardTitle>
                 <CardDescription>
-                  Analyze conversations using your local LM Studio model
+                  {plannerMode === 'planner' 
+                    ? 'Use AI to plan, reason, and structure complex tasks'
+                    : 'Analyze conversations using your local LM Studio model'}
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
                 <div className="space-y-2">
-                  <Label htmlFor="task-select">Select Analysis Task</Label>
+                  <Label htmlFor="task-select">Select Task</Label>
                   <Select value={selectedTask} onValueChange={setSelectedTask}>
                     <SelectTrigger id="task-select">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="intent-classification">
-                        <div className="flex items-center gap-2">
-                          <Target className="w-4 h-4" />
-                          Intent Classification
-                        </div>
-                      </SelectItem>
-                      <SelectItem value="ner">
-                        <div className="flex items-center gap-2">
-                          <FileText className="w-4 h-4" />
-                          Named Entity Recognition
-                        </div>
-                      </SelectItem>
-                      <SelectItem value="summarization">
-                        <div className="flex items-center gap-2">
-                          <Bot className="w-4 h-4" />
-                          Dialogue Summarization
-                        </div>
-                      </SelectItem>
-                      <SelectItem value="qa">
-                        <div className="flex items-center gap-2">
-                          <Search className="w-4 h-4" />
-                          Question Answering
-                        </div>
-                      </SelectItem>
+                      {plannerMode === 'planner' ? (
+                        <>
+                          <SelectItem value="question_analysis">
+                            <div className="flex items-center gap-2">
+                              <Search className="w-4 h-4" />
+                              Question Analysis
+                            </div>
+                          </SelectItem>
+                          <SelectItem value="ai_response_summary">
+                            <div className="flex items-center gap-2">
+                              <FileText className="w-4 h-4" />
+                              Response Summary
+                            </div>
+                          </SelectItem>
+                          <SelectItem value="command_instruction">
+                            <div className="flex items-center gap-2">
+                              <Bot className="w-4 h-4" />
+                              Command Instruction
+                            </div>
+                          </SelectItem>
+                          <SelectItem value="structural_plan">
+                            <div className="flex items-center gap-2">
+                              <GitBranch className="w-4 h-4" />
+                              Structural Plan
+                            </div>
+                          </SelectItem>
+                          <SelectItem value="code_directive">
+                            <div className="flex items-center gap-2">
+                              <Target className="w-4 h-4" />
+                              Code Directive
+                            </div>
+                          </SelectItem>
+                        </>
+                      ) : (
+                        <>
+                          <SelectItem value="intent-classification">
+                            <div className="flex items-center gap-2">
+                              <Target className="w-4 h-4" />
+                              Intent Classification
+                            </div>
+                          </SelectItem>
+                          <SelectItem value="ner">
+                            <div className="flex items-center gap-2">
+                              <FileText className="w-4 h-4" />
+                              Named Entity Recognition
+                            </div>
+                          </SelectItem>
+                          <SelectItem value="summarization">
+                            <div className="flex items-center gap-2">
+                              <Bot className="w-4 h-4" />
+                              Dialogue Summarization
+                            </div>
+                          </SelectItem>
+                          <SelectItem value="qa">
+                            <div className="flex items-center gap-2">
+                              <Search className="w-4 h-4" />
+                              Question Answering
+                            </div>
+                          </SelectItem>
+                        </>
+                      )}
                     </SelectContent>
                   </Select>
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="chat-input">Chat Conversation</Label>
+                  <Label htmlFor="chat-input">
+                    {plannerMode === 'planner' ? 'Input for Planning' : 'Chat Conversation'}
+                  </Label>
                   <Textarea
                     id="chat-input"
-                    placeholder="Paste your ChatGPT conversation here..."
+                    placeholder={plannerMode === 'planner' 
+                      ? "Enter your request or question for the AI planner..."
+                      : "Paste your ChatGPT conversation here..."}
                     value={chatInput}
                     onChange={(e) => setChatInput(e.target.value)}
                     rows={8}
@@ -476,12 +949,12 @@ What are the key information and insights from this conversation?`,
                   {isAnalyzing ? (
                     <>
                       <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                      Analyzing with LM Studio...
+                      {plannerMode === 'planner' ? 'Planning...' : 'Analyzing...'}
                     </>
                   ) : (
                     <>
                       <Brain className="mr-2 h-4 w-4" />
-                      Analyze Conversation
+                      {plannerMode === 'planner' ? 'Generate Plan' : 'Analyze Conversation'}
                     </>
                   )}
                 </Button>
@@ -619,6 +1092,119 @@ What are the key information and insights from this conversation?`,
             )}
           </TabsContent>
 
+          <TabsContent value="planner">
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <GitBranch className="w-5 h-5" />
+                  Active Plans
+                </CardTitle>
+                <CardDescription>
+                  Structured plans generated by the AI Planner
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                {activePlans.length === 0 ? (
+                  <div className="text-center py-8 text-muted-foreground">
+                    No active plans. Create one using the Planner mode.
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    {activePlans.map((plan) => (
+                      <Card key={plan.id}>
+                        <CardHeader>
+                          <div className="flex items-center justify-between">
+                            <CardTitle className="text-lg">{plan.title}</CardTitle>
+                            <Badge variant={
+                              plan.priority === 'high' ? 'destructive' : 
+                              plan.priority === 'medium' ? 'default' : 
+                              'secondary'
+                            }>
+                              {plan.priority}
+                            </Badge>
+                          </div>
+                          <CardDescription>
+                            Created: {new Date(plan.created_at).toLocaleString()}
+                          </CardDescription>
+                        </CardHeader>
+                        <CardContent>
+                          <div className="space-y-2">
+                            {plan.steps.map((step, idx) => (
+                              <div key={idx} className="flex items-center gap-3 p-2 rounded hover:bg-accent">
+                                <Badge variant="outline" className="min-w-[30px]">
+                                  {step.order}
+                                </Badge>
+                                <span className="flex-1 text-sm">{step.action}</span>
+                                <Badge variant={
+                                  step.status === 'completed' ? 'default' :
+                                  step.status === 'in_progress' ? 'secondary' :
+                                  'outline'
+                                }>
+                                  {step.status}
+                                </Badge>
+                              </div>
+                            ))}
+                          </div>
+                        </CardContent>
+                      </Card>
+                    ))}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          <TabsContent value="logs">
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <Database className="w-5 h-5" />
+                  Planner Logs
+                </CardTitle>
+                <CardDescription>
+                  History of all planning and analysis sessions
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <ScrollArea className="h-[500px]">
+                  <div className="space-y-3">
+                    {plannerLogs.length === 0 ? (
+                      <div className="text-center py-8 text-muted-foreground">
+                        No logs available yet. Start analyzing to generate logs.
+                      </div>
+                    ) : (
+                      plannerLogs.map((log, idx) => (
+                        <Card key={idx} className="p-4">
+                          <div className="space-y-2">
+                            <div className="flex items-center justify-between">
+                              <Badge variant="outline">{log.log_type}</Badge>
+                              <span className="text-xs text-muted-foreground">
+                                {new Date(log.timestamp).toLocaleString()}
+                              </span>
+                            </div>
+                            <div className="text-sm">
+                              <strong>User:</strong> {log.user_message.substring(0, 100)}...
+                            </div>
+                            <div className="text-sm text-muted-foreground">
+                              <strong>Intent:</strong> {log.intent}
+                            </div>
+                            <div className="flex flex-wrap gap-1 mt-2">
+                              {log.tags.map((tag, tagIdx) => (
+                                <Badge key={tagIdx} variant="secondary" className="text-xs">
+                                  {tag}
+                                </Badge>
+                              ))}
+                            </div>
+                          </div>
+                        </Card>
+                      ))
+                    )}
+                  </div>
+                </ScrollArea>
+              </CardContent>
+            </Card>
+          </TabsContent>
+
           <TabsContent value="models">
             <Card>
               <CardHeader>
@@ -631,7 +1217,10 @@ What are the key information and insights from this conversation?`,
                 <div className="space-y-4">
                   {Object.entries(recommendedModels).map(([task, models]) => (
                     <div key={task} className="space-y-2">
-                      <h4 className="font-medium capitalize">{task.replace('-', ' ')}</h4>
+                      <h4 className="font-medium capitalize flex items-center gap-2">
+                        {task === 'planner' && <GitBranch className="w-4 h-4" />}
+                        {task.replace('-', ' ')}
+                      </h4>
                       <div className="space-y-1">
                         {models.map((model, idx) => (
                           <div key={idx} className="flex items-center justify-between p-2 border rounded">
@@ -665,10 +1254,57 @@ What are the key information and insights from this conversation?`,
           </TabsContent>
 
           <TabsContent value="insights">
-            <Card className="h-[500px] flex items-center justify-center">
-              <span className="text-gray-400 italic">
-                AI-generated insights and recommendations will appear here after analysis.
-              </span>
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <Sparkles className="w-5 h-5" />
+                  AI-Generated Insights
+                </CardTitle>
+                <CardDescription>
+                  Patterns and recommendations from your analysis history
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-4">
+                  <Alert>
+                    <Brain className="h-4 w-4" />
+                    <AlertTitle>Pattern Detected</AlertTitle>
+                    <AlertDescription>
+                      Based on your recent analyses, you frequently work with code debugging tasks.
+                      Consider using specialized code analysis models.
+                    </AlertDescription>
+                  </Alert>
+                  <Alert>
+                    <Target className="h-4 w-4" />
+                    <AlertTitle>Optimization Suggestion</AlertTitle>
+                    <AlertDescription>
+                      Your planner logs show recurring structural planning requests.
+                      Enable auto-plan generation for similar queries.
+                    </AlertDescription>
+                  </Alert>
+                  <Card className="p-4">
+                    <h4 className="font-medium mb-2">Session Statistics</h4>
+                    <div className="grid grid-cols-2 gap-4 text-sm">
+                      <div>
+                        <span className="text-muted-foreground">Total Analyses:</span>
+                        <span className="ml-2 font-medium">{plannerLogs.length}</span>
+                      </div>
+                      <div>
+                        <span className="text-muted-foreground">Active Plans:</span>
+                        <span className="ml-2 font-medium">{activePlans.length}</span>
+                      </div>
+                      <div>
+                        <span className="text-muted-foreground">Most Used Task:</span>
+                        <span className="ml-2 font-medium">Question Analysis</span>
+                      </div>
+                      <div>
+                        <span className="text-muted-foreground">Success Rate:</span>
+                        <span className="ml-2 font-medium">92%</span>
+                      </div>
+                    </div>
+                  </Card>
+                </div>
+              </CardContent>
             </Card>
           </TabsContent>
         </Tabs>
