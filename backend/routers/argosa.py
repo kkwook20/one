@@ -1,11 +1,19 @@
-# backend/routers/argosa.py - Argosa 시스템 라우터
+# backend/routers/argosa.py - Argosa 시스템 라우터 (LLM Conversation Collector 통합)
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect, HTTPException
-from typing import Dict, List, Optional
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, HTTPException, BackgroundTasks
+from typing import Dict, List, Optional, Any
 import asyncio
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from pydantic import BaseModel
+from pathlib import Path
+import hashlib
+import os
+import subprocess
+import platform
+import uuid
+import sys
+import shutil
 
 # Create router
 router = APIRouter()
@@ -13,67 +21,236 @@ router = APIRouter()
 # WebSocket connections for Argosa
 active_connections: Dict[str, WebSocket] = {}
 
-# Data models for Argosa
-class InformationSource(BaseModel):
-    id: str
-    name: str
-    type: str  # 'web', 'api', 'user_input', 'file'
-    url: Optional[str] = None
-    credentials: Optional[dict] = None
-    schedule: Optional[str] = None  # cron expression
-    active: bool = True
-    last_fetch: Optional[datetime] = None
+# Configuration
+LLM_DATA_PATH = Path("./data/argosa/llm-conversations")
+SYNC_CONFIG_PATH = Path("./data/argosa/llm-conversations/sync-config.json")
+SYNC_STATUS_PATH = Path("./data/argosa/llm-conversations")
+SESSION_DATA_PATH = Path("./data/argosa/llm-conversations/sessions.json")
+SCHEDULE_FAILURE_PATH = Path("./data/argosa/llm-conversations/schedule-failure.json")
 
-class AnalysisTask(BaseModel):
-    id: str
-    name: str
-    source_ids: List[str]
-    analysis_type: str  # 'pattern', 'trend', 'prediction', 'sentiment'
-    parameters: dict = {}
-    schedule: Optional[str] = None
-    status: str = 'pending'  # pending, running, completed, failed
-    created_at: datetime
-    updated_at: Optional[datetime] = None
-    results: Optional[dict] = None
+# ======================== Data Models ========================
 
-class PredictionModel(BaseModel):
-    id: str
-    name: str
-    model_type: str  # 'timeseries', 'classification', 'regression'
-    training_data_source: List[str]
-    parameters: dict = {}
-    accuracy: Optional[float] = None
-    last_trained: Optional[datetime] = None
-    status: str = 'untrained'  # untrained, training, ready, failed
+# Firefox 제어 관련 모델
+class SyncRequest(BaseModel):
+    platforms: List[Dict[str, Any]]
+    settings: Dict[str, Any]
 
-class Schedule(BaseModel):
-    id: str
-    name: str
-    prediction_model_id: str
-    tasks: List[dict]  # List of scheduled tasks
-    priority: int = 5  # 1-10, 10 being highest
-    created_at: datetime
-    next_run: Optional[datetime] = None
+class SyncProgress(BaseModel):
+    sync_id: str
+    status: str
+    progress: int = 0
+    current_platform: Optional[str] = None
+    collected: int = 0
+    message: str = ""
 
-# In-memory storage (placeholder for database)
-information_sources: Dict[str, InformationSource] = {}
-analysis_tasks: Dict[str, AnalysisTask] = {}
-prediction_models: Dict[str, PredictionModel] = {}
-schedules: Dict[str, Schedule] = {}
+class ScheduleConfig(BaseModel):
+    enabled: bool
+    startTime: str
+    interval: str
+    platforms: List[str]
+    settings: Dict[str, Any]
+
+# 세션 관련 모델
+class SessionStatus(BaseModel):
+    platform: str
+    valid: bool
+    lastChecked: str
+    expiresAt: Optional[str] = None
+
+class SessionCheckRequest(BaseModel):
+    platforms: List[str]
+
+class SingleSessionCheckRequest(BaseModel):
+    platform: str
+    enabled: bool = True
+
+class OpenLoginRequest(BaseModel):
+    platform: str
+    url: str
+    profileName: str = "llm-collector"
+
+# ======================== Helper Functions ========================
+
+async def check_firefox_running():
+    """Firefox 실행 여부 확인"""
+    system = platform.system()
+    
+    if system == "Windows":
+        result = subprocess.run(
+            ["tasklist", "/FI", "IMAGENAME eq firefox.exe"],
+            capture_output=True,
+            text=True
+        )
+        return "firefox.exe" in result.stdout
+    else:
+        result = subprocess.run(
+            ["pgrep", "-x", "firefox"],
+            capture_output=True
+        )
+        return result.returncode == 0
+
+def get_firefox_command(profile_name: str = "llm-collector"):
+    """Get Firefox launch command based on OS"""
+    system = platform.system()
+    
+    if system == "Windows":
+        # 여러 Firefox 경로 시도
+        firefox_paths = [
+            r"C:\Program Files\Firefox Developer Edition\firefox.exe",
+            r"C:\Program Files\Mozilla Firefox\firefox.exe",
+            r"C:\Program Files (x86)\Mozilla Firefox\firefox.exe",
+            os.path.expandvars(r"%LOCALAPPDATA%\Mozilla Firefox\firefox.exe"),
+            os.path.expandvars(r"%ProgramFiles%\Mozilla Firefox\firefox.exe"),
+            os.path.expandvars(r"%ProgramFiles(x86)%\Mozilla Firefox\firefox.exe")
+        ]
+        
+        for path in firefox_paths:
+            if os.path.exists(path):
+                print(f"[Firefox] Found Firefox at: {path}")
+                return [path, "--no-remote", "-P", profile_name]
+        
+        # PATH에서 firefox 찾기
+        firefox_in_path = shutil.which("firefox")
+        if firefox_in_path:
+            print(f"[Firefox] Found Firefox in PATH: {firefox_in_path}")
+            return [firefox_in_path, "--no-remote", "-P", profile_name]
+            
+        # 상세한 에러 메시지
+        error_msg = "Firefox not found in any of these locations:\n"
+        for path in firefox_paths:
+            error_msg += f"  - {path}\n"
+        error_msg += "\nPlease install Firefox or add it to your PATH"
+        raise Exception(error_msg)
+        
+    elif system == "Darwin":  # macOS
+        firefox_paths = [
+            "/Applications/Firefox.app/Contents/MacOS/firefox",
+            "/Applications/Firefox Developer Edition.app/Contents/MacOS/firefox",
+            os.path.expanduser("~/Applications/Firefox.app/Contents/MacOS/firefox")
+        ]
+        
+        for path in firefox_paths:
+            if os.path.exists(path):
+                return [path, "--no-remote", "-P", profile_name]
+                
+        raise Exception("Firefox not found on macOS. Please install Firefox.")
+        
+    else:  # Linux
+        firefox_in_path = shutil.which("firefox")
+        if firefox_in_path:
+            return [firefox_in_path, "--no-remote", "-P", profile_name]
+            
+        # Try common Linux paths
+        firefox_paths = [
+            "/usr/bin/firefox",
+            "/usr/local/bin/firefox",
+            "/snap/bin/firefox"
+        ]
+        
+        for path in firefox_paths:
+            if os.path.exists(path):
+                return [path, "--no-remote", "-P", profile_name]
+                
+        raise Exception("Firefox not found. Please install Firefox: sudo apt install firefox")
+
+async def monitor_firefox_process(process, sync_id):
+    """Firefox 프로세스 모니터링"""
+    try:
+        await asyncio.sleep(10)
+        
+        while True:
+            if process.poll() is not None:
+                print(f"[Firefox] Process terminated with code: {process.returncode}")
+                
+                status_file = SYNC_STATUS_PATH / f"sync-status-{sync_id}.json"
+                if status_file.exists():
+                    with open(status_file, 'r') as f:
+                        current_status = json.load(f)
+                    
+                    if current_status.get("status") in ["pending", "syncing"]:
+                        with open(status_file, 'w') as f:
+                            json.dump({
+                                "status": "error",
+                                "progress": current_status.get("progress", 0),
+                                "message": "Firefox was closed unexpectedly",
+                                "updated_at": datetime.now().isoformat()
+                            }, f)
+                break
+            
+            await asyncio.sleep(2)
+            
+    except Exception as e:
+        print(f"[Firefox] Error monitoring process: {e}")
+
+async def should_sync_today(platform: str) -> bool:
+    """오늘 sync를 해야 하는지 판단"""
+    try:
+        platform_path = LLM_DATA_PATH / platform
+        if not platform_path.exists():
+            return True
+        
+        today = datetime.now().date()
+        yesterday = today - timedelta(days=1)
+        
+        recent_files = []
+        for file in platform_path.glob("*.json"):
+            file_date_str = file.stem.split('_')[0]
+            try:
+                file_date = datetime.strptime(file_date_str, "%Y-%m-%d").date()
+                if file_date >= yesterday:
+                    recent_files.append(file)
+            except:
+                continue
+        
+        today_exists = any(today.isoformat() in f.name for f in recent_files)
+        yesterday_exists = any(yesterday.isoformat() in f.name for f in recent_files)
+        
+        if today_exists and yesterday_exists:
+            print(f"[Smart Schedule] {platform}: Recent data exists, skipping today")
+            return False
+        
+        if len(recent_files) >= 2:
+            counts = []
+            for file in sorted(recent_files)[-2:]:
+                with open(file, 'r') as f:
+                    data = json.load(f)
+                    counts.append(len(data.get("conversations", [])))
+            
+            if len(counts) == 2 and counts[0] == counts[1]:
+                print(f"[Smart Schedule] {platform}: No changes detected, skipping")
+                return False
+        
+        return True
+        
+    except Exception as e:
+        print(f"Error checking sync necessity: {e}")
+        return True
+
+# ======================== Initialization ========================
 
 async def initialize():
     """Initialize Argosa system"""
-    print("[Argosa] Initializing...")
+    print("[Argosa] Initializing AI analysis system...")
     
-    # Create sample data
-    sample_source = InformationSource(
-        id="source-1",
-        name="Sample Web Source",
-        type="web",
-        url="https://example.com/api/data",
-        active=True
-    )
-    information_sources[sample_source.id] = sample_source
+    LLM_DATA_PATH.mkdir(parents=True, exist_ok=True)
+    SYNC_STATUS_PATH.mkdir(parents=True, exist_ok=True)
+    
+    for platform in ["chatgpt", "claude", "gemini", "deepseek", "grok", "perplexity", "custom"]:
+        platform_path = LLM_DATA_PATH / platform
+        platform_path.mkdir(exist_ok=True)
+    
+    schedule_path = LLM_DATA_PATH / "schedule.json"
+    if not schedule_path.exists():
+        default_schedule = {
+            "enabled": False,
+            "time": "09:00",
+            "interval": "daily",
+            "platforms": [],
+            "settings": {},
+            "updated_at": datetime.now().isoformat()
+        }
+        with open(schedule_path, 'w') as f:
+            json.dump(default_schedule, f, indent=2)
     
     print("[Argosa] Initialized successfully")
 
@@ -81,261 +258,786 @@ async def shutdown():
     """Shutdown Argosa system"""
     print("[Argosa] Shutting down...")
     
-    # Close all WebSocket connections
     for client_id in list(active_connections.keys()):
         try:
             await active_connections[client_id].close()
         except:
             pass
+        active_connections.pop(client_id, None)
     
-    print("[Argosa] Shut down successfully")
+    print("[Argosa] Shutdown complete")
 
-# WebSocket endpoint
+# ======================== System Status ========================
+
+@router.get("/status")
+async def get_argosa_status():
+    """Get Argosa system status for extension connection check"""
+    try:
+        # Check if directories exist
+        llm_data_exists = LLM_DATA_PATH.exists()
+        sync_status_exists = SYNC_STATUS_PATH.exists()
+        
+        # Count total conversations
+        total_conversations = 0
+        if llm_data_exists:
+            for platform_dir in LLM_DATA_PATH.iterdir():
+                if platform_dir.is_dir():
+                    total_conversations += len(list(platform_dir.glob("*.json")))
+        
+        return {
+            "status": "operational",
+            "system": "argosa",
+            "features": {
+                "llm_collector": True,
+                "data_analysis": False,  # Not yet implemented
+                "prediction": False,     # Not yet implemented
+            },
+            "storage": {
+                "llm_data_path": str(LLM_DATA_PATH),
+                "exists": llm_data_exists,
+                "total_conversations": total_conversations
+            },
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": str(e),
+            "timestamp": datetime.now().isoformat()
+        }
+
+# ======================== LLM Conversation Endpoints ========================
+
+@router.get("/llm/conversations/stats")
+async def get_conversation_stats():
+    """대화 수집 통계 반환"""
+    try:
+        stats = {
+            "daily_stats": {},
+            "latest_sync": {},
+            "total_conversations": 0
+        }
+        
+        for platform in ["chatgpt", "claude", "gemini", "deepseek", "grok", "perplexity"]:
+            platform_path = LLM_DATA_PATH / platform
+            if platform_path.exists():
+                platform_stats = {}
+                latest_file_time = None
+                
+                for file in platform_path.glob("*.json"):
+                    date_str = file.stem.split('_')[0]
+                    if date_str not in platform_stats:
+                        platform_stats[date_str] = 0
+                    
+                    # 파일 내용을 읽어서 실제 대화 수 계산
+                    try:
+                        with open(file, 'r') as f:
+                            data = json.load(f)
+                            conversation_count = len(data.get("conversations", []))
+                            platform_stats[date_str] += conversation_count
+                    except:
+                        platform_stats[date_str] += 1
+                    
+                    file_time = datetime.fromtimestamp(file.stat().st_mtime)
+                    if latest_file_time is None or file_time > latest_file_time:
+                        latest_file_time = file_time
+                
+                stats["daily_stats"][platform] = platform_stats
+                if latest_file_time:
+                    stats["latest_sync"][platform] = latest_file_time.isoformat()
+        
+        for platform_stats in stats["daily_stats"].values():
+            stats["total_conversations"] += sum(platform_stats.values())
+        
+        return stats
+        
+    except Exception as e:
+        print(f"Error getting stats: {e}")
+        return {
+            "daily_stats": {},
+            "latest_sync": {},
+            "total_conversations": 0
+        }
+
+@router.get("/llm/conversations/files")
+async def get_conversation_files():
+    """수집된 대화 파일 목록 반환"""
+    try:
+        files_list = []
+        
+        for platform in ["chatgpt", "claude", "gemini", "deepseek", "grok", "perplexity"]:
+            platform_path = LLM_DATA_PATH / platform
+            if platform_path.exists():
+                files = [f.name for f in platform_path.glob("*.json")]
+                files_list.append({
+                    "platform": platform,
+                    "files": sorted(files, reverse=True)[:10]
+                })
+        
+        return {"files": files_list}
+        
+    except Exception as e:
+        print(f"Error getting files: {e}")
+        return {"files": []}
+
+@router.delete("/llm/conversations/clean")
+async def clean_conversations(days: int = 0):
+    """오래된 대화 데이터 삭제"""
+    try:
+        deleted_count = 0
+        
+        if days == 0:
+            for platform in ["chatgpt", "claude", "gemini", "deepseek", "grok", "perplexity"]:
+                platform_path = LLM_DATA_PATH / platform
+                if platform_path.exists():
+                    for file in platform_path.glob("*.json"):
+                        file.unlink()
+                        deleted_count += 1
+        else:
+            cutoff_date = datetime.now() - timedelta(days=days)
+            for platform in ["chatgpt", "claude", "gemini", "deepseek", "grok", "perplexity"]:
+                platform_path = LLM_DATA_PATH / platform
+                if platform_path.exists():
+                    for file in platform_path.glob("*.json"):
+                        if datetime.fromtimestamp(file.stat().st_mtime) < cutoff_date:
+                            file.unlink()
+                            deleted_count += 1
+        
+        return {"success": True, "deleted": deleted_count}
+        
+    except Exception as e:
+        print(f"Error cleaning data: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ======================== Session Management ========================
+
+@router.post("/llm/sessions/check")
+async def check_sessions(request: SessionCheckRequest):
+    """각 플랫폼의 세션 상태 확인"""
+    try:
+        sessions = []
+        
+        session_data = {}
+        if SESSION_DATA_PATH.exists():
+            with open(SESSION_DATA_PATH, 'r') as f:
+                session_data = json.load(f)
+        
+        for platform in request.platforms:
+            session_info = session_data.get(platform, {})
+            
+            expires_at = session_info.get("expiresAt")
+            if expires_at:
+                expires_date = datetime.fromisoformat(expires_at)
+                is_valid = expires_date > datetime.now()
+            else:
+                last_checked = session_info.get("lastChecked")
+                if last_checked:
+                    last_date = datetime.fromisoformat(last_checked)
+                    is_valid = (datetime.now() - last_date).days < 1
+                else:
+                    is_valid = False
+            
+            sessions.append(SessionStatus(
+                platform=platform,
+                valid=is_valid,
+                lastChecked=session_info.get("lastChecked", datetime.now().isoformat()),
+                expiresAt=expires_at
+            ))
+        
+        return {"sessions": sessions}
+        
+    except Exception as e:
+        print(f"Error checking sessions: {e}")
+        return {"sessions": []}
+
+@router.post("/llm/sessions/check-single")
+async def check_single_session(request: SingleSessionCheckRequest):
+    """단일 플랫폼의 세션 상태 확인"""
+    try:
+        session_data = {}
+        if SESSION_DATA_PATH.exists():
+            with open(SESSION_DATA_PATH, 'r') as f:
+                session_data = json.load(f)
+        
+        session_info = session_data.get(request.platform, {})
+        
+        expires_at = session_info.get("expiresAt")
+        if expires_at:
+            expires_date = datetime.fromisoformat(expires_at)
+            is_valid = expires_date > datetime.now()
+        else:
+            last_checked = session_info.get("lastChecked")
+            if last_checked:
+                last_date = datetime.fromisoformat(last_checked)
+                is_valid = (datetime.now() - last_date).days < 1
+            else:
+                is_valid = False
+        
+        should_recheck = False
+        if last_checked:
+            last_date = datetime.fromisoformat(last_checked)
+            hours_since_check = (datetime.now() - last_date).total_seconds() / 3600
+            should_recheck = hours_since_check > 1
+        else:
+            should_recheck = True
+        
+        if should_recheck and request.enabled:
+            trigger_path = SYNC_STATUS_PATH / f"check-session-{request.platform}.trigger"
+            trigger_path.write_text(json.dumps({
+                "platform": request.platform,
+                "timestamp": datetime.now().isoformat()
+            }))
+            
+            print(f"[Session] Triggered actual check for {request.platform}")
+        
+        return {
+            "platform": request.platform,
+            "valid": is_valid,
+            "lastChecked": session_info.get("lastChecked", datetime.now().isoformat()),
+            "expiresAt": expires_at
+        }
+        
+    except Exception as e:
+        print(f"Error checking session for {request.platform}: {e}")
+        return {
+            "platform": request.platform,
+            "valid": False,
+            "lastChecked": datetime.now().isoformat(),
+            "expiresAt": None
+        }
+
+@router.post("/llm/sessions/open-login")
+async def open_login_page(request: OpenLoginRequest):
+    """플랫폼 로그인 페이지 열기"""
+    try:
+        # Firefox 명령어 가져오기
+        try:
+            firefox_cmd = get_firefox_command(request.profileName)
+        except Exception as e:
+            print(f"[Firefox] Error getting command: {e}")
+            return {
+                "success": False, 
+                "error": str(e),
+                "details": "Firefox not found. Please check installation."
+            }
+        
+        # Firefox 실행
+        try:
+            print(f"[Firefox] Opening {request.platform} at {request.url}")
+            subprocess.Popen(firefox_cmd + [request.url])
+            
+            # 세션 파일 업데이트 (checking 상태로)
+            session_data = {}
+            if SESSION_DATA_PATH.exists():
+                with open(SESSION_DATA_PATH, 'r') as f:
+                    session_data = json.load(f)
+            
+            session_data[request.platform] = {
+                "valid": False,
+                "lastChecked": datetime.now().isoformat(),
+                "expiresAt": None,
+                "status": "checking"
+            }
+            
+            SESSION_DATA_PATH.parent.mkdir(parents=True, exist_ok=True)
+            with open(SESSION_DATA_PATH, 'w') as f:
+                json.dump(session_data, f, indent=2)
+            
+            return {
+                "success": True, 
+                "message": f"Opening {request.platform} login page",
+                "details": "Please log in and then check session status"
+            }
+            
+        except Exception as e:
+            print(f"[Firefox] Error launching: {e}")
+            return {
+                "success": False, 
+                "error": f"Failed to launch Firefox: {str(e)}",
+                "details": "Check if Firefox profile exists"
+            }
+        
+    except Exception as e:
+        print(f"[Firefox] Unexpected error: {e}")
+        return {
+            "success": False, 
+            "error": str(e),
+            "details": "Unexpected error occurred"
+        }
+
+@router.post("/llm/sessions/update")
+async def update_session_status(platform: str, valid: bool = True):
+    """Extension에서 세션 상태 업데이트"""
+    try:
+        session_data = {}
+        if SESSION_DATA_PATH.exists():
+            with open(SESSION_DATA_PATH, 'r') as f:
+                session_data = json.load(f)
+        
+        session_data[platform] = {
+            "valid": valid,
+            "lastChecked": datetime.now().isoformat(),
+            "expiresAt": (datetime.now() + timedelta(days=1)).isoformat() if valid else None
+        }
+        
+        SESSION_DATA_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with open(SESSION_DATA_PATH, 'w') as f:
+            json.dump(session_data, f, indent=2)
+        
+        return {"success": True}
+        
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+# ======================== Schedule Management ========================
+
+@router.get("/llm/schedule/last-failure")
+async def get_last_schedule_failure():
+    """마지막 스케줄 실패 정보 반환"""
+    try:
+        if SCHEDULE_FAILURE_PATH.exists():
+            with open(SCHEDULE_FAILURE_PATH, 'r') as f:
+                failure_data = json.load(f)
+                
+            if failure_data.get("timestamp"):
+                failure_time = datetime.fromisoformat(failure_data["timestamp"])
+                if (datetime.now() - failure_time).days < 1:
+                    return {
+                        "failure": True,
+                        "reason": failure_data.get("reason", "unknown"),
+                        "timestamp": failure_data["timestamp"],
+                        "details": failure_data.get("details", {})
+                    }
+        
+        return {"failure": False}
+        
+    except Exception as e:
+        print(f"Error getting schedule failure: {e}")
+        return {"failure": False}
+
+# ======================== Firefox Control ========================
+
+@router.post("/llm/firefox/launch")
+async def launch_firefox_sync(request: SyncRequest, background_tasks: BackgroundTasks):
+    """Firefox를 실행하고 Extension sync를 트리거 (세션 체크 포함)"""
+    print(f"[Firefox] Launch request received: {request.dict()}")
+    
+    try:
+        # 1. 세션 체크
+        enabled_platforms = [p["platform"] for p in request.platforms if p.get("enabled", True)]
+        
+        session_data = {}
+        if SESSION_DATA_PATH.exists():
+            with open(SESSION_DATA_PATH, 'r') as f:
+                session_data = json.load(f)
+        
+        invalid_sessions = []
+        for platform in enabled_platforms:
+            session_info = session_data.get(platform, {})
+            if not session_info.get("valid", False):
+                invalid_sessions.append(platform)
+        
+        if invalid_sessions:
+            failure_data = {
+                "reason": "session_expired",
+                "timestamp": datetime.now().isoformat(),
+                "details": {
+                    "invalid_sessions": invalid_sessions,
+                    "message": f"Invalid sessions for: {', '.join(invalid_sessions)}"
+                }
+            }
+            
+            SCHEDULE_FAILURE_PATH.parent.mkdir(parents=True, exist_ok=True)
+            with open(SCHEDULE_FAILURE_PATH, 'w') as f:
+                json.dump(failure_data, f, indent=2)
+            
+            return {
+                "success": False,
+                "error": f"Invalid sessions for: {', '.join(invalid_sessions)}",
+                "invalidSessions": invalid_sessions
+            }
+        
+        # 2. 스마트 스케줄링 체크
+        platforms_to_sync = []
+        for platform in enabled_platforms:
+            if await should_sync_today(platform):
+                platforms_to_sync.append(platform)
+        
+        if not platforms_to_sync:
+            failure_data = {
+                "reason": "smart_scheduling",
+                "timestamp": datetime.now().isoformat(),
+                "details": {
+                    "message": "No platforms need syncing today (data already up to date)",
+                    "skipped_platforms": enabled_platforms
+                }
+            }
+            
+            SCHEDULE_FAILURE_PATH.parent.mkdir(parents=True, exist_ok=True)
+            with open(SCHEDULE_FAILURE_PATH, 'w') as f:
+                json.dump(failure_data, f, indent=2)
+            
+            return {
+                "success": False,
+                "error": "No platforms need syncing today (data already up to date)",
+                "reason": "smart_scheduling"
+            }
+        
+        # 3. 필터링된 플랫폼으로 sync 진행
+        filtered_platforms = [p for p in request.platforms 
+                            if p["platform"] in platforms_to_sync]
+        
+        sync_id = str(uuid.uuid4())
+        sync_config = {
+            "id": sync_id,
+            "platforms": filtered_platforms,
+            "settings": request.settings,
+            "status": "pending",
+            "created_at": datetime.now().isoformat()
+        }
+        
+        print(f"[Firefox] Saving sync config with ID: {sync_id}")
+        print(f"[Firefox] Platforms to sync: {platforms_to_sync}")
+        
+        SYNC_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with open(SYNC_CONFIG_PATH, 'w') as f:
+            json.dump(sync_config, f, indent=2)
+        
+        # 4. Firefox 실행
+        profile_name = request.settings.get("profileName", "llm-collector")
+        
+        try:
+            firefox_cmd = get_firefox_command(profile_name)
+            print(f"[Firefox] Command to execute: {firefox_cmd}")
+        except Exception as e:
+            print(f"[Firefox] Failed to get Firefox command: {e}")
+            return {
+                "success": False,
+                "error": str(e),
+                "details": "Please check Firefox installation"
+            }
+        
+        print("[Firefox] Checking if Firefox is already running...")
+        is_running = await check_firefox_running()
+        print(f"[Firefox] Is running: {is_running}")
+        
+        debug_mode = request.settings.get("debug", True)
+        
+        if not is_running:
+            print(f"[Firefox] Starting Firefox with command: {firefox_cmd}")
+            try:
+                start_url = "about:blank"
+                
+                process = subprocess.Popen(
+                    firefox_cmd + [start_url],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE
+                )
+                print(f"[Firefox] Process started with PID: {process.pid}")
+                
+                background_tasks.add_task(monitor_firefox_process, process, sync_id)
+                
+                await asyncio.sleep(10)
+                print("[Firefox] Firefox startup wait completed")
+                
+            except Exception as e:
+                print(f"[Firefox] Failed to start Firefox: {e}")
+                return {
+                    "success": False,
+                    "error": f"Failed to start Firefox: {str(e)}",
+                    "details": "Check Firefox installation and profile"
+                }
+        else:
+            print("[Firefox] Opening new tab in existing instance")
+            subprocess.Popen(firefox_cmd + ["about:blank"])
+        
+        status_file = SYNC_STATUS_PATH / f"sync-status-{sync_id}.json"
+        with open(status_file, 'w') as f:
+            json.dump({
+                "status": "pending",
+                "progress": 0,
+                "message": "Waiting for extension to start...",
+                "created_at": datetime.now().isoformat(),
+                "updated_at": datetime.now().isoformat()
+            }, f)
+        
+        print(f"[Firefox] Sync initiated successfully with ID: {sync_id}")
+        
+        if SCHEDULE_FAILURE_PATH.exists():
+            SCHEDULE_FAILURE_PATH.unlink()
+        
+        return {
+            "success": True,
+            "sync_id": sync_id,
+            "message": "Firefox launched and sync triggered",
+            "debug_mode": debug_mode
+        }
+        
+    except Exception as e:
+        print(f"[Firefox] Unexpected error: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return {
+            "success": False,
+            "error": str(e),
+            "details": "Unexpected error occurred"
+        }
+
+@router.get("/llm/sync/status/{sync_id}")
+async def get_sync_status(sync_id: str):
+    """Sync 진행 상태 확인"""
+    try:
+        status_file = SYNC_STATUS_PATH / f"sync-status-{sync_id}.json"
+        
+        if status_file.exists():
+            with open(status_file, 'r') as f:
+                return json.load(f)
+        else:
+            return {
+                "status": "pending",
+                "progress": 0,
+                "message": "Waiting for extension to start...",
+                "updated_at": datetime.now().isoformat()
+            }
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+@router.post("/llm/sync/cancel/{sync_id}")
+async def cancel_sync(sync_id: str):
+    """진행 중인 sync 취소"""
+    try:
+        status_file = SYNC_STATUS_PATH / f"sync-status-{sync_id}.json"
+        
+        if status_file.exists():
+            with open(status_file, 'w') as f:
+                json.dump({
+                    "status": "cancelled",
+                    "progress": 0,
+                    "message": "Sync cancelled by user",
+                    "updated_at": datetime.now().isoformat()
+                }, f)
+        
+        if platform.system() == "Windows":
+            subprocess.run(["taskkill", "/F", "/IM", "firefox.exe"], capture_output=True)
+        else:
+            subprocess.run(["pkill", "firefox"], capture_output=True)
+        
+        return {"success": True, "message": "Sync cancelled"}
+        
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@router.post("/llm/sync/schedule")
+async def schedule_sync(config: ScheduleConfig):
+    """자동 sync 스케줄 설정"""
+    try:
+        schedule_config = {
+            "enabled": config.enabled,
+            "time": config.startTime,
+            "interval": config.interval,
+            "platforms": config.platforms,
+            "settings": config.settings,
+            "updated_at": datetime.now().isoformat()
+        }
+        
+        schedule_path = LLM_DATA_PATH / "schedule.json"
+        with open(schedule_path, 'w') as f:
+            json.dump(schedule_config, f, indent=2)
+        
+        if platform.system() != "Windows":
+            try:
+                import subprocess
+                
+                script_path = os.path.abspath("./scripts/run_sync.py")
+                
+                result = subprocess.run(['crontab', '-l'], capture_output=True, text=True)
+                if result.returncode == 0:
+                    current_cron = result.stdout
+                    new_cron = '\n'.join([line for line in current_cron.split('\n') 
+                                        if 'llm-collector-sync' not in line and line.strip()])
+                else:
+                    new_cron = ""
+                
+                if config.enabled and config.interval != 'manual':
+                    hour, minute = config.startTime.split(":")
+                    if config.interval == 'daily':
+                        cron_schedule = f"{minute} {hour} * * *"
+                    elif config.interval == '12h':
+                        cron_schedule = f"{minute} {hour},{(int(hour)+12)%24} * * *"
+                    elif config.interval == '6h':
+                        hours = ','.join([str((int(hour)+i*6)%24) for i in range(4)])
+                        cron_schedule = f"{minute} {hours} * * *"
+                    else:
+                        cron_schedule = f"{minute} {hour} * * *"
+                    
+                    new_job = f"{cron_schedule} {sys.executable} {script_path} # llm-collector-sync"
+                    new_cron = new_cron.strip() + '\n' + new_job + '\n'
+                
+                process = subprocess.Popen(['crontab', '-'], stdin=subprocess.PIPE, text=True)
+                process.communicate(input=new_cron)
+                
+            except Exception as e:
+                print(f"Failed to update crontab: {e}")
+        else:
+            print("Windows Task Scheduler integration not implemented yet")
+        
+        return {"success": True, "message": "Schedule updated"}
+        
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@router.get("/llm/sync/config")
+async def get_sync_config():
+    """Extension이 읽을 sync 설정 반환"""
+    if SYNC_CONFIG_PATH.exists():
+        with open(SYNC_CONFIG_PATH, 'r') as f:
+            return json.load(f)
+    else:
+        return {"status": "no_config"}
+
+@router.post("/llm/sync/progress")
+async def update_sync_progress(progress: SyncProgress):
+    """Extension이 진행상황 업데이트"""
+    try:
+        status_file = SYNC_STATUS_PATH / f"sync-status-{progress.sync_id}.json"
+        
+        status = {
+            "status": progress.status,
+            "progress": progress.progress,
+            "current_platform": progress.current_platform,
+            "collected": progress.collected,
+            "message": progress.message,
+            "updated_at": datetime.now().isoformat()
+        }
+        
+        with open(status_file, 'w') as f:
+            json.dump(status, f, indent=2)
+        
+        for client_id, websocket in active_connections.items():
+            try:
+                await websocket.send_json({
+                    "type": "sync_progress",
+                    "data": status
+                })
+            except:
+                pass
+        
+        return {"success": True}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@router.post("/llm/sync/trigger-scheduled")
+async def trigger_scheduled_sync(background_tasks: BackgroundTasks):
+    """스케줄된 sync 실행"""
+    try:
+        schedule_path = LLM_DATA_PATH / "schedule.json"
+        
+        if not schedule_path.exists():
+            return {"success": False, "error": "No schedule configuration found"}
+        
+        with open(schedule_path, 'r') as f:
+            schedule = json.load(f)
+        
+        if not schedule.get('enabled'):
+            return {"success": False, "error": "Scheduled sync is disabled"}
+        
+        request = SyncRequest(
+            platforms=[{"platform": p, "enabled": True} for p in schedule.get("platforms", [])],
+            settings=schedule.get("settings", {})
+        )
+        
+        result = await launch_firefox_sync(request, background_tasks)
+        return result
+        
+    except Exception as e:
+        failure_data = {
+            "reason": "exception",
+            "timestamp": datetime.now().isoformat(),
+            "details": {
+                "error": str(e),
+                "message": "Unexpected error during scheduled sync"
+            }
+        }
+        
+        SCHEDULE_FAILURE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with open(SCHEDULE_FAILURE_PATH, 'w') as f:
+            json.dump(failure_data, f, indent=2)
+        
+        return {"success": False, "error": str(e)}
+
+@router.post("/llm/conversations/save")
+async def save_conversations(data: Dict[str, Any]):
+    """Extension에서 수집한 대화 데이터 저장"""
+    try:
+        platform = data.get("platform")
+        conversations = data.get("conversations", [])
+        timestamp = data.get("timestamp", datetime.now().isoformat())
+        
+        if not platform:
+            return {"success": False, "error": "Platform not specified"}
+        
+        platform_path = LLM_DATA_PATH / platform
+        platform_path.mkdir(exist_ok=True)
+        
+        date_str = datetime.now().strftime("%Y-%m-%d")
+        file_count = len(list(platform_path.glob(f"{date_str}_*.json")))
+        filename = f"{date_str}_conversation_{file_count + 1}.json"
+        
+        file_path = platform_path / filename
+        with open(file_path, 'w', encoding='utf-8') as f:
+            json.dump({
+                "platform": platform,
+                "timestamp": timestamp,
+                "conversations": conversations,
+                "metadata": {
+                    "count": len(conversations),
+                    "collected_at": datetime.now().isoformat()
+                }
+            }, f, ensure_ascii=False, indent=2)
+        
+        print(f"[LLM Collector] Saved {len(conversations)} conversations to {filename}")
+        
+        return {
+            "success": True,
+            "filename": filename,
+            "count": len(conversations)
+        }
+        
+    except Exception as e:
+        print(f"Error saving conversations: {e}")
+        return {"success": False, "error": str(e)}
+
+# ======================== WebSocket Endpoint ========================
+
 @router.websocket("/ws/{client_id}")
 async def websocket_endpoint(websocket: WebSocket, client_id: str):
+    """Argosa WebSocket connection"""
     await websocket.accept()
     active_connections[client_id] = websocket
     
     try:
+        await websocket.send_json({
+            "type": "connection",
+            "status": "connected",
+            "client_id": client_id
+        })
+        
         while True:
-            data = await websocket.receive_text()
-            # Handle messages if needed
+            data = await websocket.receive_json()
             
+            # Handle different message types
+            if data.get("type") == "ping":
+                await websocket.send_json({"type": "pong"})
+            
+            # Broadcast to other clients if needed
+            for other_id, other_ws in active_connections.items():
+                if other_id != client_id:
+                    try:
+                        await other_ws.send_json(data)
+                    except:
+                        pass
+                        
     except WebSocketDisconnect:
-        del active_connections[client_id]
-
-# Information Sources endpoints
-@router.get("/sources")
-async def get_information_sources():
-    """Get all information sources"""
-    return {
-        "sources": list(information_sources.values()),
-        "total": len(information_sources)
-    }
-
-@router.post("/sources")
-async def create_information_source(source: InformationSource):
-    """Create new information source"""
-    if source.id in information_sources:
-        raise HTTPException(status_code=400, detail="Source ID already exists")
-    
-    information_sources[source.id] = source
-    return {"success": True, "source": source}
-
-@router.get("/sources/{source_id}")
-async def get_information_source(source_id: str):
-    """Get specific information source"""
-    if source_id not in information_sources:
-        raise HTTPException(status_code=404, detail="Source not found")
-    
-    return information_sources[source_id]
-
-@router.put("/sources/{source_id}")
-async def update_information_source(source_id: str, source: InformationSource):
-    """Update information source"""
-    if source_id not in information_sources:
-        raise HTTPException(status_code=404, detail="Source not found")
-    
-    information_sources[source_id] = source
-    return {"success": True, "source": source}
-
-@router.delete("/sources/{source_id}")
-async def delete_information_source(source_id: str):
-    """Delete information source"""
-    if source_id not in information_sources:
-        raise HTTPException(status_code=404, detail="Source not found")
-    
-    del information_sources[source_id]
-    return {"success": True}
-
-# Analysis Tasks endpoints
-@router.get("/analysis")
-async def get_analysis_tasks():
-    """Get all analysis tasks"""
-    return {
-        "tasks": list(analysis_tasks.values()),
-        "total": len(analysis_tasks)
-    }
-
-@router.post("/analysis")
-async def create_analysis_task(task: AnalysisTask):
-    """Create new analysis task"""
-    if task.id in analysis_tasks:
-        raise HTTPException(status_code=400, detail="Task ID already exists")
-    
-    task.created_at = datetime.now()
-    analysis_tasks[task.id] = task
-    
-    # Start analysis in background
-    asyncio.create_task(run_analysis_task(task))
-    
-    return {"success": True, "task": task}
-
-async def run_analysis_task(task: AnalysisTask):
-    """Run analysis task (placeholder)"""
-    try:
-        task.status = 'running'
-        task.updated_at = datetime.now()
-        
-        # Simulate analysis
-        await asyncio.sleep(5)
-        
-        # Mock results
-        task.results = {
-            "summary": f"Analysis completed for {task.name}",
-            "data_points": 100,
-            "insights": [
-                "Trend detected in data",
-                "Pattern identified"
-            ]
-        }
-        task.status = 'completed'
-        task.updated_at = datetime.now()
-        
-    except Exception as e:
-        task.status = 'failed'
-        task.results = {"error": str(e)}
-        task.updated_at = datetime.now()
-
-@router.get("/analysis/{task_id}")
-async def get_analysis_task(task_id: str):
-    """Get specific analysis task"""
-    if task_id not in analysis_tasks:
-        raise HTTPException(status_code=404, detail="Task not found")
-    
-    return analysis_tasks[task_id]
-
-# Prediction Models endpoints
-@router.get("/predictions")
-async def get_prediction_models():
-    """Get all prediction models"""
-    return {
-        "models": list(prediction_models.values()),
-        "total": len(prediction_models)
-    }
-
-@router.post("/predictions")
-async def create_prediction_model(model: PredictionModel):
-    """Create new prediction model"""
-    if model.id in prediction_models:
-        raise HTTPException(status_code=400, detail="Model ID already exists")
-    
-    prediction_models[model.id] = model
-    return {"success": True, "model": model}
-
-@router.post("/predictions/{model_id}/train")
-async def train_prediction_model(model_id: str):
-    """Train prediction model"""
-    if model_id not in prediction_models:
-        raise HTTPException(status_code=404, detail="Model not found")
-    
-    model = prediction_models[model_id]
-    model.status = 'training'
-    
-    # Start training in background
-    asyncio.create_task(train_model(model))
-    
-    return {"success": True, "message": "Training started"}
-
-async def train_model(model: PredictionModel):
-    """Train model (placeholder)"""
-    try:
-        # Simulate training
-        await asyncio.sleep(10)
-        
-        model.accuracy = 0.85  # Mock accuracy
-        model.last_trained = datetime.now()
-        model.status = 'ready'
-        
-    except Exception as e:
-        model.status = 'failed'
-
-# Schedules endpoints
-@router.get("/schedules")
-async def get_schedules():
-    """Get all schedules"""
-    return {
-        "schedules": list(schedules.values()),
-        "total": len(schedules)
-    }
-
-@router.post("/schedules")
-async def create_schedule(schedule: Schedule):
-    """Create new schedule"""
-    if schedule.id in schedules:
-        raise HTTPException(status_code=400, detail="Schedule ID already exists")
-    
-    schedule.created_at = datetime.now()
-    schedules[schedule.id] = schedule
-    return {"success": True, "schedule": schedule}
-
-@router.get("/schedules/{schedule_id}")
-async def get_schedule(schedule_id: str):
-    """Get specific schedule"""
-    if schedule_id not in schedules:
-        raise HTTPException(status_code=404, detail="Schedule not found")
-    
-    return schedules[schedule_id]
-
-# Code Analysis endpoints
-@router.post("/code-analysis")
-async def analyze_code(request: dict):
-    """Analyze code and provide suggestions"""
-    code = request.get("code", "")
-    language = request.get("language", "python")
-    
-    # Placeholder for code analysis
-    analysis_result = {
-        "issues": [
-            {
-                "type": "optimization",
-                "line": 10,
-                "message": "Consider using list comprehension",
-                "severity": "low"
-            }
-        ],
-        "suggestions": [
-            "Add error handling for file operations",
-            "Consider adding type hints"
-        ],
-        "metrics": {
-            "complexity": 5,
-            "lines": len(code.split('\n')),
-            "functions": 0
-        }
-    }
-    
-    return {"success": True, "analysis": analysis_result}
-
-# User Input endpoints
-@router.post("/user-input")
-async def submit_user_input(request: dict):
-    """Submit user input for system learning"""
-    input_type = request.get("type", "feedback")
-    content = request.get("content", "")
-    metadata = request.get("metadata", {})
-    
-    # Store user input (placeholder)
-    user_input = {
-        "id": f"input-{datetime.now().timestamp()}",
-        "type": input_type,
-        "content": content,
-        "metadata": metadata,
-        "timestamp": datetime.now().isoformat()
-    }
-    
-    return {"success": True, "input": user_input}
-
-# System Status
-@router.get("/status")
-async def get_system_status():
-    """Get Argosa system status"""
-    return {
-        "status": "development",
-        "sources": len(information_sources),
-        "analysis_tasks": len(analysis_tasks),
-        "prediction_models": len(prediction_models),
-        "schedules": len(schedules),
-        "active_connections": len(active_connections),
-        "message": "Argosa system is under development"
-    }
+        active_connections.pop(client_id, None)
+        print(f"[Argosa] Client {client_id} disconnected")

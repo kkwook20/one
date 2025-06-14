@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LLM Collector - Personal</title>
+  <style>
+    body {
+      width: 400px;
+      min-height: 600px;
+      margin: 0;
+      padding: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #f9fafb;
+      color: #1f2937;
+    }
+
+    .header {
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+      padding: 20px;
+      text-align: center;
+    }
+
+    .header h1 {
+      margin: 0;
+      font-size: 20px;
+      font-weight: 600;
+    }
+
+    .header p {
+      margin: 5px 0 0;
+      font-size: 14px;
+      opacity: 0.9;
+    }
+
+    .status-bar {
+      background: white;
+      padding: 12px 20px;
+      border-bottom: 1px solid #e5e7eb;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .status-indicator {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #10b981;
+      animation: pulse 2s infinite;
+    }
+
+    @keyframes pulse {
+      0% { opacity: 1; }
+      50% { opacity: 0.5; }
+      100% { opacity: 1; }
+    }
+
+    .container {
+      padding: 20px;
+    }
+
+    .section {
+      margin-bottom: 24px;
+    }
+
+    .section-title {
+      font-size: 16px;
+      font-weight: 600;
+      margin-bottom: 12px;
+      color: #374151;
+    }
+
+    .platform-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 12px;
+    }
+
+    .platform-card {
+      background: white;
+      border: 2px solid #e5e7eb;
+      border-radius: 12px;
+      padding: 16px;
+      text-align: center;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .platform-card:hover {
+      border-color: #667eea;
+      transform: translateY(-2px);
+      box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+    }
+
+    .platform-card.enabled {
+      border-color: #667eea;
+      background: #f3f4ff;
+    }
+
+    .platform-icon {
+      width: 40px;
+      height: 40px;
+      margin: 0 auto 8px;
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: bold;
+      color: white;
+      font-size: 16px;
+    }
+
+    .platform-name {
+      font-size: 14px;
+      font-weight: 500;
+      color: #1f2937;
+    }
+
+    .platform-status {
+      font-size: 12px;
+      color: #6b7280;
+      margin-top: 4px;
+    }
+
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 12px;
+      margin-bottom: 20px;
+    }
+
+    .stat-card {
+      background: white;
+      border: 1px solid #e5e7eb;
+      border-radius: 8px;
+      padding: 12px;
+      text-align: center;
+    }
+
+    .stat-value {
+      font-size: 24px;
+      font-weight: 700;
+      color: #667eea;
+    }
+
+    .stat-label {
+      font-size: 12px;
+      color: #6b7280;
+      margin-top: 4px;
+    }
+
+    .action-buttons {
+      display: flex;
+      gap: 12px;
+    }
+
+    .btn {
+      flex: 1;
+      padding: 12px;
+      border: none;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.2s;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+    }
+
+    .btn-primary {
+      background: #667eea;
+      color: white;
+    }
+
+    .btn-primary:hover {
+      background: #5a5ed4;
+    }
+
+    .btn-secondary {
+      background: white;
+      color: #374151;
+      border: 1px solid #e5e7eb;
+    }
+
+    .btn-secondary:hover {
+      background: #f9fafb;
+    }
+
+    .folder-path {
+      background: #f3f4f6;
+      border: 1px solid #e5e7eb;
+      border-radius: 6px;
+      padding: 8px 12px;
+      font-size: 12px;
+      font-family: monospace;
+      color: #4b5563;
+      margin-bottom: 12px;
+      word-break: break-all;
+    }
+
+    .last-sync {
+      text-align: center;
+      font-size: 12px;
+      color: #6b7280;
+      margin-top: 20px;
+      padding-top: 20px;
+      border-top: 1px solid #e5e7eb;
+    }
+
+    .loading {
+      display: none;
+      text-align: center;
+      padding: 20px;
+    }
+
+    .loading.active {
+      display: block;
+    }
+
+    .spinner {
+      width: 40px;
+      height: 40px;
+      border: 3px solid #e5e7eb;
+      border-top-color: #667eea;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      margin: 0 auto 12px;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    /* Platform colors */
+    .chatgpt { background: #10a37f; }
+    .claude { background: #6366f1; }
+    .gemini { background: #4285f4; }
+    .deepseek { background: #5b21b6; }
+    .grok { background: #1f2937; }
+    .perplexity { background: #10b981; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>🤖 LLM Conversation Collector</h1>
+    <p>Personal Edition</p>
+  </div>
+
+  <div class="status-bar">
+    <div class="status-indicator">
+      <span class="status-dot"></span>
+      <span>Auto-sync active</span>
+    </div>
+    <span id="nextSync" style="font-size: 12px; color: #6b7280;">Next: 3:24 AM</span>
+  </div>
+
+  <div class="container">
+    <!-- Statistics -->
+    <div class="section">
+      <div class="stats-grid">
+        <div class="stat-card">
+          <div class="stat-value" id="totalConversations">0</div>
+          <div class="stat-label">Total Conversations</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value" id="todayCount">0</div>
+          <div class="stat-label">Today's Sync</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value" id="enabledPlatforms">0</div>
+          <div class="stat-label">Active Platforms</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value" id="storageSize">0 MB</div>
+          <div class="stat-label">Storage Used</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Storage Path -->
+    <div class="section">
+      <div class="section-title">Storage Location</div>
+      <div class="folder-path" id="dataFolder">/home/user/llm-conversations</div>
+    </div>
+
+    <!-- Platforms -->
+    <div class="section">
+      <div class="section-title">LLM Platforms</div>
+      <div class="platform-grid">
+        <div class="platform-card" data-platform="chatgpt">
+          <div class="platform-icon chatgpt">GPT</div>
+          <div class="platform-name">ChatGPT</div>
+          <div class="platform-status">Not configured</div>
+        </div>
+        <div class="platform-card" data-platform="claude">
+          <div class="platform-icon claude">C</div>
+          <div class="platform-name">Claude</div>
+          <div class="platform-status">Not configured</div>
+        </div>
+        <div class="platform-card" data-platform="gemini">
+          <div class="platform-icon gemini">G</div>
+          <div class="platform-name">Gemini</div>
+          <div class="platform-status">Not configured</div>
+        </div>
+        <div class="platform-card" data-platform="deepseek">
+          <div class="platform-icon deepseek">DS</div>
+          <div class="platform-name">DeepSeek</div>
+          <div class="platform-status">Not configured</div>
+        </div>
+        <div class="platform-card" data-platform="grok">
+          <div class="platform-icon grok">X</div>
+          <div class="platform-name">Grok</div>
+          <div class="platform-status">Not configured</div>
+        </div>
+        <div class="platform-card" data-platform="perplexity">
+          <div class="platform-icon perplexity">P</div>
+          <div class="platform-name">Perplexity</div>
+          <div class="platform-status">Not configured</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Loading state -->
+    <div class="loading" id="loading">
+      <div class="spinner"></div>
+      <div>Syncing conversations...</div>
+      <div style="font-size: 12px; color: #6b7280; margin-top: 8px;">This may take a few minutes</div>
+    </div>
+
+    <!-- Action buttons -->
+    <div class="action-buttons">
+      <button class="btn btn-primary" id="syncNowBtn">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M23 4v6h-6M1 20v-6h6M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/>
+        </svg>
+        Sync Now
+      </button>
+      <button class="btn btn-secondary" id="settingsBtn">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="12" cy="12" r="3"/>
+          <path d="M12 1v6m0 6v6m9-9h-6m-6 0H3"/>
+        </svg>
+        Settings
+      </button>
+    </div>
+
+    <div class="last-sync" id="lastSync">
+      Never synced
+    </div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

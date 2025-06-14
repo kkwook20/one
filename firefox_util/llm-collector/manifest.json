@@ -1,0 +1,71 @@
+{
+  "manifest_version": 2,
+  "name": "LLM Conversation Collector",
+  "version": "2.0",
+  "description": "Collect and sync your AI conversations from multiple LLM platforms",
+  
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "llm-collector@argosa.ai",
+      "strict_min_version": "91.0"
+    }
+  },
+  
+  "permissions": [
+    "storage",
+    "alarms",
+    "tabs",
+    "notifications",
+    "webRequest",
+    "*://chat.openai.com/*",
+    "*://claude.ai/*",
+    "*://gemini.google.com/*",
+    "*://chat.deepseek.com/*",
+    "*://grok.x.ai/*",
+    "*://www.perplexity.ai/*",
+    "http://localhost:8000/*",
+    "http://127.0.0.1:8000/*"
+  ],
+  
+  "background": {
+    "scripts": ["background.js"],
+    "persistent": true
+  },
+  
+  "content_scripts": [
+    {
+      "matches": [
+        "*://chat.openai.com/*",
+        "*://claude.ai/*",
+        "*://gemini.google.com/*",
+        "*://chat.deepseek.com/*",
+        "*://grok.x.ai/*",
+        "*://www.perplexity.ai/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  
+  "browser_action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icon.png",
+      "48": "icon.png",
+      "128": "icon.png"
+    },
+    "default_title": "LLM Conversation Collector"
+  },
+  
+  "icons": {
+    "16": "icon.png",
+    "48": "icon.png",
+    "128": "icon.png"
+  },
+  
+  "options_ui": {
+    "page": "options.html",
+    "browser_style": true,
+    "open_in_tab": true
+  }
+}

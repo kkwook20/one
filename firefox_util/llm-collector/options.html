@@ -1,0 +1,504 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LLM Collector Settings</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #f9fafb;
+      color: #1f2937;
+      line-height: 1.6;
+    }
+
+    .container {
+      max-width: 800px;
+      margin: 0 auto;
+      padding: 20px;
+    }
+
+    .header {
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+      padding: 30px 0;
+      margin: -20px -20px 30px;
+      text-align: center;
+    }
+
+    .header h1 {
+      margin: 0;
+      font-size: 28px;
+      font-weight: 600;
+    }
+
+    .header p {
+      margin: 10px 0 0;
+      opacity: 0.9;
+    }
+
+    .section {
+      background: white;
+      border-radius: 12px;
+      padding: 24px;
+      margin-bottom: 24px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    }
+
+    .section-title {
+      font-size: 20px;
+      font-weight: 600;
+      margin-bottom: 16px;
+      color: #111827;
+    }
+
+    .form-group {
+      margin-bottom: 20px;
+    }
+
+    label {
+      display: block;
+      font-weight: 500;
+      margin-bottom: 8px;
+      color: #374151;
+    }
+
+    input[type="text"],
+    input[type="password"],
+    input[type="number"],
+    select {
+      width: 100%;
+      padding: 10px 12px;
+      border: 1px solid #d1d5db;
+      border-radius: 8px;
+      font-size: 14px;
+      transition: border-color 0.2s;
+    }
+
+    input:focus,
+    select:focus {
+      outline: none;
+      border-color: #667eea;
+    }
+
+    .help-text {
+      font-size: 13px;
+      color: #6b7280;
+      margin-top: 4px;
+    }
+
+    .platform-config {
+      border: 1px solid #e5e7eb;
+      border-radius: 8px;
+      padding: 16px;
+      margin-bottom: 16px;
+    }
+
+    .platform-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 12px;
+    }
+
+    .platform-name {
+      font-weight: 600;
+      font-size: 16px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .platform-icon {
+      width: 24px;
+      height: 24px;
+      border-radius: 4px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: bold;
+      color: white;
+      font-size: 12px;
+    }
+
+    .chatgpt { background: #10a37f; }
+    .claude { background: #6366f1; }
+    .gemini { background: #4285f4; }
+    .deepseek { background: #5b21b6; }
+    .grok { background: #1f2937; }
+    .perplexity { background: #10b981; }
+
+    .toggle-switch {
+      width: 48px;
+      height: 24px;
+      background: #d1d5db;
+      border-radius: 12px;
+      position: relative;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+
+    .toggle-switch.active {
+      background: #667eea;
+    }
+
+    .toggle-switch::after {
+      content: '';
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      width: 20px;
+      height: 20px;
+      background: white;
+      border-radius: 50%;
+      transition: transform 0.2s;
+    }
+
+    .toggle-switch.active::after {
+      transform: translateX(24px);
+    }
+
+    .credentials-fields {
+      display: none;
+      margin-top: 16px;
+      gap: 12px;
+    }
+
+    .credentials-fields.active {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+    }
+
+    .btn {
+      padding: 10px 20px;
+      border: none;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.2s;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .btn-primary {
+      background: #667eea;
+      color: white;
+    }
+
+    .btn-primary:hover {
+      background: #5a5ed4;
+    }
+
+    .btn-secondary {
+      background: white;
+      color: #374151;
+      border: 1px solid #d1d5db;
+    }
+
+    .btn-secondary:hover {
+      background: #f9fafb;
+    }
+
+    .action-buttons {
+      display: flex;
+      gap: 12px;
+      margin-top: 24px;
+    }
+
+    .info-box {
+      padding: 12px 16px;
+      border-radius: 8px;
+      border: 1px solid;
+      margin-bottom: 20px;
+      font-size: 14px;
+    }
+
+    .success-message {
+      position: fixed;
+      top: 20px;
+      right: 20px;
+      background: #10b981;
+      color: white;
+      padding: 12px 24px;
+      border-radius: 8px;
+      font-weight: 500;
+      animation: slideIn 0.3s ease;
+      z-index: 1000;
+    }
+
+    @keyframes slideIn {
+      from {
+        transform: translateX(100%);
+        opacity: 0;
+      }
+      to {
+        transform: translateX(0);
+        opacity: 1;
+      }
+    }
+
+    /* API Status styles */
+    #apiStatusDot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #ef4444;
+      transition: background 0.3s;
+    }
+    
+    #apiStatusDot.connected {
+      background: #10b981;
+      animation: pulse 2s infinite;
+    }
+    
+    @keyframes pulse {
+      0% { opacity: 1; }
+      50% { opacity: 0.5; }
+      100% { opacity: 1; }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h1>🤖 LLM Collector Settings</h1>
+      <p>Configure your conversation collection preferences</p>
+    </div>
+
+    <!-- Storage Configuration -->
+    <div class="section">
+      <h2 class="section-title">Storage Configuration</h2>
+      
+      <div class="form-group">
+        <label for="dataFolder">Data Storage Folder</label>
+        <input type="text" id="dataFolder" placeholder="/home/user/llm-conversations">
+        <p class="help-text">Local folder where conversations will be saved (API mode overrides this)</p>
+      </div>
+
+      <div class="form-group">
+        <label for="syncInterval">Automatic Sync Interval</label>
+        <select id="syncInterval">
+          <option value="60">Every hour</option>
+          <option value="360">Every 6 hours</option>
+          <option value="720">Every 12 hours</option>
+          <option value="1440" selected>Daily</option>
+          <option value="10080">Weekly</option>
+          <option value="0">Manual only</option>
+        </select>
+        <p class="help-text">How often to automatically collect conversations</p>
+      </div>
+    </div>
+
+    <!-- API Configuration -->
+    <div class="section">
+      <h2 class="section-title">Backend API Configuration</h2>
+      
+      <div class="info-box" style="background: #f0f9ff; border-color: #bae6fd; color: #0369a1;">
+        🔗 Connect to Argosa backend for centralized data management and real-time sync with the dashboard.
+      </div>
+      
+      <div class="form-group">
+        <div style="display: flex; align-items: center; justify-content: space-between;">
+          <div>
+            <label style="margin-bottom: 4px;">Use Backend API</label>
+            <p class="help-text" style="margin: 0;">Send conversations to Argosa backend instead of local storage</p>
+          </div>
+          <div class="toggle-switch" id="apiToggle"></div>
+        </div>
+      </div>
+      
+      <div id="apiSettings" style="display: none; margin-top: 20px;">
+        <div class="form-group">
+          <label for="apiUrl">API Endpoint</label>
+          <input type="text" id="apiUrl" value="http://localhost:8000/api/argosa/llm" readonly>
+          <p class="help-text">Backend API endpoint (read-only)</p>
+        </div>
+        
+        <div class="form-group">
+          <div style="display: flex; align-items: center; gap: 12px; padding: 12px; background: #f9fafb; border-radius: 8px;">
+            <div id="apiStatusDot"></div>
+            <span id="apiStatusText" style="font-size: 14px; color: #6b7280;">Not connected</span>
+            <button class="btn btn-secondary" id="testApiBtn" style="margin-left: auto;">
+              Test Connection
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Platform Configuration -->
+    <div class="section">
+      <h2 class="section-title">Platform Configuration</h2>
+      
+      <div class="info-box" style="background: #fef3c7; border-color: #fcd34d; color: #92400e;">
+        ⚠️ Credentials are stored locally in your browser. Enable only the platforms you actively use.
+      </div>
+
+      <!-- ChatGPT -->
+      <div class="platform-config">
+        <div class="platform-header">
+          <div class="platform-name">
+            <div class="platform-icon chatgpt">GPT</div>
+            ChatGPT
+          </div>
+          <div class="toggle-switch" data-platform="chatgpt"></div>
+        </div>
+        <div class="credentials-fields" data-platform="chatgpt">
+          <div>
+            <label>Username/Email</label>
+            <input type="text" id="chatgpt-username" placeholder="your@email.com">
+          </div>
+          <div>
+            <label>Password</label>
+            <input type="password" id="chatgpt-password" placeholder="••••••••">
+          </div>
+        </div>
+      </div>
+
+      <!-- Claude -->
+      <div class="platform-config">
+        <div class="platform-header">
+          <div class="platform-name">
+            <div class="platform-icon claude">C</div>
+            Claude
+          </div>
+          <div class="toggle-switch" data-platform="claude"></div>
+        </div>
+        <div class="credentials-fields" data-platform="claude">
+          <div>
+            <label>Username/Email</label>
+            <input type="text" id="claude-username" placeholder="your@email.com">
+          </div>
+          <div>
+            <label>Password</label>
+            <input type="password" id="claude-password" placeholder="••••••••">
+          </div>
+        </div>
+      </div>
+
+      <!-- Gemini -->
+      <div class="platform-config">
+        <div class="platform-header">
+          <div class="platform-name">
+            <div class="platform-icon gemini">G</div>
+            Gemini
+          </div>
+          <div class="toggle-switch" data-platform="gemini"></div>
+        </div>
+        <div class="credentials-fields" data-platform="gemini">
+          <div>
+            <label>Google Account</label>
+            <input type="text" id="gemini-username" placeholder="your@gmail.com">
+          </div>
+          <div>
+            <label>Password</label>
+            <input type="password" id="gemini-password" placeholder="••••••••">
+          </div>
+        </div>
+      </div>
+
+      <!-- DeepSeek -->
+      <div class="platform-config">
+        <div class="platform-header">
+          <div class="platform-name">
+            <div class="platform-icon deepseek">DS</div>
+            DeepSeek
+          </div>
+          <div class="toggle-switch" data-platform="deepseek"></div>
+        </div>
+        <div class="credentials-fields" data-platform="deepseek">
+          <div>
+            <label>Username/Email</label>
+            <input type="text" id="deepseek-username" placeholder="your@email.com">
+          </div>
+          <div>
+            <label>Password</label>
+            <input type="password" id="deepseek-password" placeholder="••••••••">
+          </div>
+        </div>
+      </div>
+
+      <!-- Grok -->
+      <div class="platform-config">
+        <div class="platform-header">
+          <div class="platform-name">
+            <div class="platform-icon grok">X</div>
+            Grok
+          </div>
+          <div class="toggle-switch" data-platform="grok"></div>
+        </div>
+        <div class="credentials-fields" data-platform="grok">
+          <div>
+            <label>X Account</label>
+            <input type="text" id="grok-username" placeholder="@username">
+          </div>
+          <div>
+            <label>Password</label>
+            <input type="password" id="grok-password" placeholder="••••••••">
+          </div>
+        </div>
+      </div>
+
+      <!-- Perplexity -->
+      <div class="platform-config">
+        <div class="platform-header">
+          <div class="platform-name">
+            <div class="platform-icon perplexity">P</div>
+            Perplexity
+          </div>
+          <div class="toggle-switch" data-platform="perplexity"></div>
+        </div>
+        <div class="credentials-fields" data-platform="perplexity">
+          <div>
+            <label>Username/Email</label>
+            <input type="text" id="perplexity-username" placeholder="your@email.com">
+          </div>
+          <div>
+            <label>Password</label>
+            <input type="password" id="perplexity-password" placeholder="••••••••">
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Advanced Settings -->
+    <div class="section">
+      <h2 class="section-title">Advanced Settings</h2>
+      
+      <div class="form-group">
+        <label for="maxConversations">Maximum Conversations per Sync</label>
+        <input type="number" id="maxConversations" value="1000" min="10" max="10000">
+        <p class="help-text">Limit the number of conversations collected in each sync</p>
+      </div>
+
+      <div class="form-group">
+        <label for="delayBetweenActions">Delay Between Actions (seconds)</label>
+        <input type="number" id="delayBetweenActions" value="3" min="1" max="10">
+        <p class="help-text">Wait time between platform visits to avoid rate limiting</p>
+      </div>
+    </div>
+
+    <!-- Action Buttons -->
+    <div class="action-buttons">
+      <button class="btn btn-primary" id="saveBtn">
+        💾 Save Settings
+      </button>
+      <button class="btn btn-secondary" id="exportBtn">
+        📤 Export Configuration
+      </button>
+      <button class="btn btn-secondary" id="importBtn">
+        📥 Import Configuration
+      </button>
+    </div>
+
+    <!-- Hidden file input for import -->
+    <input type="file" id="importFile" accept=".json" style="display: none;">
+  </div>
+
+  <script src="options.js"></script>
+</body>
+</html>

@@ -15,643 +15,23 @@
         "isRunning": false,
         "isDeactivated": false,
         "supervised": false,
-        "connectedTo": [
-          "worker-1749286886724"
-        ],
-        "connectedFrom": [],
-        "code": "",
-        "output": {
-          "text": "Title : 어린 소년의 모험\nStory : 한 소녀이 숲속으로 모험을 떠나려 하고 있다. 오른쪽에는 쓰러져가는 옛 성의 반쪽이 남아있고 왼쪽에는 숲이 무성하고 가운데에는 길이 하나 나 있다\n가운데에 길이 하나 나 있고, 소년이 등에는 칼과 허름한 옷을 입고 그 길로 가려고 하고 있다.",
-          "type": "script"
-        },
-        "purpose": "",
-        "outputFormat": "",
-        "baseCodeTemplate": "default",
-        "projectId": "bb03d6f6-8bc0-4ea0-b56a-8b5e93ee5441"
+        "baseCodeTemplate": "default"
       },
       {
         "id": "output-preproduction-script",
         "type": "output",
         "label": "Output",
         "position": {
-          "x": 4973.185096318626,
-          "y": 610.9477592130473
+          "x": 920.0,
+          "y": 196.0
         },
         "isRunning": false,
         "isDeactivated": false,
         "supervised": false,
-        "connectedFrom": [
-          "worker-1749360498922"
-        ],
-        "code": "",
-        "output": "",
-        "purpose": "",
-        "outputFormat": "",
+        "connectedFrom": [],
         "baseCodeTemplate": "default"
-      },
-      {
-        "id": "worker-1749286886724",
-        "type": "worker",
-        "label": "Premise Parser",
-        "position": {
-          "x": 370.19451016605535,
-          "y": 629.6101105917462
-        },
-        "isRunning": false,
-        "isDeactivated": false,
-        "supervised": false,
-        "tasks": [
-          {
-            "id": "task-1749286886724",
-            "text": "Analyze raw story text to identify genre, theme, and narrative type",
-            "status": "pending",
-            "taskStatus": "editable",
-            "aiScore": 50.0
-          },
-          {
-            "id": "task-1749286897591",
-            "text": "Extract fundamental elements (characters, locations, conflicts, motivations) without predefined categories",
-            "status": "pending",
-            "taskStatus": "editable",
-            "aiScore": 50.0
-          },
-          {
-            "id": "task-1749286932041",
-            "text": "Create an initial story DNA that subsequent nodes can expand upon",
-            "status": "pending",
-            "taskStatus": "editable",
-            "aiScore": 50.0
-          },
-          {
-            "id": "task-1749359962226",
-            "text": "Generate metadata about story complexity and special requirements",
-            "status": "pending",
-            "taskStatus": "editable",
-            "aiScore": 50.0
-          }
-        ],
-        "connectedTo": [
-          "worker-1749357862698"
-        ],
-        "connectedFrom": [
-          "input-preproduction-script"
-        ],
-        "code": "# ========================================================================\r\n# BASE CODE - 공통 실행 코드 (수정 불가)\r\n# 이 코드는 모든 Worker 노드가 공통으로 사용하는 기본 실행 코드입니다.\r\n# ========================================================================\r\n\r\nimport json\r\nimport time\r\n\r\n# 연결된 입력 데이터 가져오기\r\ninput_data = get_connected_outputs()\r\nprint(f\"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Connected inputs received\")\r\nprint(json.dumps(input_data, ensure_ascii=False, indent=2))\r\n\r\n# 현재 노드 정보 출력\r\nprint(f\"\\nNode: {current_node.get('label', 'Unknown')}\")\r\nprint(f\"Purpose: {node_purpose}\")\r\nprint(f\"Expected Output Format: {output_format_description}\")\r\n\r\n# AI 모델 설정 확인 - execution.py에서 노드 설정으로부터 제공됨\r\nprint(f\"\\n[DEBUG] model_name: {model_name}\")\r\nprint(f\"[DEBUG] lm_studio_url: {lm_studio_url}\")\r\nprint(f\"[DEBUG] current_node['model']: {current_node.get('model', 'Not found')}\")\r\nprint(f\"[DEBUG] current_node['lmStudioUrl']: {current_node.get('lmStudioUrl', 'Not found')}\")\r\n\r\nif model_name == 'none' or not model_name or not lm_studio_url:\r\n    print(\"\\n⚠️  No AI model configured!\")\r\n    output = {\r\n        \"error\": \"No AI model configured\",\r\n        \"hint\": \"Please connect to LM Studio and select a model\",\r\n        \"timestamp\": time.strftime('%Y-%m-%d %H:%M:%S')\r\n    }\r\nelse:\r\n    print(f\"\\n✅ Using AI model: {model_name}\")\r\n    \r\n    # ========================================================================\r\n    # 입력 데이터 통합\r\n    # ========================================================================\r\n    combined_input = \"\"\r\n    for key, value in input_data.items():\r\n        if isinstance(value, dict):\r\n            if 'text' in value:\r\n                combined_input += f\"[{key}]\\n{value['text']}\\n\\n\"\r\n            elif 'content' in value:\r\n                combined_input += f\"[{key}]\\n{value['content']}\\n\\n\"\r\n            else:\r\n                combined_input += f\"[{key}]\\n{json.dumps(value, ensure_ascii=False, indent=2)}\\n\\n\"\r\n        elif isinstance(value, str):\r\n            combined_input += f\"[{key}]\\n{value}\\n\\n\"\r\n        else:\r\n            combined_input += f\"[{key}]\\n{str(value)}\\n\\n\"\r\n    \r\n    # ========================================================================\r\n    # AI 프롬프트 구성\r\n    # ========================================================================\r\n    base_prompt = f\"\"\"당신은 다음 목적을 달성해야 하는 AI 어시스턴트입니다:\r\n\r\n**목적 (Purpose):**\r\n{node_purpose}\r\n\r\n**입력 데이터:**\r\n{combined_input.strip()}\r\n\r\n**수행할 작업들 (Tasks):**\"\"\"\r\n    \r\n    # Tasks 추가\r\n    if 'tasks' in current_node and current_node['tasks']:\r\n        for i, task in enumerate(current_node['tasks'], 1):\r\n            base_prompt += f\"\\n{i}. {task['text']}\"\r\n            # Task status에 따른 추가 지시\r\n            if task.get('taskStatus') == 'locked':\r\n                base_prompt += \" [필수 - 반드시 수행]\"\r\n            elif task.get('taskStatus') == 'low_priority':\r\n                base_prompt += \" [선택적 - 가능한 경우 수행]\"\r\n    else:\r\n        base_prompt += \"\\n(작업이 정의되지 않았습니다)\"\r\n    \r\n    base_prompt += f\"\"\"\\n\\n**기대하는 출력 형식:**\r\n{output_format_description}\r\n\r\n위의 목적과 작업들을 수행하고, 지정된 출력 형식에 맞춰 결과를 생성해주세요.\r\n\"\"\"\r\n\r\n    # ========================================================================\r\n    # Experimental Code 병합 (있는 경우)\r\n    # ========================================================================\r\n    # EXP_CODE_MERGE_POINT - 이 부분에서 Exp Code가 병합됩니다\n    \n    # ========================================================================\n    # EXPERIMENTAL CODE - 노드별 특수 처리 로직\n    # ========================================================================\n    # Premise Parser - Node 1 Experimental Code\nimport os\nimport json\nimport hashlib\nfrom datetime import datetime\n\nexp_prompt_addition = \"\"\"\n\nIMPORTANT: First identify the story type, then analyze with the appropriate structure:\n- Personal Growth: protagonist, journey, transformation\n- Disaster/Action: threat, scale, response\n- Romance: relationships, obstacles, development\n- Mystery: enigma, clues, resolution\n\nOutput in free-form narrative, but use the following markers:\n<title>Title</title>\n<type>Story Type</type>\n<theme:tag>Theme Content</theme>\n<element:tag>Element Description</element>\n\nStructure in the most suitable way for the story.\n\"\"\"\n\nbase_prompt += exp_prompt_addition\n\n# File save logic after AI response\n# This part executes after receiving AI response\nif 'output' in locals() and isinstance(output, dict):\n    # Create project folder structure\n    project_root = f\"./story_project_{datetime.now().strftime('%Y%m%d_%H%M%S')}\"\n    os.makedirs(f\"{project_root}/story\", exist_ok=True)\n    os.makedirs(f\"{project_root}/references/characters\", exist_ok=True)\n    os.makedirs(f\"{project_root}/references/locations\", exist_ok=True)\n    os.makedirs(f\"{project_root}/references/props\", exist_ok=True)\n    \n    # Generate version info\n    version = \"1.0\"\n    \n    # Extract story from AI response\n    if 'result' in output:\n        story_text = output['result']\n        \n        # Save main story\n        with open(f\"{project_root}/story/STORY_MAIN_v{version}.txt\", 'w', encoding='utf-8') as f:\n            f.write(story_text)\n        \n        # Generate metadata\n        story_meta = {\n            \"version\": version,\n            \"created\": datetime.now().isoformat(),\n            \"node\": \"premise_parser\",\n            \"checksum\": hashlib.md5(story_text.encode()).hexdigest()\n        }\n        \n        # Simple parser for element extraction\n        import re\n        elements_found = {\n            \"title\": re.findall(r'<title>(.*?)</title>', story_text),\n            \"type\": re.findall(r'<type>(.*?)</type>', story_text),\n            \"themes\": re.findall(r'<theme:.*?>(.*?)</theme>', story_text),\n            \"elements\": re.findall(r'<element:(\\w+?)>(.*?)</element>', story_text)\n        }\n        \n        # Create index file\n        index_data = {\n            \"version\": version,\n            \"story_meta\": story_meta,\n            \"elements_summary\": elements_found,\n            \"next_nodes\": [\"story_structure\"]\n        }\n        \n        with open(f\"{project_root}/story/story_index.json\", 'w', encoding='utf-8') as f:\n            json.dump(index_data, f, ensure_ascii=False, indent=2)\n        \n        # Package for next node\n        output['_file_package'] = {\n            \"project_root\": project_root,\n            \"story_file\": f\"{project_root}/story/STORY_MAIN_v{version}.txt\",\n            \"index_file\": f\"{project_root}/story/story_index.json\",\n            \"version\": version\n        }\n        \n        print(f\"\\n✅ File save completed: {project_root}\")\n    \n    # ========================================================================\n    # AI 프롬프트에 추가 지시사항 병합\n    # ========================================================================\n    if 'exp_prompt_addition' in locals():\n        base_prompt += \"\\n\\n**추가 지시사항:**\\n\" + exp_prompt_addition\n    \n    # Exp Code에서 입력 데이터 가공이 있었다면 반영\n    if 'processed_input' in locals():\n        combined_input = processed_input\n    \r\n    \r\n    # ========================================================================\r\n    # AI 모델 호출\r\n    # ========================================================================\r\n    try:\r\n        print(f\"\\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] Sending request to AI model...\")\r\n        print(f\"Prompt length: {len(base_prompt)} characters\")\r\n        \r\n        # AI 응답 받기\r\n        ai_response = call_ai_model(base_prompt)\r\n        print(f\"\\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] AI response received\")\r\n        \r\n        # 응답 처리\r\n        if isinstance(ai_response, dict) and 'error' in ai_response:\r\n            output = ai_response\r\n        elif isinstance(ai_response, str):\r\n            # JSON 추출 시도\r\n            json_start = ai_response.find('{')\r\n            json_end = ai_response.rfind('}') + 1\r\n            \r\n            if json_start != -1 and json_end > json_start:\r\n                try:\r\n                    output = json.loads(ai_response[json_start:json_end])\r\n                except json.JSONDecodeError:\r\n                    output = {\r\n                        \"result\": ai_response,\r\n                        \"type\": \"text\",\r\n                        \"raw_response\": True\r\n                    }\r\n            else:\r\n                output = {\r\n                    \"result\": ai_response,\r\n                    \"type\": \"text\"\r\n                }\r\n        else:\r\n            output = ai_response\r\n            \r\n        # 메타데이터 추가\r\n        if isinstance(output, dict):\r\n            output['_metadata'] = {\r\n                'model': model_name,\r\n                'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),\r\n                'node': current_node.get('label', 'Unknown')\r\n            }\r\n            \r\n    except Exception as e:\r\n        print(f\"\\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] ❌ Error: {str(e)}\")\r\n        output = {\r\n            \"error\": f\"AI processing failed: {str(e)}\",\r\n            \"type\": \"error\",\r\n            \"timestamp\": time.strftime('%Y-%m-%d %H:%M:%S')\r\n        }\r\n\r\n# ========================================================================\r\n# 최종 출력\r\n# ========================================================================\r\nprint(f\"\\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] Final output:\")\r\nprint(json.dumps(output, ensure_ascii=False, indent=2))\r\nprint(f\"\\n✅ Execution completed successfully\")\r\n\r\n# output 변수가 설정되었음을 확인\r\nprint(f\"\\n[DEBUG] Output is set: {'output' in locals()}\")\r\nprint(f\"[DEBUG] Output value type: {type(output)}\")\r\nprint(f\"[DEBUG] Output is None: {output is None}\")",
-        "output": {
-          "result": "<title>어린 소년의 모험</title>\n<type>Mystery</type>\n<theme:enigma>Ancient Castle's Secret</theme>\n<theme:clues>The Path and Clues</theme>\n<theme:resolution>Unraveling the Mystery</theme>\n\nOnce upon a time, in a dense forest where nature thrives, an eager young boy named Kwon set off on his adventure. With only a worn-out dagger at hand, he bravely stepped into the unknown.\n\nIn front of him lay two paths - one leading to the ruins of an ancient castle, and another deep into the overgrown woods. Despite the allure of the forest's secrets, Kwon chose to follow the path that seemed more promising, taking solace in his trusty dagger as a symbol of his resolve.\n\nAs he ventured further down the path, Kwon couldn't help but feel a sense of unease. The ancient castle ruins loomed ominously on his right, its crumbling walls whispering tales of forgotten glory and dark secrets. To his left, the forest seemed alive with the rustling leaves and shadows that danced at night.\n\nSuddenly, amidst the eerie atmosphere, Kwon spotted something peculiar - an old map pinned to a nearby tree, depicting the layout of the ancient castle's hidden chambers. Eager for answers, he carefully tore the map away, eager to uncover what lay within those mysterious walls.\n\nAs days turned into weeks and his journey continued, Kwon encountered various obstacles that tested both his courage and wits. He faced treacherous terrain, dangerous animals, and even an unexpected encounter with a wise old hermit who shared valuable knowledge about the castle's history.\n\nWith each challenge overcome, Kwon grew stronger and more determined. Armed with the map and newfound wisdom, he approached the castle's entrance cautiously, ready to unravel the secrets it held within its walls.\n\nThe story of young Kwon, brave and curious, continues as his adventure leads him deeper into the heart of the ancient castle. Will he find answers to the enigma surrounding this mysterious place? Only time will tell in this tale of mystery and discovery.",
-          "type": "text",
-          "_metadata": {
-            "model": "qwen2.5-7b-instruct-uncensored",
-            "timestamp": "2025-06-10 02:18:58",
-            "node": "Worker Node"
-          }
-        },
-        "model": "qwen2.5-7b-instruct-uncensored",
-        "purpose": "Extract core narrative elements from raw story text and create a foundational understanding of the story's essence",
-        "outputFormat": "Flexible narrative analysis with tagged elements:\n- Free-form text with <tag> markers for key elements\n- Story type auto-detection\n- Core components identification\n- Adaptive structure based on story genre",
-        "expCode": "# BASE CODE - Worker 노드 공통 실행 코드\r\n# 프로젝트 정보 출력\r\nprint(f\"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Project root: {project_root}\")\r\nprint(f\"Node: {current_node.get('label', 'Unknown')}\")\r\n\r\n# 입력 데이터 가져오기\r\ninput_data = get_connected_outputs()\r\n\r\n# AI 모델 확인\r\nif model_name == 'none' or not model_name or not lm_studio_url:\r\n    output = {\r\n        \"error\": \"No AI model configured\",\r\n        \"hint\": \"Please connect to LM Studio and select a model\"\r\n    }\r\nelse:\r\n    # 입력 데이터 통합\r\n    combined_input = \"\"\r\n    for key, value in input_data.items():\r\n        if isinstance(value, dict):\r\n            if 'text' in value:\r\n                combined_input += f\"[{key}]\\n{value['text']}\\n\\n\"\r\n            elif 'content' in value:\r\n                combined_input += f\"[{key}]\\n{value['content']}\\n\\n\"\r\n            else:\r\n                combined_input += f\"[{key}]\\n{json.dumps(value, ensure_ascii=False, indent=2)}\\n\\n\"\r\n        elif isinstance(value, str):\r\n            combined_input += f\"[{key}]\\n{value}\\n\\n\"\r\n        else:\r\n            combined_input += f\"[{key}]\\n{str(value)}\\n\\n\"\r\n    \r\n    # AI 프롬프트 구성\r\n    base_prompt = f\"\"\"You are an AI assistant that must achieve the following purpose:\r\n\r\n**Purpose:**\r\n{node_purpose}\r\n\r\n**Input Data:**\r\n{combined_input.strip()}\r\n\r\n**Tasks to Perform:**\"\"\"\r\n    \r\n    # Tasks 추가\r\n    if 'tasks' in current_node and current_node['tasks']:\r\n        for i, task in enumerate(current_node['tasks'], 1):\r\n            base_prompt += f\"\\n{i}. {task['text']}\"\r\n    else:\r\n        base_prompt += \"\\n(No tasks defined)\"\r\n    \r\n    base_prompt += f\"\"\"\\n\\n**Expected Output Format:**\r\n{output_format_description}\r\n\r\nPlease perform the above purpose and tasks, and generate results according to the specified output format.\r\n\"\"\"\r\n\r\n    # ========================================================================\r\n    # Experimental Code 병합 지점\r\n    # ========================================================================\r\n    # EXP_CODE_MERGE_POINT - 이 부분에서 Exp Code가 병합됩니다\r\n    \r\n    # exp_prompt_addition이 있으면 프롬프트에 추가\r\n    if 'exp_prompt_addition' in locals() or 'exp_prompt_addition' in globals():\r\n        exp_addition = locals().get('exp_prompt_addition') or globals().get('exp_prompt_addition')\r\n        if exp_addition:\r\n            base_prompt += \"\\n\\n**Additional Instructions:**\\n\" + exp_addition\r\n    \r\n    # AI 모델 호출\r\n    try:\r\n        print(f\"\\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] Calling AI model...\")\r\n        ai_response = call_ai_model(base_prompt)\r\n        \r\n        # 응답 처리\r\n        if isinstance(ai_response, dict) and 'error' in ai_response:\r\n            output = ai_response\r\n        elif isinstance(ai_response, str):\r\n            # JSON 추출 시도\r\n            json_start = ai_response.find('{')\r\n            json_end = ai_response.rfind('}') + 1\r\n            \r\n            if json_start != -1 and json_end > json_start:\r\n                try:\r\n                    output = json.loads(ai_response[json_start:json_end])\r\n                except json.JSONDecodeError:\r\n                    output = {\r\n                        \"result\": ai_response,\r\n                        \"type\": \"text\"\r\n                    }\r\n            else:\r\n                output = {\r\n                    \"result\": ai_response,\r\n                    \"type\": \"text\"\r\n                }\r\n        else:\r\n            output = ai_response\r\n        \r\n        # 메타데이터 추가\r\n        if isinstance(output, dict):\r\n            output['_metadata'] = {\r\n                'model': model_name,\r\n                'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),\r\n                'node': current_node.get('label', 'Unknown')\r\n            }\r\n        \r\n        # 디버깅: EXP_POST_PROCESS_FUNCTION 확인\r\n        print(f\"\\n[DEBUG] Checking for EXP_POST_PROCESS_FUNCTION...\")\r\n        print(f\"[DEBUG] In locals: {'EXP_POST_PROCESS_FUNCTION' in locals()}\")\r\n        print(f\"[DEBUG] In globals: {'EXP_POST_PROCESS_FUNCTION' in globals()}\")\r\n        \r\n        # 후처리 함수 실행 (Experimental Code에서 정의된 경우)\r\n        if 'EXP_POST_PROCESS_FUNCTION' in globals() and callable(globals()['EXP_POST_PROCESS_FUNCTION']):\r\n            print(f\"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Running post-process function...\")\r\n            try:\r\n                output = globals()['EXP_POST_PROCESS_FUNCTION'](output)\r\n                print(f\"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Post-process completed\")\r\n            except Exception as e:\r\n                print(f\"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Post-process error: {str(e)}\")\r\n                import traceback\r\n                traceback.print_exc()\r\n        else:\r\n            print(f\"[DEBUG] EXP_POST_PROCESS_FUNCTION not found or not callable\")\r\n        if isinstance(output, dict):\r\n            output['_metadata'] = {\r\n                'model': model_name,\r\n                'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),\r\n                'node': current_node.get('label', 'Unknown')\r\n            }\r\n            \r\n    except Exception as e:\r\n        output = {\r\n            \"error\": f\"AI processing failed: {str(e)}\",\r\n            \"type\": \"error\"\r\n        }",
-        "baseCodeTemplate": "default",
-        "lmStudioUrl": "http://localhost:1234/",
-        "lmStudioConnectionId": "conn_1749489301",
-        "executionHistory": [
-          {
-            "timestamp": "2025-06-09T17:01:58.430Z",
-            "type": "info",
-            "message": "📊 Prompt size: 9963 chars"
-          },
-          {
-            "timestamp": "2025-06-09T17:02:14.374Z",
-            "type": "ai_request",
-            "message": "📤 Sending request to AI model"
-          },
-          {
-            "timestamp": "2025-06-09T17:02:14.387Z",
-            "type": "ai_response",
-            "message": "⏳ AI is processing your request..."
-          },
-          {
-            "timestamp": "2025-06-09T17:02:14.387Z",
-            "type": "ai_response",
-            "message": "📥 Received response from AI model"
-          },
-          {
-            "timestamp": "2025-06-09T17:02:14.388Z",
-            "type": "complete",
-            "message": "✅ AI processing completed"
-          },
-          {
-            "timestamp": "2025-06-09T17:02:14.388Z",
-            "type": "ai_response",
-            "message": "📥 Receiving AI response..."
-          },
-          {
-            "timestamp": "2025-06-09T17:02:14.483Z",
-            "type": "complete",
-            "message": "✅ Execution completed successfully"
-          },
-          {
-            "timestamp": "2025-06-09T17:02:14.513Z",
-            "type": "complete",
-            "message": "✅ Processing complete"
-          },
-          {
-            "timestamp": "2025-06-09T17:02:14.513Z",
-            "type": "complete",
-            "message": "✅ Execution completed successfully"
-          },
-          {
-            "timestamp": "2025-06-09T17:02:14.513Z",
-            "type": "complete",
-            "message": "✅ Execution completed"
-          },
-          {
-            "timestamp": "2025-06-09T17:08:02.703Z",
-            "type": "info",
-            "message": "⏳ Waiting for AI response..."
-          },
-          {
-            "timestamp": "2025-06-09T17:08:02.703Z",
-            "type": "start",
-            "message": "🚀 Code execution started"
-          },
-          {
-            "timestamp": "2025-06-09T17:08:02.714Z",
-            "type": "start",
-            "message": "📋 Preparing execution environment..."
-          },
-          {
-            "timestamp": "2025-06-09T17:08:02.913Z",
-            "type": "ai_request",
-            "message": "🤖 Sending prompt to AI model..."
-          },
-          {
-            "timestamp": "2025-06-09T17:08:02.913Z",
-            "type": "info",
-            "message": "📊 Prompt size: 9963 chars"
-          },
-          {
-            "timestamp": "2025-06-09T17:08:15.572Z",
-            "type": "ai_request",
-            "message": "📤 Sending request to AI model"
-          },
-          {
-            "timestamp": "2025-06-09T17:08:15.586Z",
-            "type": "ai_response",
-            "message": "⏳ AI is processing your request..."
-          },
-          {
-            "timestamp": "2025-06-09T17:08:15.586Z",
-            "type": "ai_response",
-            "message": "📥 Received response from AI model"
-          },
-          {
-            "timestamp": "2025-06-09T17:08:15.587Z",
-            "type": "complete",
-            "message": "✅ AI processing completed"
-          },
-          {
-            "timestamp": "2025-06-09T17:08:15.587Z",
-            "type": "ai_response",
-            "message": "📥 Receiving AI response..."
-          },
-          {
-            "timestamp": "2025-06-09T17:08:15.692Z",
-            "type": "complete",
-            "message": "✅ Execution completed successfully"
-          },
-          {
-            "timestamp": "2025-06-09T17:08:15.704Z",
-            "type": "complete",
-            "message": "✅ Processing complete"
-          },
-          {
-            "timestamp": "2025-06-09T17:08:15.705Z",
-            "type": "complete",
-            "message": "✅ Execution completed successfully"
-          },
-          {
-            "timestamp": "2025-06-09T17:08:15.705Z",
-            "type": "complete",
-            "message": "✅ Execution completed"
-          },
-          {
-            "timestamp": "2025-06-09T17:15:49.306Z",
-            "type": "info",
-            "message": "Waiting for AI response..."
-          },
-          {
-            "timestamp": "2025-06-09T17:15:49.308Z",
-            "type": "start",
-            "message": "Execution started"
-          },
-          {
-            "timestamp": "2025-06-09T17:15:49.322Z",
-            "type": "info",
-            "message": "Preparing environment"
-          },
-          {
-            "timestamp": "2025-06-09T17:15:49.523Z",
-            "type": "ai_request",
-            "message": "AI Request sent (9963 chars tokens)"
-          },
-          {
-            "timestamp": "2025-06-09T17:16:01.256Z",
-            "type": "ai_request",
-            "message": "Sending request to AI model"
-          },
-          {
-            "timestamp": "2025-06-09T17:16:01.269Z",
-            "type": "ai_response",
-            "message": "AI processing"
-          },
-          {
-            "timestamp": "2025-06-09T17:16:01.269Z",
-            "type": "ai_response",
-            "message": "Received response from AI model"
-          },
-          {
-            "timestamp": "2025-06-09T17:16:01.269Z",
-            "type": "complete",
-            "message": "AI completed"
-          },
-          {
-            "timestamp": "2025-06-09T17:16:01.269Z",
-            "type": "ai_response",
-            "message": "Receiving response"
-          },
-          {
-            "timestamp": "2025-06-09T17:16:01.366Z",
-            "type": "complete",
-            "message": "Execution completed"
-          },
-          {
-            "timestamp": "2025-06-09T17:16:01.383Z",
-            "type": "complete",
-            "message": "Processing complete"
-          },
-          {
-            "timestamp": "2025-06-09T17:16:01.383Z",
-            "type": "complete",
-            "message": "Execution completed"
-          },
-          {
-            "timestamp": "2025-06-09T17:16:01.383Z",
-            "type": "complete",
-            "message": "Execution completed"
-          },
-          {
-            "timestamp": "2025-06-09T17:18:40.153Z",
-            "type": "info",
-            "message": "Waiting for AI response..."
-          },
-          {
-            "timestamp": "2025-06-09T17:18:40.154Z",
-            "type": "start",
-            "message": "Execution started"
-          },
-          {
-            "timestamp": "2025-06-09T17:18:40.166Z",
-            "type": "info",
-            "message": "Preparing environment"
-          },
-          {
-            "timestamp": "2025-06-09T17:18:40.325Z",
-            "type": "ai_request",
-            "message": "AI Request sent (9963 chars tokens)"
-          },
-          {
-            "timestamp": "2025-06-09T17:18:58.342Z",
-            "type": "ai_request",
-            "message": "Sending request to AI model"
-          },
-          {
-            "timestamp": "2025-06-09T17:18:58.352Z",
-            "type": "ai_response",
-            "message": "AI processing"
-          },
-          {
-            "timestamp": "2025-06-09T17:18:58.352Z",
-            "type": "ai_response",
-            "message": "Received response from AI model"
-          },
-          {
-            "timestamp": "2025-06-09T17:18:58.352Z",
-            "type": "complete",
-            "message": "AI completed"
-          },
-          {
-            "timestamp": "2025-06-09T17:18:58.352Z",
-            "type": "ai_response",
-            "message": "Receiving response"
-          },
-          {
-            "timestamp": "2025-06-09T17:18:58.453Z",
-            "type": "complete",
-            "message": "Execution completed"
-          },
-          {
-            "timestamp": "2025-06-09T17:18:58.464Z",
-            "type": "complete",
-            "message": "Processing complete"
-          },
-          {
-            "timestamp": "2025-06-09T17:18:58.465Z",
-            "type": "complete",
-            "message": "Execution completed"
-          },
-          {
-            "timestamp": "2025-06-09T17:18:58.465Z",
-            "type": "complete",
-            "message": "Execution completed"
-          }
-        ]
-      },
-      {
-        "id": "worker-1749357862698",
-        "type": "worker",
-        "label": "Story Structure",
-        "position": {
-          "x": 1292.1349779428224,
-          "y": 401.43203199518985
-        },
-        "isRunning": false,
-        "isDeactivated": false,
-        "supervised": false,
-        "tasks": [
-          {
-            "id": "task-1749357862698",
-            "text": "1. 장르에 적합한 극적 구조로 스토리를 구성합니다 (3막, 4막 기승전결, 에피소드 등)",
-            "status": "pending",
-            "taskStatus": "editable",
-            "aiScore": 50.0
-          },
-          {
-            "id": "task-1749360146863",
-            "text": "타이밍과 감정적 무게를 포함한 모든 서사 비트를 식별하고 표시합니다",
-            "status": "pending",
-            "taskStatus": "editable",
-            "aiScore": 50.0
-          },
-          {
-            "id": "task-1749360155081",
-            "text": "구조를 통한 캐릭터 아크를 매핑합니다",
-            "status": "pending",
-            "taskStatus": "editable",
-            "aiScore": 50.0
-          },
-          {
-            "id": "task-1749360159401",
-            "text": "페이싱 리듬과 긴장 곡선을 정의합니다",
-            "status": "pending",
-            "taskStatus": "editable",
-            "aiScore": 50.0
-          }
-        ],
-        "connectedTo": [
-          "worker-1749357881209"
-        ],
-        "connectedFrom": [
-          "worker-1749286886724"
-        ],
-        "code": "# ========================================================================\r\n# BASE CODE - 공통 실행 코드 (수정 불가)\r\n# 이 코드는 모든 Worker 노드가 공통으로 사용하는 기본 실행 코드입니다.\r\n# ========================================================================\r\n\r\nimport json\r\nimport time\r\n\r\n# 연결된 입력 데이터 가져오기\r\ninput_data = get_connected_outputs()\r\nprint(f\"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Connected inputs received\")\r\nprint(json.dumps(input_data, ensure_ascii=False, indent=2))\r\n\r\n# 현재 노드 정보 출력\r\nprint(f\"\\nNode: {current_node.get('label', 'Unknown')}\")\r\nprint(f\"Purpose: {node_purpose}\")\r\nprint(f\"Expected Output Format: {output_format_description}\")\r\n\r\n# AI 모델 설정 확인 - execution.py에서 노드 설정으로부터 제공됨\r\nprint(f\"\\n[DEBUG] model_name: {model_name}\")\r\nprint(f\"[DEBUG] lm_studio_url: {lm_studio_url}\")\r\nprint(f\"[DEBUG] current_node['model']: {current_node.get('model', 'Not found')}\")\r\nprint(f\"[DEBUG] current_node['lmStudioUrl']: {current_node.get('lmStudioUrl', 'Not found')}\")\r\n\r\nif model_name == 'none' or not model_name or not lm_studio_url:\r\n    print(\"\\n⚠️  No AI model configured!\")\r\n    output = {\r\n        \"error\": \"No AI model configured\",\r\n        \"hint\": \"Please connect to LM Studio and select a model\",\r\n        \"timestamp\": time.strftime('%Y-%m-%d %H:%M:%S')\r\n    }\r\nelse:\r\n    print(f\"\\n✅ Using AI model: {model_name}\")\r\n    \r\n    # ========================================================================\r\n    # 입력 데이터 통합\r\n    # ========================================================================\r\n    combined_input = \"\"\r\n    for key, value in input_data.items():\r\n        if isinstance(value, dict):\r\n            if 'text' in value:\r\n                combined_input += f\"[{key}]\\n{value['text']}\\n\\n\"\r\n            elif 'content' in value:\r\n                combined_input += f\"[{key}]\\n{value['content']}\\n\\n\"\r\n            else:\r\n                combined_input += f\"[{key}]\\n{json.dumps(value, ensure_ascii=False, indent=2)}\\n\\n\"\r\n        elif isinstance(value, str):\r\n            combined_input += f\"[{key}]\\n{value}\\n\\n\"\r\n        else:\r\n            combined_input += f\"[{key}]\\n{str(value)}\\n\\n\"\r\n    \r\n    # ========================================================================\r\n    # AI 프롬프트 구성\r\n    # ========================================================================\r\n    base_prompt = f\"\"\"당신은 다음 목적을 달성해야 하는 AI 어시스턴트입니다:\r\n\r\n**목적 (Purpose):**\r\n{node_purpose}\r\n\r\n**입력 데이터:**\r\n{combined_input.strip()}\r\n\r\n**수행할 작업들 (Tasks):**\"\"\"\r\n    \r\n    # Tasks 추가\r\n    if 'tasks' in current_node and current_node['tasks']:\r\n        for i, task in enumerate(current_node['tasks'], 1):\r\n            base_prompt += f\"\\n{i}. {task['text']}\"\r\n            # Task status에 따른 추가 지시\r\n            if task.get('taskStatus') == 'locked':\r\n                base_prompt += \" [필수 - 반드시 수행]\"\r\n            elif task.get('taskStatus') == 'low_priority':\r\n                base_prompt += \" [선택적 - 가능한 경우 수행]\"\r\n    else:\r\n        base_prompt += \"\\n(작업이 정의되지 않았습니다)\"\r\n    \r\n    base_prompt += f\"\"\"\\n\\n**기대하는 출력 형식:**\r\n{output_format_description}\r\n\r\n위의 목적과 작업들을 수행하고, 지정된 출력 형식에 맞춰 결과를 생성해주세요.\r\n\"\"\"\r\n\r\n    # ========================================================================\r\n    # Experimental Code 병합 (있는 경우)\r\n    # ========================================================================\r\n    # EXP_CODE_MERGE_POINT - 이 부분에서 Exp Code가 병합됩니다\n    \n    # ========================================================================\n    # EXPERIMENTAL CODE - 노드별 특수 처리 로직\n    # ========================================================================\n    aaaaaa\n    \n    # ========================================================================\n    # AI 프롬프트에 추가 지시사항 병합\n    # ========================================================================\n    if 'exp_prompt_addition' in locals():\n        base_prompt += \"\\n\\n**추가 지시사항:**\\n\" + exp_prompt_addition\n    \n    # Exp Code에서 입력 데이터 가공이 있었다면 반영\n    if 'processed_input' in locals():\n        combined_input = processed_input\n    \r\n    \r\n    # ========================================================================\r\n    # AI 모델 호출\r\n    # ========================================================================\r\n    try:\r\n        print(f\"\\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] Sending request to AI model...\")\r\n        print(f\"Prompt length: {len(base_prompt)} characters\")\r\n        \r\n        # AI 응답 받기\r\n        ai_response = call_ai_model(base_prompt)\r\n        print(f\"\\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] AI response received\")\r\n        \r\n        # 응답 처리\r\n        if isinstance(ai_response, dict) and 'error' in ai_response:\r\n            output = ai_response\r\n        elif isinstance(ai_response, str):\r\n            # JSON 추출 시도\r\n            json_start = ai_response.find('{')\r\n            json_end = ai_response.rfind('}') + 1\r\n            \r\n            if json_start != -1 and json_end > json_start:\r\n                try:\r\n                    output = json.loads(ai_response[json_start:json_end])\r\n                except json.JSONDecodeError:\r\n                    output = {\r\n                        \"result\": ai_response,\r\n                        \"type\": \"text\",\r\n                        \"raw_response\": True\r\n                    }\r\n            else:\r\n                output = {\r\n                    \"result\": ai_response,\r\n                    \"type\": \"text\"\r\n                }\r\n        else:\r\n            output = ai_response\r\n            \r\n        # 메타데이터 추가\r\n        if isinstance(output, dict):\r\n            output['_metadata'] = {\r\n                'model': model_name,\r\n                'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),\r\n                'node': current_node.get('label', 'Unknown')\r\n            }\r\n            \r\n    except Exception as e:\r\n        print(f\"\\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] ❌ Error: {str(e)}\")\r\n        output = {\r\n            \"error\": f\"AI processing failed: {str(e)}\",\r\n            \"type\": \"error\",\r\n            \"timestamp\": time.strftime('%Y-%m-%d %H:%M:%S')\r\n        }\r\n\r\n# ========================================================================\r\n# 최종 출력\r\n# ========================================================================\r\nprint(f\"\\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] Final output:\")\r\nprint(json.dumps(output, ensure_ascii=False, indent=2))\r\nprint(f\"\\n✅ Execution completed successfully\")\r\n\r\n# output 변수가 설정되었음을 확인\r\nprint(f\"\\n[DEBUG] Output is set: {'output' in locals()}\")\r\nprint(f\"[DEBUG] Output value type: {type(output)}\")\r\nprint(f\"[DEBUG] Output is None: {output is None}\")",
-        "output": "",
-        "model": "sakura-13b-korean-v0.9",
-        "purpose": "추출된 전제를 구조화된 서사 흐름으로 변환하여 막, 비트, 전환점을 설정합니다",
-        "outputFormat": "Narrative flow document with hierarchical structure:\n- Story progression in natural language\n- <beat> markers for key moments\n- <turning_point> for major shifts\n- Emotional arc descriptions\n- Flexible act structure (not limited to 3-act)",
-        "baseCodeTemplate": "default",
-        "lmStudioUrl": "http://localhost:1234/",
-        "lmStudioConnectionId": "conn_1749361395"
-      },
-      {
-        "id": "worker-1749357881209",
-        "type": "worker",
-        "label": "World Building",
-        "position": {
-          "x": 2040.3215222953281,
-          "y": 513.9366473384232
-        },
-        "isRunning": false,
-        "isDeactivated": false,
-        "supervised": false,
-        "tasks": [
-          {
-            "id": "task-1749357881209",
-            "text": "Elaborate each location with multi-sensory descriptions and emotional atmosphere",
-            "status": "pending",
-            "taskStatus": "editable",
-            "aiScore": 50.0
-          },
-          {
-            "id": "task-1749360289489",
-            "text": "Create historical/cultural context appropriate to story genre",
-            "status": "pending",
-            "taskStatus": "editable",
-            "aiScore": 50.0
-          },
-          {
-            "id": "task-1749360299804",
-            "text": "Define environmental rules and constraints that affect the narrative",
-            "status": "pending",
-            "taskStatus": "editable",
-            "aiScore": 50.0
-          },
-          {
-            "id": "task-1749360303532",
-            "text": "Establish visual motifs and symbolic elements in settings",
-            "status": "pending",
-            "taskStatus": "editable",
-            "aiScore": 50.0
-          }
-        ],
-        "connectedTo": [
-          "worker-1749360338200"
-        ],
-        "connectedFrom": [
-          "worker-1749357862698"
-        ],
-        "code": "# ========================================================================\r\n# BASE CODE - 공통 실행 코드 (수정 불가)\r\n# 이 코드는 모든 Worker 노드가 공통으로 사용하는 기본 실행 코드입니다.\r\n# ========================================================================\r\n\r\nimport json\r\nimport time\r\n\r\n# 연결된 입력 데이터 가져오기\r\ninput_data = get_connected_outputs()\r\nprint(f\"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Connected inputs received\")\r\nprint(json.dumps(input_data, ensure_ascii=False, indent=2))\r\n\r\n# 현재 노드 정보 출력\r\nprint(f\"\\nNode: {current_node.get('label', 'Unknown')}\")\r\nprint(f\"Purpose: {node_purpose}\")\r\nprint(f\"Expected Output Format: {output_format_description}\")\r\n\r\n# AI 모델 설정 확인 - execution.py에서 노드 설정으로부터 제공됨\r\nprint(f\"\\n[DEBUG] model_name: {model_name}\")\r\nprint(f\"[DEBUG] lm_studio_url: {lm_studio_url}\")\r\nprint(f\"[DEBUG] current_node['model']: {current_node.get('model', 'Not found')}\")\r\nprint(f\"[DEBUG] current_node['lmStudioUrl']: {current_node.get('lmStudioUrl', 'Not found')}\")\r\n\r\nif model_name == 'none' or not model_name or not lm_studio_url:\r\n    print(\"\\n⚠️  No AI model configured!\")\r\n    output = {\r\n        \"error\": \"No AI model configured\",\r\n        \"hint\": \"Please connect to LM Studio and select a model\",\r\n        \"timestamp\": time.strftime('%Y-%m-%d %H:%M:%S')\r\n    }\r\nelse:\r\n    print(f\"\\n✅ Using AI model: {model_name}\")\r\n    \r\n    # ========================================================================\r\n    # 입력 데이터 통합\r\n    # ========================================================================\r\n    combined_input = \"\"\r\n    for key, value in input_data.items():\r\n        if isinstance(value, dict):\r\n            if 'text' in value:\r\n                combined_input += f\"[{key}]\\n{value['text']}\\n\\n\"\r\n            elif 'content' in value:\r\n                combined_input += f\"[{key}]\\n{value['content']}\\n\\n\"\r\n            else:\r\n                combined_input += f\"[{key}]\\n{json.dumps(value, ensure_ascii=False, indent=2)}\\n\\n\"\r\n        elif isinstance(value, str):\r\n            combined_input += f\"[{key}]\\n{value}\\n\\n\"\r\n        else:\r\n            combined_input += f\"[{key}]\\n{str(value)}\\n\\n\"\r\n    \r\n    # ========================================================================\r\n    # AI 프롬프트 구성\r\n    # ========================================================================\r\n    base_prompt = f\"\"\"당신은 다음 목적을 달성해야 하는 AI 어시스턴트입니다:\r\n\r\n**목적 (Purpose):**\r\n{node_purpose}\r\n\r\n**입력 데이터:**\r\n{combined_input.strip()}\r\n\r\n**수행할 작업들 (Tasks):**\"\"\"\r\n    \r\n    # Tasks 추가\r\n    if 'tasks' in current_node and current_node['tasks']:\r\n        for i, task in enumerate(current_node['tasks'], 1):\r\n            base_prompt += f\"\\n{i}. {task['text']}\"\r\n            # Task status에 따른 추가 지시\r\n            if task.get('taskStatus') == 'locked':\r\n                base_prompt += \" [필수 - 반드시 수행]\"\r\n            elif task.get('taskStatus') == 'low_priority':\r\n                base_prompt += \" [선택적 - 가능한 경우 수행]\"\r\n    else:\r\n        base_prompt += \"\\n(작업이 정의되지 않았습니다)\"\r\n    \r\n    base_prompt += f\"\"\"\\n\\n**기대하는 출력 형식:**\r\n{output_format_description}\r\n\r\n위의 목적과 작업들을 수행하고, 지정된 출력 형식에 맞춰 결과를 생성해주세요.\r\n\"\"\"\r\n\r\n    # ========================================================================\r\n    # Experimental Code 병합 (있는 경우)\r\n    # ========================================================================\r\n    # EXP_CODE_MERGE_POINT - 이 부분에서 Exp Code가 병합됩니다\r\n    \r\n    # ========================================================================\r\n    # AI 모델 호출\r\n    # ========================================================================\r\n    try:\r\n        print(f\"\\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] Sending request to AI model...\")\r\n        print(f\"Prompt length: {len(base_prompt)} characters\")\r\n        \r\n        # AI 응답 받기\r\n        ai_response = call_ai_model(base_prompt)\r\n        print(f\"\\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] AI response received\")\r\n        \r\n        # 응답 처리\r\n        if isinstance(ai_response, dict) and 'error' in ai_response:\r\n            output = ai_response\r\n        elif isinstance(ai_response, str):\r\n            # JSON 추출 시도\r\n            json_start = ai_response.find('{')\r\n            json_end = ai_response.rfind('}') + 1\r\n            \r\n            if json_start != -1 and json_end > json_start:\r\n                try:\r\n                    output = json.loads(ai_response[json_start:json_end])\r\n                except json.JSONDecodeError:\r\n                    output = {\r\n                        \"result\": ai_response,\r\n                        \"type\": \"text\",\r\n                        \"raw_response\": True\r\n                    }\r\n            else:\r\n                output = {\r\n                    \"result\": ai_response,\r\n                    \"type\": \"text\"\r\n                }\r\n        else:\r\n            output = ai_response\r\n            \r\n        # 메타데이터 추가\r\n        if isinstance(output, dict):\r\n            output['_metadata'] = {\r\n                'model': model_name,\r\n                'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),\r\n                'node': current_node.get('label', 'Unknown')\r\n            }\r\n            \r\n    except Exception as e:\r\n        print(f\"\\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] ❌ Error: {str(e)}\")\r\n        output = {\r\n            \"error\": f\"AI processing failed: {str(e)}\",\r\n            \"type\": \"error\",\r\n            \"timestamp\": time.strftime('%Y-%m-%d %H:%M:%S')\r\n        }\r\n\r\n# ========================================================================\r\n# 최종 출력\r\n# ========================================================================\r\nprint(f\"\\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] Final output:\")\r\nprint(json.dumps(output, ensure_ascii=False, indent=2))\r\nprint(f\"\\n✅ Execution completed successfully\")\r\n\r\n# output 변수가 설정되었음을 확인\r\nprint(f\"\\n[DEBUG] Output is set: {'output' in locals()}\")\r\nprint(f\"[DEBUG] Output value type: {type(output)}\")\r\nprint(f\"[DEBUG] Output is None: {output is None}\")",
-        "output": "",
-        "model": "nikolaykozloff/qwen3-14b",
-        "purpose": "Expand spatial, temporal, and atmospheric elements to create immersive story environments",
-        "outputFormat": "Rich descriptive passages with embedded metadata:\n- Immersive location descriptions\n- Temporal context and history\n- Sensory details\n- Cultural/social elements\n- Environmental storytelling cues",
-        "baseCodeTemplate": "default",
-        "lmStudioUrl": "http://localhost:1234/",
-        "lmStudioConnectionId": "conn_1749362740"
-      },
-      {
-        "id": "worker-1749360338200",
-        "type": "worker",
-        "label": "Character Development",
-        "position": {
-          "x": 2801.8807625318454,
-          "y": 615.4244333315347
-        },
-        "isRunning": false,
-        "isDeactivated": false,
-        "supervised": false,
-        "tasks": [
-          {
-            "id": "task-1749360338200",
-            "text": "Create detailed backstories that inform character motivations and behaviors",
-            "status": "pending",
-            "taskStatus": "editable",
-            "aiScore": 50.0
-          },
-          {
-            "id": "task-1749360356187",
-            "text": "Define character voices through sample dialogues and thought patterns",
-            "status": "pending",
-            "taskStatus": "editable",
-            "aiScore": 50.0
-          },
-          {
-            "id": "task-1749360356522",
-            "text": "Map relationship dynamics and how they evolve through the story",
-            "status": "pending",
-            "taskStatus": "editable",
-            "aiScore": 50.0
-          },
-          {
-            "id": "task-1749360356756",
-            "text": "Establish character arcs with clear transformation points",
-            "status": "pending",
-            "taskStatus": "editable",
-            "aiScore": 50.0
-          }
-        ],
-        "connectedTo": [
-          "worker-1749360390640"
-        ],
-        "connectedFrom": [
-          "worker-1749357881209"
-        ],
-        "code": "# ========================================================================\r\n# BASE CODE - 공통 실행 코드 (수정 불가)\r\n# 이 코드는 모든 Worker 노드가 공통으로 사용하는 기본 실행 코드입니다.\r\n# ========================================================================\r\n\r\nimport json\r\nimport time\r\n\r\n# 연결된 입력 데이터 가져오기\r\ninput_data = get_connected_outputs()\r\nprint(f\"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Connected inputs received\")\r\nprint(json.dumps(input_data, ensure_ascii=False, indent=2))\r\n\r\n# 현재 노드 정보 출력\r\nprint(f\"\\nNode: {current_node.get('label', 'Unknown')}\")\r\nprint(f\"Purpose: {node_purpose}\")\r\nprint(f\"Expected Output Format: {output_format_description}\")\r\n\r\n# AI 모델 설정 확인 - execution.py에서 노드 설정으로부터 제공됨\r\nprint(f\"\\n[DEBUG] model_name: {model_name}\")\r\nprint(f\"[DEBUG] lm_studio_url: {lm_studio_url}\")\r\nprint(f\"[DEBUG] current_node['model']: {current_node.get('model', 'Not found')}\")\r\nprint(f\"[DEBUG] current_node['lmStudioUrl']: {current_node.get('lmStudioUrl', 'Not found')}\")\r\n\r\nif model_name == 'none' or not model_name or not lm_studio_url:\r\n    print(\"\\n⚠️  No AI model configured!\")\r\n    output = {\r\n        \"error\": \"No AI model configured\",\r\n        \"hint\": \"Please connect to LM Studio and select a model\",\r\n        \"timestamp\": time.strftime('%Y-%m-%d %H:%M:%S')\r\n    }\r\nelse:\r\n    print(f\"\\n✅ Using AI model: {model_name}\")\r\n    \r\n    # ========================================================================\r\n    # 입력 데이터 통합\r\n    # ========================================================================\r\n    combined_input = \"\"\r\n    for key, value in input_data.items():\r\n        if isinstance(value, dict):\r\n            if 'text' in value:\r\n                combined_input += f\"[{key}]\\n{value['text']}\\n\\n\"\r\n            elif 'content' in value:\r\n                combined_input += f\"[{key}]\\n{value['content']}\\n\\n\"\r\n            else:\r\n                combined_input += f\"[{key}]\\n{json.dumps(value, ensure_ascii=False, indent=2)}\\n\\n\"\r\n        elif isinstance(value, str):\r\n            combined_input += f\"[{key}]\\n{value}\\n\\n\"\r\n        else:\r\n            combined_input += f\"[{key}]\\n{str(value)}\\n\\n\"\r\n    \r\n    # ========================================================================\r\n    # AI 프롬프트 구성\r\n    # ========================================================================\r\n    base_prompt = f\"\"\"당신은 다음 목적을 달성해야 하는 AI 어시스턴트입니다:\r\n\r\n**목적 (Purpose):**\r\n{node_purpose}\r\n\r\n**입력 데이터:**\r\n{combined_input.strip()}\r\n\r\n**수행할 작업들 (Tasks):**\"\"\"\r\n    \r\n    # Tasks 추가\r\n    if 'tasks' in current_node and current_node['tasks']:\r\n        for i, task in enumerate(current_node['tasks'], 1):\r\n            base_prompt += f\"\\n{i}. {task['text']}\"\r\n            # Task status에 따른 추가 지시\r\n            if task.get('taskStatus') == 'locked':\r\n                base_prompt += \" [필수 - 반드시 수행]\"\r\n            elif task.get('taskStatus') == 'low_priority':\r\n                base_prompt += \" [선택적 - 가능한 경우 수행]\"\r\n    else:\r\n        base_prompt += \"\\n(작업이 정의되지 않았습니다)\"\r\n    \r\n    base_prompt += f\"\"\"\\n\\n**기대하는 출력 형식:**\r\n{output_format_description}\r\n\r\n위의 목적과 작업들을 수행하고, 지정된 출력 형식에 맞춰 결과를 생성해주세요.\r\n\"\"\"\r\n\r\n    # ========================================================================\r\n    # Experimental Code 병합 (있는 경우)\r\n    # ========================================================================\r\n    # EXP_CODE_MERGE_POINT - 이 부분에서 Exp Code가 병합됩니다\r\n    \r\n    # ========================================================================\r\n    # AI 모델 호출\r\n    # ========================================================================\r\n    try:\r\n        print(f\"\\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] Sending request to AI model...\")\r\n        print(f\"Prompt length: {len(base_prompt)} characters\")\r\n        \r\n        # AI 응답 받기\r\n        ai_response = call_ai_model(base_prompt)\r\n        print(f\"\\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] AI response received\")\r\n        \r\n        # 응답 처리\r\n        if isinstance(ai_response, dict) and 'error' in ai_response:\r\n            output = ai_response\r\n        elif isinstance(ai_response, str):\r\n            # JSON 추출 시도\r\n            json_start = ai_response.find('{')\r\n            json_end = ai_response.rfind('}') + 1\r\n            \r\n            if json_start != -1 and json_end > json_start:\r\n                try:\r\n                    output = json.loads(ai_response[json_start:json_end])\r\n                except json.JSONDecodeError:\r\n                    output = {\r\n                        \"result\": ai_response,\r\n                        \"type\": \"text\",\r\n                        \"raw_response\": True\r\n                    }\r\n            else:\r\n                output = {\r\n                    \"result\": ai_response,\r\n                    \"type\": \"text\"\r\n                }\r\n        else:\r\n            output = ai_response\r\n            \r\n        # 메타데이터 추가\r\n        if isinstance(output, dict):\r\n            output['_metadata'] = {\r\n                'model': model_name,\r\n                'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),\r\n                'node': current_node.get('label', 'Unknown')\r\n            }\r\n            \r\n    except Exception as e:\r\n        print(f\"\\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] ❌ Error: {str(e)}\")\r\n        output = {\r\n            \"error\": f\"AI processing failed: {str(e)}\",\r\n            \"type\": \"error\",\r\n            \"timestamp\": time.strftime('%Y-%m-%d %H:%M:%S')\r\n        }\r\n\r\n# ========================================================================\r\n# 최종 출력\r\n# ========================================================================\r\nprint(f\"\\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] Final output:\")\r\nprint(json.dumps(output, ensure_ascii=False, indent=2))\r\nprint(f\"\\n✅ Execution completed successfully\")\r\n\r\n# output 변수가 설정되었음을 확인\r\nprint(f\"\\n[DEBUG] Output is set: {'output' in locals()}\")\r\nprint(f\"[DEBUG] Output value type: {type(output)}\")\r\nprint(f\"[DEBUG] Output is None: {output is None}\")",
-        "output": "",
-        "model": "llama-3-korean-bllossom-8b",
-        "purpose": "Deepen character profiles with psychological depth, motivations, relationships, and character arcs",
-        "outputFormat": "Character exploration documents:\n- Deep psychological profiles\n- Backstory narratives\n- Relationship dynamics\n- Character voice samples\n- Visual/physical descriptions\n- Arc progression notes",
-        "baseCodeTemplate": "default",
-        "lmStudioUrl": "http://localhost:1234/",
-        "lmStudioConnectionId": "conn_1749362776"
-      },
-      {
-        "id": "worker-1749360390640",
-        "type": "worker",
-        "label": "Asset Compilation",
-        "position": {
-          "x": 3675.060704286283,
-          "y": 779.4438172551586
-        },
-        "isRunning": false,
-        "isDeactivated": false,
-        "supervised": false,
-        "tasks": [
-          {
-            "id": "task-1749360390640",
-            "text": "Create unified registry of all story elements with unique identifiers",
-            "status": "pending",
-            "taskStatus": "editable",
-            "aiScore": 50.0
-          },
-          {
-            "id": "task-1749360471939",
-            "text": "Map element appearances across scenes/beats for production planning",
-            "status": "pending",
-            "taskStatus": "editable",
-            "aiScore": 50.0
-          },
-          {
-            "id": "task-1749360472126",
-            "text": "Identify special requirements (VFX, props, wardrobe, etc.)",
-            "status": "pending",
-            "taskStatus": "editable",
-            "aiScore": 50.0
-          },
-          {
-            "id": "task-1749360472312",
-            "text": "Generate dependency matrix showing element relationships",
-            "status": "pending",
-            "taskStatus": "editable",
-            "aiScore": 50.0
-          }
-        ],
-        "connectedTo": [
-          "worker-1749360498922"
-        ],
-        "connectedFrom": [
-          "worker-1749360338200"
-        ],
-        "code": "# ========================================================================\r\n# BASE CODE - 공통 실행 코드 (수정 불가)\r\n# 이 코드는 모든 Worker 노드가 공통으로 사용하는 기본 실행 코드입니다.\r\n# ========================================================================\r\n\r\nimport json\r\nimport time\r\n\r\n# 연결된 입력 데이터 가져오기\r\ninput_data = get_connected_outputs()\r\nprint(f\"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Connected inputs received\")\r\nprint(json.dumps(input_data, ensure_ascii=False, indent=2))\r\n\r\n# 현재 노드 정보 출력\r\nprint(f\"\\nNode: {current_node.get('label', 'Unknown')}\")\r\nprint(f\"Purpose: {node_purpose}\")\r\nprint(f\"Expected Output Format: {output_format_description}\")\r\n\r\n# AI 모델 설정 확인 - execution.py에서 노드 설정으로부터 제공됨\r\nprint(f\"\\n[DEBUG] model_name: {model_name}\")\r\nprint(f\"[DEBUG] lm_studio_url: {lm_studio_url}\")\r\nprint(f\"[DEBUG] current_node['model']: {current_node.get('model', 'Not found')}\")\r\nprint(f\"[DEBUG] current_node['lmStudioUrl']: {current_node.get('lmStudioUrl', 'Not found')}\")\r\n\r\nif model_name == 'none' or not model_name or not lm_studio_url:\r\n    print(\"\\n⚠️  No AI model configured!\")\r\n    output = {\r\n        \"error\": \"No AI model configured\",\r\n        \"hint\": \"Please connect to LM Studio and select a model\",\r\n        \"timestamp\": time.strftime('%Y-%m-%d %H:%M:%S')\r\n    }\r\nelse:\r\n    print(f\"\\n✅ Using AI model: {model_name}\")\r\n    \r\n    # ========================================================================\r\n    # 입력 데이터 통합\r\n    # ========================================================================\r\n    combined_input = \"\"\r\n    for key, value in input_data.items():\r\n        if isinstance(value, dict):\r\n            if 'text' in value:\r\n                combined_input += f\"[{key}]\\n{value['text']}\\n\\n\"\r\n            elif 'content' in value:\r\n                combined_input += f\"[{key}]\\n{value['content']}\\n\\n\"\r\n            else:\r\n                combined_input += f\"[{key}]\\n{json.dumps(value, ensure_ascii=False, indent=2)}\\n\\n\"\r\n        elif isinstance(value, str):\r\n            combined_input += f\"[{key}]\\n{value}\\n\\n\"\r\n        else:\r\n            combined_input += f\"[{key}]\\n{str(value)}\\n\\n\"\r\n    \r\n    # ========================================================================\r\n    # AI 프롬프트 구성\r\n    # ========================================================================\r\n    base_prompt = f\"\"\"당신은 다음 목적을 달성해야 하는 AI 어시스턴트입니다:\r\n\r\n**목적 (Purpose):**\r\n{node_purpose}\r\n\r\n**입력 데이터:**\r\n{combined_input.strip()}\r\n\r\n**수행할 작업들 (Tasks):**\"\"\"\r\n    \r\n    # Tasks 추가\r\n    if 'tasks' in current_node and current_node['tasks']:\r\n        for i, task in enumerate(current_node['tasks'], 1):\r\n            base_prompt += f\"\\n{i}. {task['text']}\"\r\n            # Task status에 따른 추가 지시\r\n            if task.get('taskStatus') == 'locked':\r\n                base_prompt += \" [필수 - 반드시 수행]\"\r\n            elif task.get('taskStatus') == 'low_priority':\r\n                base_prompt += \" [선택적 - 가능한 경우 수행]\"\r\n    else:\r\n        base_prompt += \"\\n(작업이 정의되지 않았습니다)\"\r\n    \r\n    base_prompt += f\"\"\"\\n\\n**기대하는 출력 형식:**\r\n{output_format_description}\r\n\r\n위의 목적과 작업들을 수행하고, 지정된 출력 형식에 맞춰 결과를 생성해주세요.\r\n\"\"\"\r\n\r\n    # ========================================================================\r\n    # Experimental Code 병합 (있는 경우)\r\n    # ========================================================================\r\n    # EXP_CODE_MERGE_POINT - 이 부분에서 Exp Code가 병합됩니다\r\n    \r\n    # ========================================================================\r\n    # AI 모델 호출\r\n    # ========================================================================\r\n    try:\r\n        print(f\"\\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] Sending request to AI model...\")\r\n        print(f\"Prompt length: {len(base_prompt)} characters\")\r\n        \r\n        # AI 응답 받기\r\n        ai_response = call_ai_model(base_prompt)\r\n        print(f\"\\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] AI response received\")\r\n        \r\n        # 응답 처리\r\n        if isinstance(ai_response, dict) and 'error' in ai_response:\r\n            output = ai_response\r\n        elif isinstance(ai_response, str):\r\n            # JSON 추출 시도\r\n            json_start = ai_response.find('{')\r\n            json_end = ai_response.rfind('}') + 1\r\n            \r\n            if json_start != -1 and json_end > json_start:\r\n                try:\r\n                    output = json.loads(ai_response[json_start:json_end])\r\n                except json.JSONDecodeError:\r\n                    output = {\r\n                        \"result\": ai_response,\r\n                        \"type\": \"text\",\r\n                        \"raw_response\": True\r\n                    }\r\n            else:\r\n                output = {\r\n                    \"result\": ai_response,\r\n                    \"type\": \"text\"\r\n                }\r\n        else:\r\n            output = ai_response\r\n            \r\n        # 메타데이터 추가\r\n        if isinstance(output, dict):\r\n            output['_metadata'] = {\r\n                'model': model_name,\r\n                'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),\r\n                'node': current_node.get('label', 'Unknown')\r\n            }\r\n            \r\n    except Exception as e:\r\n        print(f\"\\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] ❌ Error: {str(e)}\")\r\n        output = {\r\n            \"error\": f\"AI processing failed: {str(e)}\",\r\n            \"type\": \"error\",\r\n            \"timestamp\": time.strftime('%Y-%m-%d %H:%M:%S')\r\n        }\r\n\r\n# ========================================================================\r\n# 최종 출력\r\n# ========================================================================\r\nprint(f\"\\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] Final output:\")\r\nprint(json.dumps(output, ensure_ascii=False, indent=2))\r\nprint(f\"\\n✅ Execution completed successfully\")\r\n\r\n# output 변수가 설정되었음을 확인\r\nprint(f\"\\n[DEBUG] Output is set: {'output' in locals()}\")\r\nprint(f\"[DEBUG] Output value type: {type(output)}\")\r\nprint(f\"[DEBUG] Output is None: {output is None}\")",
-        "output": "",
-        "model": "qwen2.5-7b-instruct-uncensored",
-        "purpose": "Consolidate all story elements into organized production-ready asset registry with cross-references",
-        "outputFormat": "Comprehensive asset manifest:\n- Element catalog with IDs\n- Cross-reference matrix\n- Scene appearance tracking\n- Production requirements\n- Dependency mappings",
-        "baseCodeTemplate": "default",
-        "lmStudioUrl": "http://localhost:1234/",
-        "lmStudioConnectionId": "conn_1749362787"
-      },
-      {
-        "id": "worker-1749360498922",
-        "type": "worker",
-        "label": "Scene Breakdown",
-        "position": {
-          "x": 4418.640064581576,
-          "y": 823.4333743507012
-        },
-        "isRunning": false,
-        "isDeactivated": false,
-        "supervised": false,
-        "tasks": [
-          {
-            "id": "task-1749360498922",
-            "text": "Transform story beats into individual scenes with clear boundaries",
-            "status": "pending",
-            "taskStatus": "editable",
-            "aiScore": 50.0
-          },
-          {
-            "id": "task-1749360516561",
-            "text": "Write detailed action descriptions with visual storytelling in mind",
-            "status": "pending",
-            "taskStatus": "editable",
-            "aiScore": 50.0
-          },
-          {
-            "id": "task-1749360533910",
-            "text": "Include camera angles, movements, and shot compositions",
-            "status": "pending",
-            "taskStatus": "editable",
-            "aiScore": 50.0
-          },
-          {
-            "id": "task-1749360537296",
-            "text": "Estimate scene duration and pacing rhythm",
-            "status": "pending",
-            "taskStatus": "editable",
-            "aiScore": 50.0
-          }
-        ],
-        "connectedTo": [
-          "output-preproduction-script"
-        ],
-        "connectedFrom": [
-          "worker-1749360390640"
-        ],
-        "code": "# ========================================================================\r\n# BASE CODE - 공통 실행 코드 (수정 불가)\r\n# 이 코드는 모든 Worker 노드가 공통으로 사용하는 기본 실행 코드입니다.\r\n# ========================================================================\r\n\r\nimport json\r\nimport time\r\n\r\n# 연결된 입력 데이터 가져오기\r\ninput_data = get_connected_outputs()\r\nprint(f\"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Connected inputs received\")\r\nprint(json.dumps(input_data, ensure_ascii=False, indent=2))\r\n\r\n# 현재 노드 정보 출력\r\nprint(f\"\\nNode: {current_node.get('label', 'Unknown')}\")\r\nprint(f\"Purpose: {node_purpose}\")\r\nprint(f\"Expected Output Format: {output_format_description}\")\r\n\r\n# AI 모델 설정 확인 - execution.py에서 노드 설정으로부터 제공됨\r\nprint(f\"\\n[DEBUG] model_name: {model_name}\")\r\nprint(f\"[DEBUG] lm_studio_url: {lm_studio_url}\")\r\nprint(f\"[DEBUG] current_node['model']: {current_node.get('model', 'Not found')}\")\r\nprint(f\"[DEBUG] current_node['lmStudioUrl']: {current_node.get('lmStudioUrl', 'Not found')}\")\r\n\r\nif model_name == 'none' or not model_name or not lm_studio_url:\r\n    print(\"\\n⚠️  No AI model configured!\")\r\n    output = {\r\n        \"error\": \"No AI model configured\",\r\n        \"hint\": \"Please connect to LM Studio and select a model\",\r\n        \"timestamp\": time.strftime('%Y-%m-%d %H:%M:%S')\r\n    }\r\nelse:\r\n    print(f\"\\n✅ Using AI model: {model_name}\")\r\n    \r\n    # ========================================================================\r\n    # 입력 데이터 통합\r\n    # ========================================================================\r\n    combined_input = \"\"\r\n    for key, value in input_data.items():\r\n        if isinstance(value, dict):\r\n            if 'text' in value:\r\n                combined_input += f\"[{key}]\\n{value['text']}\\n\\n\"\r\n            elif 'content' in value:\r\n                combined_input += f\"[{key}]\\n{value['content']}\\n\\n\"\r\n            else:\r\n                combined_input += f\"[{key}]\\n{json.dumps(value, ensure_ascii=False, indent=2)}\\n\\n\"\r\n        elif isinstance(value, str):\r\n            combined_input += f\"[{key}]\\n{value}\\n\\n\"\r\n        else:\r\n            combined_input += f\"[{key}]\\n{str(value)}\\n\\n\"\r\n    \r\n    # ========================================================================\r\n    # AI 프롬프트 구성\r\n    # ========================================================================\r\n    base_prompt = f\"\"\"당신은 다음 목적을 달성해야 하는 AI 어시스턴트입니다:\r\n\r\n**목적 (Purpose):**\r\n{node_purpose}\r\n\r\n**입력 데이터:**\r\n{combined_input.strip()}\r\n\r\n**수행할 작업들 (Tasks):**\"\"\"\r\n    \r\n    # Tasks 추가\r\n    if 'tasks' in current_node and current_node['tasks']:\r\n        for i, task in enumerate(current_node['tasks'], 1):\r\n            base_prompt += f\"\\n{i}. {task['text']}\"\r\n            # Task status에 따른 추가 지시\r\n            if task.get('taskStatus') == 'locked':\r\n                base_prompt += \" [필수 - 반드시 수행]\"\r\n            elif task.get('taskStatus') == 'low_priority':\r\n                base_prompt += \" [선택적 - 가능한 경우 수행]\"\r\n    else:\r\n        base_prompt += \"\\n(작업이 정의되지 않았습니다)\"\r\n    \r\n    base_prompt += f\"\"\"\\n\\n**기대하는 출력 형식:**\r\n{output_format_description}\r\n\r\n위의 목적과 작업들을 수행하고, 지정된 출력 형식에 맞춰 결과를 생성해주세요.\r\n\"\"\"\r\n\r\n    # ========================================================================\r\n    # Experimental Code 병합 (있는 경우)\r\n    # ========================================================================\r\n    # EXP_CODE_MERGE_POINT - 이 부분에서 Exp Code가 병합됩니다\r\n    \r\n    # ========================================================================\r\n    # AI 모델 호출\r\n    # ========================================================================\r\n    try:\r\n        print(f\"\\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] Sending request to AI model...\")\r\n        print(f\"Prompt length: {len(base_prompt)} characters\")\r\n        \r\n        # AI 응답 받기\r\n        ai_response = call_ai_model(base_prompt)\r\n        print(f\"\\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] AI response received\")\r\n        \r\n        # 응답 처리\r\n        if isinstance(ai_response, dict) and 'error' in ai_response:\r\n            output = ai_response\r\n        elif isinstance(ai_response, str):\r\n            # JSON 추출 시도\r\n            json_start = ai_response.find('{')\r\n            json_end = ai_response.rfind('}') + 1\r\n            \r\n            if json_start != -1 and json_end > json_start:\r\n                try:\r\n                    output = json.loads(ai_response[json_start:json_end])\r\n                except json.JSONDecodeError:\r\n                    output = {\r\n                        \"result\": ai_response,\r\n                        \"type\": \"text\",\r\n                        \"raw_response\": True\r\n                    }\r\n            else:\r\n                output = {\r\n                    \"result\": ai_response,\r\n                    \"type\": \"text\"\r\n                }\r\n        else:\r\n            output = ai_response\r\n            \r\n        # 메타데이터 추가\r\n        if isinstance(output, dict):\r\n            output['_metadata'] = {\r\n                'model': model_name,\r\n                'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),\r\n                'node': current_node.get('label', 'Unknown')\r\n            }\r\n            \r\n    except Exception as e:\r\n        print(f\"\\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] ❌ Error: {str(e)}\")\r\n        output = {\r\n            \"error\": f\"AI processing failed: {str(e)}\",\r\n            \"type\": \"error\",\r\n            \"timestamp\": time.strftime('%Y-%m-%d %H:%M:%S')\r\n        }\r\n\r\n# ========================================================================\r\n# 최종 출력\r\n# ========================================================================\r\nprint(f\"\\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] Final output:\")\r\nprint(json.dumps(output, ensure_ascii=False, indent=2))\r\nprint(f\"\\n✅ Execution completed successfully\")\r\n\r\n# output 변수가 설정되었음을 확인\r\nprint(f\"\\n[DEBUG] Output is set: {'output' in locals()}\")\r\nprint(f\"[DEBUG] Output value type: {type(output)}\")\r\nprint(f\"[DEBUG] Output is None: {output is None}\")",
-        "output": "",
-        "model": "sakura-13b-korean-v0.9",
-        "purpose": "Generate detailed scene-by-scene script with visual directions, timing, and technical annotations",
-        "outputFormat": "Cinematic script format:\n- Scene headers with location/time\n- Action descriptions\n- Camera directions\n- Dialogue (if any)\n- Timing estimates\n- Technical notes",
-        "baseCodeTemplate": "default",
-        "lmStudioUrl": "http://localhost:1234/",
-        "lmStudioConnectionId": "conn_1749362804"
       }
-    ],
-    "inputConfig": {
-      "sources": [],
-      "selectedItems": [],
-      "projectId": "bb03d6f6-8bc0-4ea0-b56a-8b5e93ee5441"
-    }
+    ]
   },
   "preproduction-storyboard": {
     "id": "preproduction-storyboard",
@@ -669,11 +49,6 @@
         "isRunning": false,
         "isDeactivated": false,
         "supervised": false,
-        "connectedFrom": [],
-        "code": "",
-        "output": "",
-        "purpose": "",
-        "outputFormat": "",
         "baseCodeTemplate": "default"
       },
       {
@@ -688,10 +63,6 @@
         "isDeactivated": false,
         "supervised": false,
         "connectedFrom": [],
-        "code": "",
-        "output": "",
-        "purpose": "",
-        "outputFormat": "",
         "baseCodeTemplate": "default"
       }
     ]
@@ -712,11 +83,6 @@
         "isRunning": false,
         "isDeactivated": false,
         "supervised": false,
-        "connectedFrom": [],
-        "code": "",
-        "output": "",
-        "purpose": "",
-        "outputFormat": "",
         "baseCodeTemplate": "default"
       },
       {
@@ -731,10 +97,6 @@
         "isDeactivated": false,
         "supervised": false,
         "connectedFrom": [],
-        "code": "",
-        "output": "",
-        "purpose": "",
-        "outputFormat": "",
         "baseCodeTemplate": "default"
       }
     ]
@@ -755,11 +117,6 @@
         "isRunning": false,
         "isDeactivated": false,
         "supervised": false,
-        "connectedFrom": [],
-        "code": "",
-        "output": "",
-        "purpose": "",
-        "outputFormat": "",
         "baseCodeTemplate": "default"
       },
       {
@@ -774,10 +131,6 @@
         "isDeactivated": false,
         "supervised": false,
         "connectedFrom": [],
-        "code": "",
-        "output": "",
-        "purpose": "",
-        "outputFormat": "",
         "baseCodeTemplate": "default"
       }
     ]
@@ -798,11 +151,6 @@
         "isRunning": false,
         "isDeactivated": false,
         "supervised": false,
-        "connectedFrom": [],
-        "code": "",
-        "output": "",
-        "purpose": "",
-        "outputFormat": "",
         "baseCodeTemplate": "default"
       },
       {
@@ -817,10 +165,6 @@
         "isDeactivated": false,
         "supervised": false,
         "connectedFrom": [],
-        "code": "",
-        "output": "",
-        "purpose": "",
-        "outputFormat": "",
         "baseCodeTemplate": "default"
       }
     ]
@@ -841,11 +185,6 @@
         "isRunning": false,
         "isDeactivated": false,
         "supervised": false,
-        "connectedFrom": [],
-        "code": "",
-        "output": "",
-        "purpose": "",
-        "outputFormat": "",
         "baseCodeTemplate": "default"
       },
       {
@@ -860,10 +199,6 @@
         "isDeactivated": false,
         "supervised": false,
         "connectedFrom": [],
-        "code": "",
-        "output": "",
-        "purpose": "",
-        "outputFormat": "",
         "baseCodeTemplate": "default"
       }
     ]
@@ -884,11 +219,6 @@
         "isRunning": false,
         "isDeactivated": false,
         "supervised": false,
-        "connectedFrom": [],
-        "code": "",
-        "output": "",
-        "purpose": "",
-        "outputFormat": "",
         "baseCodeTemplate": "default"
       },
       {
@@ -903,10 +233,6 @@
         "isDeactivated": false,
         "supervised": false,
         "connectedFrom": [],
-        "code": "",
-        "output": "",
-        "purpose": "",
-        "outputFormat": "",
         "baseCodeTemplate": "default"
       }
     ]
@@ -927,11 +253,6 @@
         "isRunning": false,
         "isDeactivated": false,
         "supervised": false,
-        "connectedFrom": [],
-        "code": "",
-        "output": "",
-        "purpose": "",
-        "outputFormat": "",
         "baseCodeTemplate": "default"
       },
       {
@@ -946,10 +267,6 @@
         "isDeactivated": false,
         "supervised": false,
         "connectedFrom": [],
-        "code": "",
-        "output": "",
-        "purpose": "",
-        "outputFormat": "",
         "baseCodeTemplate": "default"
       }
     ]
@@ -970,11 +287,6 @@
         "isRunning": false,
         "isDeactivated": false,
         "supervised": false,
-        "connectedFrom": [],
-        "code": "",
-        "output": "",
-        "purpose": "",
-        "outputFormat": "",
         "baseCodeTemplate": "default"
       },
       {
@@ -989,10 +301,6 @@
         "isDeactivated": false,
         "supervised": false,
         "connectedFrom": [],
-        "code": "",
-        "output": "",
-        "purpose": "",
-        "outputFormat": "",
         "baseCodeTemplate": "default"
       }
     ]
@@ -1013,11 +321,6 @@
         "isRunning": false,
         "isDeactivated": false,
         "supervised": false,
-        "connectedFrom": [],
-        "code": "",
-        "output": "",
-        "purpose": "",
-        "outputFormat": "",
         "baseCodeTemplate": "default"
       },
       {
@@ -1032,10 +335,6 @@
         "isDeactivated": false,
         "supervised": false,
         "connectedFrom": [],
-        "code": "",
-        "output": "",
-        "purpose": "",
-        "outputFormat": "",
         "baseCodeTemplate": "default"
       }
     ]
@@ -1056,11 +355,6 @@
         "isRunning": false,
         "isDeactivated": false,
         "supervised": false,
-        "connectedFrom": [],
-        "code": "",
-        "output": "",
-        "purpose": "",
-        "outputFormat": "",
         "baseCodeTemplate": "default"
       },
       {
@@ -1075,10 +369,6 @@
         "isDeactivated": false,
         "supervised": false,
         "connectedFrom": [],
-        "code": "",
-        "output": "",
-        "purpose": "",
-        "outputFormat": "",
         "baseCodeTemplate": "default"
       }
     ]
@@ -1099,11 +389,6 @@
         "isRunning": false,
         "isDeactivated": false,
         "supervised": false,
-        "connectedFrom": [],
-        "code": "",
-        "output": "",
-        "purpose": "",
-        "outputFormat": "",
         "baseCodeTemplate": "default"
       },
       {
@@ -1118,10 +403,6 @@
         "isDeactivated": false,
         "supervised": false,
         "connectedFrom": [],
-        "code": "",
-        "output": "",
-        "purpose": "",
-        "outputFormat": "",
         "baseCodeTemplate": "default"
       }
     ]
@@ -1142,11 +423,6 @@
         "isRunning": false,
         "isDeactivated": false,
         "supervised": false,
-        "connectedFrom": [],
-        "code": "",
-        "output": "",
-        "purpose": "",
-        "outputFormat": "",
         "baseCodeTemplate": "default"
       },
       {
@@ -1161,10 +437,6 @@
         "isDeactivated": false,
         "supervised": false,
         "connectedFrom": [],
-        "code": "",
-        "output": "",
-        "purpose": "",
-        "outputFormat": "",
         "baseCodeTemplate": "default"
       }
     ]

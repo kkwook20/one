@@ -13,7 +13,7 @@ const TABS = [
     id: 'oneai',
     label: 'One AI',
     icon: Brain,
-    component: TheOne,  // 여기가 변경됨 (OneAIPipeline → TheOne)
+    component: TheOne,
     description: '3D Animation Automation Pipeline'
   },
   {
@@ -37,12 +37,12 @@ type TabId = typeof TABS[number]['id'];
 export default function App() {
   const [activeTab, setActiveTab] = useState<TabId>('oneai');
   
-  const ActiveComponent = TABS.find(tab => tab.id === activeTab)?.component || TheOne;  // 여기도 변경됨 (OneAIPipeline → TheOne)
+  const ActiveComponent = TABS.find(tab => tab.id === activeTab)?.component || TheOne;
   
   return (
-    <div className="flex flex-col h-screen bg-gray-50">
+    <div className="flex flex-col h-screen bg-gray-50 overflow-hidden">
       {/* Header with Tabs */}
-      <header className="bg-white shadow-sm border-b">
+      <header className="bg-white shadow-sm border-b flex-shrink-0">
         <div className="px-6 py-4">
           <h1 className="text-2xl font-bold text-gray-800 mb-4">
             3D Animation Automation System

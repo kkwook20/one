@@ -1,0 +1,63 @@
+# 프로필 폴더 직접 찾기
+$profileFolder = Get-ChildItem "$env:APPDATA\Mozilla\Firefox\Profiles\" | Where-Object {$_.Name -like "*llm-collector*"} | Select-Object -First 1
+
+if ($profileFolder) {
+    Write-Host "Found profile: $($profileFolder.FullName)"
+    
+    # extensions 폴더 생성
+    $extensionsPath = Join-Path $profileFolder.FullName "extensions"
+    if (!(Test-Path $extensionsPath)) {
+        New-Item -ItemType Directory -Path $extensionsPath -Force
+        Write-Host "Created extensions folder"
+    }
+} else {
+    Write-Host "Profile not found!"
+}
+
+
+
+# 변수 설정
+$extensionSourcePath = "F:\Util\Firefox"
+$profilePath = "F:\ONE_AI\firefox-profile"  # profiles.ini에서 확인한 경로
+
+# 프로필 폴더 존재 확인
+if (Test-Path $profilePath) {
+    Write-Host "Found profile at: $profilePath"
+    
+    # extensions 폴더 경로
+    $extensionsPath = Join-Path $profilePath "extensions"
+    
+    # extensions 폴더 생성
+    if (!(Test-Path $extensionsPath)) {
+        New-Item -ItemType Directory -Path $extensionsPath -Force
+        Write-Host "Created extensions folder"
+    }
+    
+    # Extension 대상 경로 (ID를 폴더명으로 사용)
+    $extensionDestPath = Join-Path $extensionsPath "llm-collector@example.com"
+    
+    # 기존 Extension 삭제
+    if (Test-Path $extensionDestPath) {
+        Remove-Item $extensionDestPath -Recurse -Force
+        Write-Host "Removed existing extension"
+    }
+    
+    # Extension 복사
+    Copy-Item -Path $extensionSourcePath -Destination $extensionDestPath -Recurse -Force
+    Write-Host "Extension copied successfully!"
+    
+    # 설치 확인
+    Write-Host "`nInstalled extensions:"
+    Get-ChildItem $extensionsPath | Format-Table Name, LastWriteTime
+    
+    # manifest.json 확인
+    $manifestPath = Join-Path $extensionDestPath "manifest.json"
+    if (Test-Path $manifestPath) {
+        Write-Host "`nExtension installed to: $extensionDestPath"
+        Write-Host "Ready to use!"
+    } else {
+        Write-Host "Warning: manifest.json not found!"
+    }
+} else {
+    Write-Host "Error: Profile folder not found at $profilePath"
+}

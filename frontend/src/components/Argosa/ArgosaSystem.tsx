@@ -3,7 +3,7 @@
 // - frontend/src/components/Argosa/function/*.tsx
 // Location: frontend/src/components/Argosa/ArgosaSystem.tsx
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { motion } from "framer-motion";
 import {
   Card,
@@ -18,6 +18,8 @@ import {
   TabsList,
   TabsTrigger,
 } from "../ui/tabs";
+import { AlertCircle } from "lucide-react";
+import DataCollection from "./function/DataCollection";
 
 const NAV_ITEMS = [
   { key: "collection", label: "Data Collection" },
@@ -30,29 +32,68 @@ const NAV_ITEMS = [
 
 export default function ArgosaSystem() {
   const [active, setActive] = useState("collection");
+  const [hasSessionIssue, setHasSessionIssue] = useState(false);
+  
+  // Check for session issues
+  useEffect(() => {
+    const checkSessionIssues = () => {
+      // Check localStorage for session issues
+      const sessionIssue = localStorage.getItem('argosa_session_issue');
+      const scheduleFailure = localStorage.getItem('argosa_schedule_failure');
+      
+      setHasSessionIssue(!!sessionIssue || !!scheduleFailure);
+    };
+    
+    // Initial check
+    checkSessionIssues();
+    
+    // Check periodically
+    const interval = setInterval(checkSessionIssues, 5000);
+    
+    return () => clearInterval(interval);
+  }, []);
+  
+  // Clear session issue when navigating to data collection
+  useEffect(() => {
+    if (active === "collection") {
+      // Clear the issue flags after a short delay (to ensure user sees it)
+      setTimeout(() => {
+        localStorage.removeItem('argosa_session_issue');
+        localStorage.removeItem('argosa_schedule_failure');
+        setHasSessionIssue(false);
+      }, 3000);
+    }
+  }, [active]);
   
   return (
-    <div className="min-h-screen w-full bg-gray-50 flex text-gray-800">
+    <div className="h-full w-full bg-gray-50 flex text-gray-800">
       {/* Sidebar */}
-      <aside className="w-56 border-r bg-white/80 backdrop-blur-xl p-4">
+      <aside className="w-56 border-r bg-white/80 backdrop-blur-xl p-4 flex-shrink-0">
         <nav className="flex flex-col gap-2">
           {NAV_ITEMS.map((item) => (
             <Button
               key={item.key}
               variant={active === item.key ? "secondary" : "ghost"}
-              className="justify-start text-left"
+              className={`justify-start text-left relative ${
+                item.key === "collection" && hasSessionIssue && active !== "collection" 
+                  ? "pr-8" 
+                  : ""
+              }`}
               onClick={() => setActive(item.key)}
             >
               {item.label}
+              {item.key === "collection" && hasSessionIssue && active !== "collection" && (
+                <AlertCircle className="h-4 w-4 text-red-500 absolute right-2 animate-pulse" />
+              )}
             </Button>
           ))}
         </nav>
       </aside>
       
       {/* Main content */}
-      <main className="flex-1 p-8 overflow-y-auto">
-        {active === "collection" && <CollectionPanel />}
-        {active === "analysis" && <AnalysisPanel />}
+      <main className={`flex-1 ${active !== "collection" ? "p-8 overflow-y-auto" : "overflow-hidden"}`}>
+        {active === "collection" && <DataCollection />}
+        {active === "analysis" && <DataAnalysisPanel />}
         {active === "prediction" && <PredictionPanel />}
         {active === "scheduling" && <SchedulingPanel />}
         {active === "code" && <CodePanel />}
@@ -64,54 +105,23 @@ export default function ArgosaSystem() {
 
 /* ------------------------------ Panels ------------------------------ */
 
-function CollectionPanel() {
+function DataAnalysisPanel() {
   return (
-    <Section title="Information Collection">
-      <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4 mb-6">
-        <StatusCard
-          title="Web Crawling"
-          value="12 Active"
-          description="Running crawlers"
-        />
-        <StatusCard
-          title="Data Points"
-          value="1.2M"
-          description="Collected today"
-        />
-        <StatusCard
-          title="Sources"
-          value="48"
-          description="Connected sources"
-        />
+    <Section title="Data Analysis & Insights">
+      <div className="grid md:grid-cols-2 gap-4">
+        <Card className="h-48 flex items-center justify-center">
+          <span className="text-gray-400 italic">Conversation analytics and insights coming soon...</span>
+        </Card>
+        <Card className="h-48 flex items-center justify-center">
+          <span className="text-gray-400 italic">Pattern recognition and trend analysis...</span>
+        </Card>
+        <Card className="h-48 flex items-center justify-center">
+          <span className="text-gray-400 italic">Topic clustering and categorization...</span>
+        </Card>
+        <Card className="h-48 flex items-center justify-center">
+          <span className="text-gray-400 italic">Usage statistics and reports...</span>
+        </Card>
       </div>
-      <div className="flex justify-end">
-        <Button onClick={() => window.location.href = '/argosa/function/data-collection'}>
-          View Details →
-        </Button>
-      </div>
-    </Section>
-  );
-}
-
-function AnalysisPanel() {
-  return (
-    <Section title="AI-Powered Data Analysis">
-      <Tabs defaultValue="patterns" className="w-full">
-        <TabsList>
-          <TabsTrigger value="patterns">Pattern Recognition</TabsTrigger>
-          <TabsTrigger value="trends">Trend Analysis</TabsTrigger>
-          <TabsTrigger value="insights">Insights</TabsTrigger>
-        </TabsList>
-        <TabsContent value="patterns">
-          <Placeholder text="AI-detected patterns and anomalies visualization." />
-        </TabsContent>
-        <TabsContent value="trends">
-          <Placeholder text="Time-series trends and historical data analysis." />
-        </TabsContent>
-        <TabsContent value="insights">
-          <Placeholder text="AI-generated insights and recommendations." />
-        </TabsContent>
-      </Tabs>
     </Section>
   );
 }
@@ -191,28 +201,6 @@ function Section({ title, children }: SectionProps) {
       <h2 className="text-2xl font-semibold tracking-tight">{title}</h2>
       {children}
     </motion.section>
-  );
-}
-
-
-
-interface StatusCardProps {
-  title: string;
-  value: string;
-  description: string;
-}
-
-function StatusCard({ title, value, description }: StatusCardProps) {
-  return (
-    <Card className="hover:shadow-lg transition-shadow">
-      <CardHeader>
-        <CardTitle className="text-base">{title}</CardTitle>
-      </CardHeader>
-      <CardContent>
-        <div className="text-2xl font-bold">{value}</div>
-        <p className="text-sm text-gray-600 mt-1">{description}</p>
-      </CardContent>
-    </Card>
   );
 }
 

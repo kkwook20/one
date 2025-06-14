@@ -1,5 +1,5 @@
 # Python
-backend/__pycache__/
+
 venv/
 __pycache__/
 *.py[cod]
@@ -36,6 +36,8 @@ qdrant_storage/
 .cache/
 backend/__pycache__/
 backend/data/
+firefox-profile/
+backend/__pycache__/
 
 # Logs
 *.log

@@ -1,0 +1,34 @@
+<svg viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg">
+  <!-- Background Circle -->
+  <circle cx="64" cy="64" r="60" fill="#3b82f6" />
+  
+  <!-- Robot/Bot Icon -->
+  <g transform="translate(64, 64)">
+    <!-- Head -->
+    <rect x="-20" y="-30" width="40" height="35" rx="8" fill="white" />
+    
+    <!-- Eyes -->
+    <circle cx="-8" cy="-20" r="4" fill="#3b82f6" />
+    <circle cx="8" cy="-20" r="4" fill="#3b82f6" />
+    
+    <!-- Antenna -->
+    <line x1="0" y1="-30" x2="0" y2="-40" stroke="white" stroke-width="3" stroke-linecap="round" />
+    <circle cx="0" cy="-42" r="3" fill="white" />
+    
+    <!-- Body (representing chat/sync) -->
+    <rect x="-25" y="8" width="50" height="30" rx="6" fill="white" />
+    
+    <!-- Sync arrows -->
+    <path d="M -15,18 Q -10,13 -5,18" fill="none" stroke="#3b82f6" stroke-width="2" stroke-linecap="round" />
+    <path d="M -5,18 L -5,23" fill="none" stroke="#3b82f6" stroke-width="2" stroke-linecap="round" />
+    
+    <path d="M 5,28 Q 10,33 15,28" fill="none" stroke="#3b82f6" stroke-width="2" stroke-linecap="round" />
+    <path d="M 5,28 L 5,23" fill="none" stroke="#3b82f6" stroke-width="2" stroke-linecap="round" />
+  </g>
+  
+  <!-- Corner indicator for multiple platforms -->
+  <g transform="translate(90, 90)">
+    <circle cx="0" cy="0" r="18" fill="#10b981" stroke="white" stroke-width="3" />
+    <text x="0" y="5" text-anchor="middle" fill="white" font-size="16" font-weight="bold">4</text>
+  </g>
+</svg>
