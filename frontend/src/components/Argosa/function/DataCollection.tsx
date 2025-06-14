@@ -559,6 +559,8 @@ export default function DataCollection() {
       
     } catch (error) {
       setSessionCheckError('Failed to check sessions');
+      // Auto-clear error after 5 seconds
+      setTimeout(() => setSessionCheckError(null), 5000);
     } finally {
       setIsCheckingSessions(false);
     }
@@ -865,6 +867,17 @@ export default function DataCollection() {
     };
   }, []); // Empty deps - only run once
 
+  // Auto-clear session check error
+  useEffect(() => {
+    if (sessionCheckError) {
+      const timer = setTimeout(() => {
+        setSessionCheckError(null);
+      }, 10000); // Clear after 10 seconds
+      
+      return () => clearTimeout(timer);
+    }
+  }, [sessionCheckError]);
+
   // Monitor sync status
   useEffect(() => {
     if (isRunning && currentSyncId && backendConnected) {
@@ -1001,12 +1014,18 @@ export default function DataCollection() {
       return;
     }
     
+    // Log current session states before sync
+    console.log('📊 Current session states before sync:');
+    enabledPlatforms.forEach(([platform, config]) => {
+      console.log(`  ${platform}: sessionValid=${config.sessionValid}, status=${config.status}`);
+    });
+    
     // Force session check before sync
     console.log('🔄 Checking sessions before sync...');
     await checkSessionStatus(false);
     
     // Wait a bit for state to update
-    await new Promise(resolve => setTimeout(resolve, 500));
+    await new Promise(resolve => setTimeout(resolve, 1000));
     
     // Get the latest llmConfigs state by creating a promise
     const getLatestConfigs = () => new Promise<typeof llmConfigs>(resolve => {
@@ -1027,9 +1046,29 @@ export default function DataCollection() {
       console.log(`✅ Found ${updatedEnabledPlatforms.length} enabled platforms after session check:`, 
         updatedEnabledPlatforms.map(([key]) => key));
       
+      // Log session states after check
+      console.log('📊 Session states after check:');
+      updatedEnabledPlatforms.forEach(([platform, config]) => {
+        console.log(`  ${platform}: sessionValid=${config.sessionValid}, status=${config.status}`);
+      });
+      
       if (updatedEnabledPlatforms.length === 0) {
         console.error('❌ Please enable at least one platform.');
         return;
+      }
+      
+      // Check if any enabled platform has invalid session
+      const invalidPlatforms = updatedEnabledPlatforms.filter(([_, config]) => !config.sessionValid);
+      if (invalidPlatforms.length > 0) {
+        console.error('❌ Found platforms with invalid sessions:', invalidPlatforms.map(([key]) => key));
+        const platformNames = invalidPlatforms.map(([key, config]) => config.name).join(', ');
+        
+        if (window.confirm(`The following platforms need login: ${platformNames}\n\nWould you like to open the login page?`)) {
+          handleOpenLogin(invalidPlatforms[0][0]);
+          return;
+        } else {
+          return;
+        }
       }
       
       // Session validation will be handled by backend automatically
@@ -1042,7 +1081,8 @@ export default function DataCollection() {
           platforms: updatedEnabledPlatforms
             .map(([key, config]) => ({
               platform: key,
-              enabled: true
+              enabled: true,
+              sessionValid: config.sessionValid // Include session status
             })),
           settings: {
             ...syncSettings,
@@ -1067,7 +1107,7 @@ export default function DataCollection() {
         const responseText = await response.text();
         console.log('📥 Response text:', responseText);
         
-        let result;
+        let result: FirefoxLaunchResponse;
         try {
           result = JSON.parse(responseText);
         } catch (e) {
@@ -1085,19 +1125,54 @@ export default function DataCollection() {
           console.log('The extension will now collect conversations.');
         } else {
           console.error('❌ Launch failed:', result);
-          if (result.invalidSessions) {
-            // Backend will auto-verify these sessions
-            console.log('⏳ Backend is verifying sessions...');
+          if (result.invalidSessions && result.invalidSessions.length > 0) {
+            // 세션이 유효하지 않은 플랫폼들 처리
+            console.error('❌ Invalid sessions detected for:', result.invalidSessions.join(', '));
             
-            // Force re-check sessions
+            // 백엔드가 invalid라고 판단한 세션들의 프론트엔드 상태 확인
+            console.log('🔍 Checking frontend vs backend session state mismatch:');
+            result.invalidSessions.forEach((platform: string) => {
+              const frontendState = llmConfigs[platform];
+              console.log(`  ${platform}: Frontend says sessionValid=${frontendState?.sessionValid}, Backend says invalid`);
+            });
+            
+            // 에러 메시지 표시
+            const platformNames = result.invalidSessions.map((p: string) => 
+              llmConfigs[p]?.name || p
+            ).join(', ');
+            
+            setSessionCheckError(`Backend detected invalid sessions for: ${platformNames}. Please log in and try again.`);
+            
+            // 해당 플랫폼들의 세션을 무효화
+            setLlmConfigs(prev => {
+              const updated = { ...prev };
+              result.invalidSessions!.forEach((platform: string) => {
+                if (updated[platform]) {
+                  updated[platform].sessionValid = false;
+                  updated[platform].status = 'disconnected';
+                }
+              });
+              return updated;
+            });
+            
+            // 세션 재확인
             setTimeout(() => {
               checkSessionStatus(true);
-            }, 2000);
+            }, 1000);
+            
+            // 첫 번째 유효하지 않은 플랫폼의 로그인 페이지 자동으로 열기 옵션
+            if (window.confirm(`Backend reports that ${platformNames} requires login.\n\nWould you like to open the login page for ${llmConfigs[result.invalidSessions[0]]?.name || result.invalidSessions[0]}?`)) {
+              handleOpenLogin(result.invalidSessions[0]);
+            }
           } else if (result.reason === 'smart_scheduling') {
             console.log('⚠️ ' + result.error);
+            setSuccessMessageText('Sync skipped: Data is already up to date');
+            setShowSuccessMessage(true);
+            setTimeout(() => setShowSuccessMessage(false), 5000);
           } else {
             console.error(`Failed: ${result.error}`);
             console.error(`Details: ${result.details || ''}`);
+            setSessionCheckError(result.error || 'Sync failed. Please try again.');
           }
           setIsRunning(false);
         }
