@@ -34,6 +34,8 @@ versions/
 global-vars/
 qdrant_storage/
 .cache/
+backend/__pycache__/
+backend/data/
 
 # Logs
 *.log
