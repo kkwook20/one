@@ -17,7 +17,7 @@ if ($profileFolder) {
 
 
 # 변수 설정
-$extensionSourcePath = "F:\Util\Firefox"
+$extensionSourcePath = "F:\ONE_AI\firefox_util\llm-collector"
 $profilePath = "F:\ONE_AI\firefox-profile"  # profiles.ini에서 확인한 경로
 
 # 프로필 폴더 존재 확인
