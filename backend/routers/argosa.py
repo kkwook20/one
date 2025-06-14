@@ -1,4 +1,4 @@
-# backend/routers/argosa.py - Argosa 시스템 라우터 (LLM Conversation Collector 통합)
+# backend/routers/argosa.py - Argosa 시스템 라우터 (세션 체크 트리거 개선)
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, HTTPException, BackgroundTasks
 from typing import Dict, List, Optional, Any
@@ -183,7 +183,7 @@ async def monitor_firefox_process(process, sync_id):
         print(f"[Firefox] Error monitoring process: {e}")
 
 async def should_sync_today(platform: str) -> bool:
-    """오늘 sync를 해야 하는지 판단"""
+    """오늘 sync를 해야 하는지 판단 - 개선된 로직"""
     try:
         platform_path = LLM_DATA_PATH / platform
         if not platform_path.exists():
@@ -192,39 +192,84 @@ async def should_sync_today(platform: str) -> bool:
         today = datetime.now().date()
         yesterday = today - timedelta(days=1)
         
+        # 최근 2일간의 파일 확인
         recent_files = []
         for file in platform_path.glob("*.json"):
             file_date_str = file.stem.split('_')[0]
             try:
                 file_date = datetime.strptime(file_date_str, "%Y-%m-%d").date()
                 if file_date >= yesterday:
-                    recent_files.append(file)
+                    recent_files.append((file_date, file))
             except:
                 continue
         
-        today_exists = any(today.isoformat() in f.name for f in recent_files)
-        yesterday_exists = any(yesterday.isoformat() in f.name for f in recent_files)
+        # 오늘 데이터가 있는지 확인
+        today_files = [f for d, f in recent_files if d == today]
+        yesterday_files = [f for d, f in recent_files if d == yesterday]
         
-        if today_exists and yesterday_exists:
-            print(f"[Smart Schedule] {platform}: Recent data exists, skipping today")
-            return False
+        # 오늘 데이터가 이미 있고, 충분한 대화가 수집되었다면 skip
+        if today_files:
+            with open(today_files[0], 'r') as f:
+                data = json.load(f)
+                conv_count = len(data.get("conversations", []))
+                if conv_count >= 10:  # 최소 10개 이상의 대화가 있으면 충분
+                    print(f"[Smart Schedule] {platform}: Today's data already exists with {conv_count} conversations")
+                    return False
         
-        if len(recent_files) >= 2:
-            counts = []
-            for file in sorted(recent_files)[-2:]:
-                with open(file, 'r') as f:
-                    data = json.load(f)
-                    counts.append(len(data.get("conversations", [])))
-            
-            if len(counts) == 2 and counts[0] == counts[1]:
-                print(f"[Smart Schedule] {platform}: No changes detected, skipping")
-                return False
+        # 어제 데이터가 없으면 sync 필요
+        if not yesterday_files:
+            print(f"[Smart Schedule] {platform}: Yesterday's data missing, sync needed")
+            return True
         
-        return True
+        # 어제 데이터가 있지만 오늘 데이터가 없으면 sync 필요
+        if yesterday_files and not today_files:
+            print(f"[Smart Schedule] {platform}: Today's data missing, sync needed")
+            return True
+        
+        return False
         
     except Exception as e:
         print(f"Error checking sync necessity: {e}")
         return True
+
+# ======================== Session Check Trigger ========================
+
+async def trigger_session_check_in_firefox(platform: str, profile_name: str = "llm-collector"):
+    """Firefox를 열어서 세션 체크를 트리거"""
+    try:
+        # 세션 체크 트리거 파일 생성
+        trigger_file = SYNC_STATUS_PATH / f"session-check-{platform}.trigger"
+        trigger_file.write_text(json.dumps({
+            "platform": platform,
+            "action": "check_session",
+            "timestamp": datetime.now().isoformat()
+        }))
+        
+        # Firefox 실행 (특별한 URL로)
+        firefox_cmd = get_firefox_command(profile_name)
+        check_url = f"about:blank#check-session-{platform}"
+        
+        process = subprocess.Popen(firefox_cmd + [check_url])
+        
+        # 30초 후 자동으로 Firefox 종료
+        async def auto_close():
+            await asyncio.sleep(30)
+            try:
+                if platform.system() == "Windows":
+                    subprocess.run(["taskkill", "/F", "/PID", str(process.pid)], capture_output=True)
+                else:
+                    process.terminate()
+            except:
+                pass
+        
+        # 백그라운드에서 자동 종료 실행
+        asyncio.create_task(auto_close())
+        
+        return True
+        
+    except Exception as e:
+        print(f"[Session Check] Failed to trigger check: {e}")
+        return False
 
 # ======================== Initialization ========================
 
@@ -279,23 +324,35 @@ async def get_argosa_status():
         
         # Count total conversations
         total_conversations = 0
+        platform_stats = {}
+        
         if llm_data_exists:
             for platform_dir in LLM_DATA_PATH.iterdir():
-                if platform_dir.is_dir():
-                    total_conversations += len(list(platform_dir.glob("*.json")))
+                if platform_dir.is_dir() and platform_dir.name in ["chatgpt", "claude", "gemini", "deepseek", "grok", "perplexity"]:
+                    conv_count = 0
+                    for json_file in platform_dir.glob("*.json"):
+                        try:
+                            with open(json_file, 'r') as f:
+                                data = json.load(f)
+                                conv_count += len(data.get("conversations", []))
+                        except:
+                            conv_count += 1
+                    platform_stats[platform_dir.name] = conv_count
+                    total_conversations += conv_count
         
         return {
             "status": "operational",
             "system": "argosa",
             "features": {
                 "llm_collector": True,
-                "data_analysis": False,  # Not yet implemented
-                "prediction": False,     # Not yet implemented
+                "data_analysis": False,
+                "prediction": False,
             },
             "storage": {
                 "llm_data_path": str(LLM_DATA_PATH),
                 "exists": llm_data_exists,
-                "total_conversations": total_conversations
+                "total_conversations": total_conversations,
+                "platform_stats": platform_stats
             },
             "timestamp": datetime.now().isoformat()
         }
@@ -434,7 +491,8 @@ async def check_sessions(request: SessionCheckRequest):
                 last_checked = session_info.get("lastChecked")
                 if last_checked:
                     last_date = datetime.fromisoformat(last_checked)
-                    is_valid = (datetime.now() - last_date).days < 1
+                    # 24시간 이내면 유효한 것으로 간주
+                    is_valid = (datetime.now() - last_date).total_seconds() < 86400
                 else:
                     is_valid = False
             
@@ -470,26 +528,23 @@ async def check_single_session(request: SingleSessionCheckRequest):
             last_checked = session_info.get("lastChecked")
             if last_checked:
                 last_date = datetime.fromisoformat(last_checked)
-                is_valid = (datetime.now() - last_date).days < 1
+                # 24시간 이내면 유효한 것으로 간주
+                is_valid = (datetime.now() - last_date).total_seconds() < 86400
             else:
                 is_valid = False
         
-        should_recheck = False
-        if last_checked:
-            last_date = datetime.fromisoformat(last_checked)
-            hours_since_check = (datetime.now() - last_date).total_seconds() / 3600
-            should_recheck = hours_since_check > 1
-        else:
+        # 실제 세션 체크가 필요한 경우 Firefox 트리거
+        if request.enabled and not is_valid:
+            # 마지막 체크로부터 1시간 이상 지났으면 실제 체크
             should_recheck = True
-        
-        if should_recheck and request.enabled:
-            trigger_path = SYNC_STATUS_PATH / f"check-session-{request.platform}.trigger"
-            trigger_path.write_text(json.dumps({
-                "platform": request.platform,
-                "timestamp": datetime.now().isoformat()
-            }))
+            if last_checked:
+                last_date = datetime.fromisoformat(last_checked)
+                hours_since_check = (datetime.now() - last_date).total_seconds() / 3600
+                should_recheck = hours_since_check > 1
             
-            print(f"[Session] Triggered actual check for {request.platform}")
+            if should_recheck:
+                # Firefox를 통한 실제 세션 체크 트리거
+                await trigger_session_check_in_firefox(request.platform)
         
         return {
             "platform": request.platform,
@@ -525,7 +580,10 @@ async def open_login_page(request: OpenLoginRequest):
         # Firefox 실행
         try:
             print(f"[Firefox] Opening {request.platform} at {request.url}")
-            subprocess.Popen(firefox_cmd + [request.url])
+            
+            # 특별한 URL 파라미터 추가 (Extension이 감지할 수 있도록)
+            login_url = f"{request.url}#llm-collector-login"
+            subprocess.Popen(firefox_cmd + [login_url])
             
             # 세션 파일 업데이트 (checking 상태로)
             session_data = {}
@@ -547,7 +605,7 @@ async def open_login_page(request: OpenLoginRequest):
             return {
                 "success": True, 
                 "message": f"Opening {request.platform} login page",
-                "details": "Please log in and then check session status"
+                "details": "Please log in and the session will be automatically detected"
             }
             
         except Exception as e:
@@ -575,15 +633,22 @@ async def update_session_status(platform: str, valid: bool = True):
             with open(SESSION_DATA_PATH, 'r') as f:
                 session_data = json.load(f)
         
+        # 세션 유효기간을 7일로 설정 (대부분의 플랫폼이 일주일 정도 유지)
+        expires_at = None
+        if valid:
+            expires_at = (datetime.now() + timedelta(days=7)).isoformat()
+        
         session_data[platform] = {
             "valid": valid,
             "lastChecked": datetime.now().isoformat(),
-            "expiresAt": (datetime.now() + timedelta(days=1)).isoformat() if valid else None
+            "expiresAt": expires_at
         }
         
         SESSION_DATA_PATH.parent.mkdir(parents=True, exist_ok=True)
         with open(SESSION_DATA_PATH, 'w') as f:
             json.dump(session_data, f, indent=2)
+        
+        print(f"[Session] Updated {platform} session: valid={valid}")
         
         return {"success": True}
         
@@ -602,7 +667,8 @@ async def get_last_schedule_failure():
                 
             if failure_data.get("timestamp"):
                 failure_time = datetime.fromisoformat(failure_data["timestamp"])
-                if (datetime.now() - failure_time).days < 1:
+                # 24시간 이내의 실패만 반환
+                if (datetime.now() - failure_time).total_seconds() < 86400:
                     return {
                         "failure": True,
                         "reason": failure_data.get("reason", "unknown"),
@@ -620,7 +686,7 @@ async def get_last_schedule_failure():
 
 @router.post("/llm/firefox/launch")
 async def launch_firefox_sync(request: SyncRequest, background_tasks: BackgroundTasks):
-    """Firefox를 실행하고 Extension sync를 트리거 (세션 체크 포함)"""
+    """Firefox를 실행하고 Extension sync를 트리거"""
     print(f"[Firefox] Launch request received: {request.dict()}")
     
     try:
@@ -694,7 +760,8 @@ async def launch_firefox_sync(request: SyncRequest, background_tasks: Background
             "platforms": filtered_platforms,
             "settings": request.settings,
             "status": "pending",
-            "created_at": datetime.now().isoformat()
+            "created_at": datetime.now().isoformat(),
+            "auto_close": True  # sync 완료 후 Firefox 자동 종료
         }
         
         print(f"[Firefox] Saving sync config with ID: {sync_id}")
@@ -727,7 +794,8 @@ async def launch_firefox_sync(request: SyncRequest, background_tasks: Background
         if not is_running:
             print(f"[Firefox] Starting Firefox with command: {firefox_cmd}")
             try:
-                start_url = "about:blank"
+                # sync trigger URL로 시작
+                start_url = "about:blank#llm-sync-trigger"
                 
                 process = subprocess.Popen(
                     firefox_cmd + [start_url],
@@ -736,9 +804,11 @@ async def launch_firefox_sync(request: SyncRequest, background_tasks: Background
                 )
                 print(f"[Firefox] Process started with PID: {process.pid}")
                 
+                # 프로세스 모니터링 시작
                 background_tasks.add_task(monitor_firefox_process, process, sync_id)
                 
-                await asyncio.sleep(10)
+                # Firefox 시작 대기
+                await asyncio.sleep(5)
                 print("[Firefox] Firefox startup wait completed")
                 
             except Exception as e:
@@ -750,8 +820,9 @@ async def launch_firefox_sync(request: SyncRequest, background_tasks: Background
                 }
         else:
             print("[Firefox] Opening new tab in existing instance")
-            subprocess.Popen(firefox_cmd + ["about:blank"])
+            subprocess.Popen(firefox_cmd + ["about:blank#llm-sync-trigger"])
         
+        # 초기 상태 파일 생성
         status_file = SYNC_STATUS_PATH / f"sync-status-{sync_id}.json"
         with open(status_file, 'w') as f:
             json.dump({
@@ -764,6 +835,7 @@ async def launch_firefox_sync(request: SyncRequest, background_tasks: Background
         
         print(f"[Firefox] Sync initiated successfully with ID: {sync_id}")
         
+        # 스케줄 실패 기록 삭제
         if SCHEDULE_FAILURE_PATH.exists():
             SCHEDULE_FAILURE_PATH.unlink()
         
@@ -771,7 +843,8 @@ async def launch_firefox_sync(request: SyncRequest, background_tasks: Background
             "success": True,
             "sync_id": sync_id,
             "message": "Firefox launched and sync triggered",
-            "debug_mode": debug_mode
+            "debug_mode": debug_mode,
+            "platforms_to_sync": platforms_to_sync
         }
         
     except Exception as e:
@@ -792,7 +865,16 @@ async def get_sync_status(sync_id: str):
         
         if status_file.exists():
             with open(status_file, 'r') as f:
-                return json.load(f)
+                status = json.load(f)
+                
+            # timeout 체크 (5분)
+            if status.get("updated_at"):
+                last_update = datetime.fromisoformat(status["updated_at"])
+                if (datetime.now() - last_update).total_seconds() > 300:
+                    status["status"] = "timeout"
+                    status["message"] = "Sync timeout - no response from extension"
+                    
+            return status
         else:
             return {
                 "status": "pending",
@@ -818,6 +900,7 @@ async def cancel_sync(sync_id: str):
                     "updated_at": datetime.now().isoformat()
                 }, f)
         
+        # Firefox 종료
         if platform.system() == "Windows":
             subprocess.run(["taskkill", "/F", "/IM", "firefox.exe"], capture_output=True)
         else:
@@ -845,12 +928,34 @@ async def schedule_sync(config: ScheduleConfig):
         with open(schedule_path, 'w') as f:
             json.dump(schedule_config, f, indent=2)
         
+        # Cron job 설정 (Linux/Mac)
         if platform.system() != "Windows":
             try:
                 import subprocess
                 
-                script_path = os.path.abspath("./scripts/run_sync.py")
+                # 현재 디렉토리의 run_sync.py 스크립트 경로
+                script_path = Path(__file__).parent.parent / "scripts" / "run_sync.py"
+                if not script_path.exists():
+                    # 스크립트 생성
+                    script_path.parent.mkdir(exist_ok=True)
+                    with open(script_path, 'w') as f:
+                        f.write("""#!/usr/bin/env python3
+import requests
+import sys
+
+try:
+    response = requests.post('http://localhost:8000/api/argosa/llm/sync/trigger-scheduled')
+    if response.ok:
+        print("Scheduled sync triggered successfully")
+    else:
+        print(f"Failed to trigger sync: {response.status_code}")
+except Exception as e:
+    print(f"Error: {e}")
+    sys.exit(1)
+""")
+                    script_path.chmod(0o755)
                 
+                # Crontab 업데이트
                 result = subprocess.run(['crontab', '-l'], capture_output=True, text=True)
                 if result.returncode == 0:
                     current_cron = result.stdout
@@ -880,7 +985,9 @@ async def schedule_sync(config: ScheduleConfig):
             except Exception as e:
                 print(f"Failed to update crontab: {e}")
         else:
+            # Windows Task Scheduler
             print("Windows Task Scheduler integration not implemented yet")
+            # TODO: Windows Task Scheduler 구현
         
         return {"success": True, "message": "Schedule updated"}
         
@@ -892,7 +999,15 @@ async def get_sync_config():
     """Extension이 읽을 sync 설정 반환"""
     if SYNC_CONFIG_PATH.exists():
         with open(SYNC_CONFIG_PATH, 'r') as f:
-            return json.load(f)
+            config = json.load(f)
+            
+        # 설정이 1시간 이상 오래되었으면 무시
+        if config.get("created_at"):
+            created = datetime.fromisoformat(config["created_at"])
+            if (datetime.now() - created).total_seconds() > 3600:
+                return {"status": "no_config"}
+                
+        return config
     else:
         return {"status": "no_config"}
 
@@ -914,6 +1029,7 @@ async def update_sync_progress(progress: SyncProgress):
         with open(status_file, 'w') as f:
             json.dump(status, f, indent=2)
         
+        # WebSocket으로 실시간 업데이트 전송
         for client_id, websocket in active_connections.items():
             try:
                 await websocket.send_json({
@@ -922,6 +1038,24 @@ async def update_sync_progress(progress: SyncProgress):
                 })
             except:
                 pass
+        
+        # sync 완료 시 Firefox 자동 종료
+        if progress.status == "completed":
+            # sync config 확인
+            if SYNC_CONFIG_PATH.exists():
+                with open(SYNC_CONFIG_PATH, 'r') as f:
+                    sync_config = json.load(f)
+                    
+                if sync_config.get("auto_close", True):
+                    # 3초 후 Firefox 종료
+                    async def close_firefox():
+                        await asyncio.sleep(3)
+                        if platform.system() == "Windows":
+                            subprocess.run(["taskkill", "/F", "/IM", "firefox.exe"], capture_output=True)
+                        else:
+                            subprocess.run(["pkill", "firefox"], capture_output=True)
+                    
+                    asyncio.create_task(close_firefox())
         
         return {"success": True}
     except Exception as e:
@@ -980,6 +1114,7 @@ async def save_conversations(data: Dict[str, Any]):
         platform_path = LLM_DATA_PATH / platform
         platform_path.mkdir(exist_ok=True)
         
+        # 오늘 날짜로 파일명 생성
         date_str = datetime.now().strftime("%Y-%m-%d")
         file_count = len(list(platform_path.glob(f"{date_str}_*.json")))
         filename = f"{date_str}_conversation_{file_count + 1}.json"

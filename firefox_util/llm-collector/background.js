@@ -1,12 +1,14 @@
-// LLM Conversation Collector Extension - Background Script
+// LLM Conversation Collector Extension - Background Script (개선된 버전)
 console.log('[LLM Collector] Extension loaded at', new Date().toISOString());
 
-// Configuration
+// Configuration - Fixed API URL
 const DEFAULT_API_URL = 'http://localhost:8000/api/argosa/llm';
 let syncCheckInterval = null;
 let currentSyncId = null;
 let isSyncing = false;
 let extensionReady = false;
+let loginCheckInterval = null;
+let sessionCheckTimeouts = {};
 
 // Platform configurations
 const PLATFORMS = {
@@ -14,37 +16,43 @@ const PLATFORMS = {
     name: 'ChatGPT',
     url: 'https://chat.openai.com',
     conversationListUrl: 'https://chat.openai.com/backend-api/conversations',
-    conversationDetailUrl: (id) => `https://chat.openai.com/backend-api/conversation/${id}`
+    conversationDetailUrl: (id) => `https://chat.openai.com/backend-api/conversation/${id}`,
+    loginSelectors: ['[data-testid="profile-button"]', 'nav button img']
   },
   claude: {
     name: 'Claude',
     url: 'https://claude.ai',
     conversationListUrl: 'https://claude.ai/api/chat_conversations',
-    conversationDetailUrl: (id) => `https://claude.ai/api/chat_conversations/${id}`
+    conversationDetailUrl: (id) => `https://claude.ai/api/chat_conversations/${id}`,
+    loginSelectors: ['[class*="chat"]', '[data-testid="user-menu"]']
   },
   gemini: {
     name: 'Gemini',
     url: 'https://gemini.google.com',
     conversationListUrl: 'https://gemini.google.com/api/conversations',
-    conversationDetailUrl: (id) => `https://gemini.google.com/api/conversations/${id}`
+    conversationDetailUrl: (id) => `https://gemini.google.com/api/conversations/${id}`,
+    loginSelectors: ['[aria-label*="Google Account"]', '[data-testid="account-menu"]']
   },
   deepseek: {
     name: 'DeepSeek',
     url: 'https://chat.deepseek.com',
     conversationListUrl: 'https://chat.deepseek.com/api/v0/chat/conversations',
-    conversationDetailUrl: (id) => `https://chat.deepseek.com/api/v0/chat/conversation/${id}`
+    conversationDetailUrl: (id) => `https://chat.deepseek.com/api/v0/chat/conversation/${id}`,
+    loginSelectors: ['[class*="avatar"]', '[class*="user-menu"]']
   },
   grok: {
     name: 'Grok',
     url: 'https://grok.x.ai',
     conversationListUrl: 'https://grok.x.ai/api/conversations',
-    conversationDetailUrl: (id) => `https://grok.x.ai/api/conversations/${id}`
+    conversationDetailUrl: (id) => `https://grok.x.ai/api/conversations/${id}`,
+    loginSelectors: ['[data-testid="SideNav_AccountSwitcher_Button"]']
   },
   perplexity: {
     name: 'Perplexity',
     url: 'https://www.perplexity.ai',
     conversationListUrl: 'https://www.perplexity.ai/api/conversations',
-    conversationDetailUrl: (id) => `https://www.perplexity.ai/api/conversations/${id}`
+    conversationDetailUrl: (id) => `https://www.perplexity.ai/api/conversations/${id}`,
+    loginSelectors: ['[class*="profile"]', '[class*="user-info"]']
   }
 };
 
@@ -86,11 +94,6 @@ async function initialize() {
     
     // Check immediately on startup
     await checkForPendingSync();
-    
-    // Schedule initial session check (5 minutes after startup)
-    setTimeout(() => {
-      dailySessionCheck();
-    }, 5 * 60 * 1000);
     
   } catch (error) {
     console.error('[LLM Collector] Initialization error:', error);
@@ -149,8 +152,6 @@ async function checkForPendingSync() {
     const { apiUrl } = await browser.storage.local.get(['apiUrl']);
     const url = apiUrl || DEFAULT_API_URL;
     
-    console.log('[LLM Collector] Checking for pending sync at:', `${url}/sync/config`);
-    
     const response = await fetch(`${url}/sync/config`, {
       method: 'GET',
       headers: {
@@ -159,12 +160,10 @@ async function checkForPendingSync() {
     });
     
     if (!response.ok) {
-      console.log('[LLM Collector] No pending sync (status:', response.status, ')');
       return;
     }
     
     const syncConfig = await response.json();
-    console.log('[LLM Collector] Sync config received:', syncConfig);
     
     if (syncConfig.status !== 'no_config' && syncConfig.status === 'pending') {
       console.log('[LLM Collector] 🚀 Found pending sync!', syncConfig);
@@ -192,11 +191,6 @@ async function checkForPendingSync() {
     
   } catch (error) {
     console.error('[LLM Collector] Error checking for sync:', error);
-    console.error('[LLM Collector] Error details:', {
-      message: error.message,
-      stack: error.stack,
-      type: error.name
-    });
   }
 }
 
@@ -208,6 +202,7 @@ async function startSyncProcess(syncConfig) {
   
   isSyncing = true;
   currentSyncId = syncConfig.id;
+  const autoClose = syncConfig.auto_close !== false; // 기본값 true
   
   console.log('[LLM Collector] Starting sync process...', syncConfig);
   
@@ -299,6 +294,17 @@ async function startSyncProcess(syncConfig) {
       message: `Sync completed! Collected ${totalCollected} conversations.`
     });
     
+    // Auto close Firefox if configured
+    if (autoClose) {
+      console.log('[LLM Collector] Auto-closing Firefox in 5 seconds...');
+      setTimeout(() => {
+        // Close all tabs to trigger Firefox close
+        browser.tabs.query({}).then(tabs => {
+          tabs.forEach(tab => browser.tabs.remove(tab.id));
+        });
+      }, 5000);
+    }
+    
   } catch (error) {
     console.error('[LLM Collector] Sync error:', error);
     
@@ -308,7 +314,8 @@ async function startSyncProcess(syncConfig) {
     await updateSyncProgress(url, currentSyncId, {
       status: 'error',
       progress: 0,
-      message: error.message || 'Unknown error occurred'
+      message: error.message || 'Unknown error occurred',
+      error: error.message
     });
     
     // Show error notification
@@ -334,42 +341,40 @@ async function checkPlatformSession(platform, tab) {
   if (!platformConfig) return false;
   
   try {
-    // Platform-specific session check logic
-    const results = await browser.tabs.executeScript(tab.id, {
-      code: `
-        (function() {
-          // Platform-specific login state check
+    // Try multiple selectors
+    const selectors = platformConfig.loginSelectors || [];
+    const checkCode = `
+      (function() {
+        const selectors = ${JSON.stringify(selectors)};
+        let loggedIn = false;
+        
+        for (const selector of selectors) {
+          try {
+            const element = document.querySelector(selector);
+            if (element) {
+              loggedIn = true;
+              break;
+            }
+          } catch (e) {}
+        }
+        
+        // Platform-specific checks
+        if (!loggedIn) {
           if ('${platform}' === 'chatgpt') {
-            const userMenu = document.querySelector('[data-testid="profile-button"]');
-            const loggedIn = !!userMenu || !!document.querySelector('nav button img');
-            return { loggedIn, platform: '${platform}' };
-          } 
-          else if ('${platform}' === 'claude') {
-            const loginButton = document.querySelector('button:has-text("Log in")');
-            const chatInterface = document.querySelector('[class*="chat"]');
-            return { loggedIn: !loginButton && !!chatInterface, platform: '${platform}' };
+            loggedIn = !!document.querySelector('[data-testid="profile-button"]') || 
+                      !!document.querySelector('nav button img');
+          } else if ('${platform}' === 'claude') {
+            const hasChat = !!document.querySelector('[class*="chat"]');
+            const noLogin = !document.querySelector('button:has-text("Log in")');
+            loggedIn = hasChat && noLogin;
           }
-          else if ('${platform}' === 'gemini') {
-            const accountButton = document.querySelector('[aria-label*="Google Account"]');
-            return { loggedIn: !!accountButton, platform: '${platform}' };
-          }
-          else if ('${platform}' === 'deepseek') {
-            const userAvatar = document.querySelector('[class*="avatar"]');
-            return { loggedIn: !!userAvatar, platform: '${platform}' };
-          }
-          else if ('${platform}' === 'grok') {
-            const userMenu = document.querySelector('[data-testid="SideNav_AccountSwitcher_Button"]');
-            return { loggedIn: !!userMenu, platform: '${platform}' };
-          }
-          else if ('${platform}' === 'perplexity') {
-            const profileMenu = document.querySelector('[class*="profile"]');
-            return { loggedIn: !!profileMenu, platform: '${platform}' };
-          }
-          
-          return { loggedIn: false, platform: '${platform}' };
-        })();
-      `
-    });
+        }
+        
+        return { loggedIn, platform: '${platform}' };
+      })();
+    `;
+    
+    const results = await browser.tabs.executeScript(tab.id, { code: checkCode });
     
     const sessionStatus = results[0];
     console.log(`[LLM Collector] ${platform} session status:`, sessionStatus);
@@ -390,87 +395,68 @@ async function checkPlatformSession(platform, tab) {
   }
 }
 
-async function syncSessionWithBackend(platform, isLoggedIn) {
-  try {
-    const { apiUrl } = await browser.storage.local.get(['apiUrl']);
-    const url = apiUrl || DEFAULT_API_URL;
-    
-    await fetch(`${url}/sessions/update?platform=${platform}&valid=${isLoggedIn}`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      }
-    });
-    
-    console.log(`[LLM Collector] Session status updated for ${platform}: ${isLoggedIn}`);
-  } catch (error) {
-    console.error(`[LLM Collector] Failed to update session status:`, error);
+async function monitorLoginPage(tabId, platform) {
+  console.log(`[LLM Collector] Monitoring login page for ${platform}...`);
+  
+  // Clear any existing interval
+  if (loginCheckInterval) {
+    clearInterval(loginCheckInterval);
+    loginCheckInterval = null;
   }
-}
-
-async function performActualSessionCheck(platform) {
-  const platformConfig = PLATFORMS[platform];
-  if (!platformConfig) return false;
   
-  console.log(`[LLM Collector] Performing actual session check for ${platform}...`);
+  let checkCount = 0;
+  const maxChecks = 60; // 5 minutes (5 seconds * 60)
   
-  // Open platform in new tab
-  const tab = await browser.tabs.create({ 
-    url: platformConfig.url,
-    active: false
-  });
-  
-  try {
-    // Wait for page to load
-    await waitForTabLoad(tab.id);
-    await new Promise(resolve => setTimeout(resolve, 5000));
+  loginCheckInterval = setInterval(async () => {
+    checkCount++;
     
-    // Check session
-    const isLoggedIn = await checkPlatformSession(platform, tab);
-    
-    // Update backend
-    await syncSessionWithBackend(platform, isLoggedIn);
-    
-    return isLoggedIn;
-    
-  } catch (error) {
-    console.error(`[LLM Collector] Error checking ${platform}:`, error);
-    return false;
-  } finally {
-    await browser.tabs.remove(tab.id);
-  }
-}
-
-async function dailySessionCheck() {
-  console.log('[LLM Collector] Running daily session check...');
-  
-  const { apiUrl } = await browser.storage.local.get(['apiUrl']);
-  const url = apiUrl || DEFAULT_API_URL;
-  
-  // Check all platform sessions
-  for (const platform of Object.keys(PLATFORMS)) {
     try {
-      const tab = await browser.tabs.create({ 
-        url: PLATFORMS[platform].url,
-        active: false
-      });
+      const tab = await browser.tabs.get(tabId);
       
-      await waitForTabLoad(tab.id);
-      await new Promise(resolve => setTimeout(resolve, 3000));
+      // Tab closed
+      if (!tab) {
+        clearInterval(loginCheckInterval);
+        loginCheckInterval = null;
+        return;
+      }
       
-      await checkPlatformSession(platform, tab);
+      // Check if logged in
+      const isLoggedIn = await checkPlatformSession(platform, tab);
       
-      await browser.tabs.remove(tab.id);
+      if (isLoggedIn) {
+        console.log(`[LLM Collector] ${platform} login detected!`);
+        
+        // Clear interval
+        clearInterval(loginCheckInterval);
+        loginCheckInterval = null;
+        
+        // Show notification
+        await browser.notifications.create({
+          type: 'basic',
+          iconUrl: browser.extension.getURL('icon.png'),
+          title: 'Login Successful',
+          message: `${PLATFORMS[platform].name} session is now active. You can close this tab.`
+        });
+        
+        // Auto close tab after 3 seconds
+        setTimeout(() => {
+          browser.tabs.remove(tabId).catch(() => {});
+        }, 3000);
+      }
       
-      // Delay between platforms
-      await new Promise(resolve => setTimeout(resolve, 5000));
+      // Timeout check
+      if (checkCount >= maxChecks) {
+        console.log(`[LLM Collector] Login monitoring timeout for ${platform}`);
+        clearInterval(loginCheckInterval);
+        loginCheckInterval = null;
+      }
       
     } catch (error) {
-      console.error(`[LLM Collector] Error checking ${platform}:`, error);
+      console.error(`[LLM Collector] Error monitoring login:`, error);
+      clearInterval(loginCheckInterval);
+      loginCheckInterval = null;
     }
-  }
-  
-  console.log('[LLM Collector] Daily session check completed');
+  }, 5000); // Check every 5 seconds
 }
 
 // ======================== Platform Sync ========================
@@ -520,111 +506,10 @@ async function performPlatformSyncWithSessionCheck(platform, settings) {
     
     // Session is valid, proceed with collection
     console.log(`[LLM Collector] ${platform} session valid, proceeding with collection...`);
-    console.log(`[LLM Collector] Injecting collection script for ${platform}...`);
     
     // Inject content script to collect conversations
-    const results = await browser.tabs.executeScript(tab.id, {
-      code: `
-        (async function() {
-          console.log('[LLM Collector Content] Starting collection for ${platform}...');
-          
-          try {
-            const conversations = [];
-            const collectedIds = new Set();
-            
-            // Platform-specific collection logic
-            if ('${platform}' === 'chatgpt') {
-              console.log('[LLM Collector Content] Fetching ChatGPT conversations...');
-              
-              try {
-                const response = await fetch('${platformConfig.conversationListUrl}', {
-                  credentials: 'include',
-                  headers: {
-                    'Accept': 'application/json',
-                  }
-                });
-                
-                console.log('[LLM Collector Content] Response status:', response.status);
-                
-                if (response.ok) {
-                  const data = await response.json();
-                  const items = data.items || [];
-                  console.log('[LLM Collector Content] Found', items.length, 'conversations');
-                  
-                  const limit = ${settings.maxConversations || 20};
-                  for (let i = 0; i < Math.min(items.length, limit); i++) {
-                    const conv = items[i];
-                    if (!collectedIds.has(conv.id)) {
-                      collectedIds.add(conv.id);
-                      conversations.push({
-                        id: conv.id,
-                        title: conv.title || 'Untitled',
-                        created_at: conv.create_time || conv.created_at,
-                        updated_at: conv.update_time || conv.updated_at,
-                        platform: 'chatgpt'
-                      });
-                    }
-                  }
-                }
-              } catch (err) {
-                console.error('[LLM Collector Content] ChatGPT fetch error:', err);
-              }
-            }
-            else if ('${platform}' === 'claude') {
-              console.log('[LLM Collector Content] Fetching Claude conversations...');
-              
-              try {
-                const response = await fetch('${platformConfig.conversationListUrl}', {
-                  credentials: 'include',
-                  headers: {
-                    'Accept': 'application/json',
-                  }
-                });
-                
-                if (response.ok) {
-                  const data = await response.json();
-                  const items = data.chats || data.conversations || [];
-                  
-                  const limit = ${settings.maxConversations || 20};
-                  for (let i = 0; i < Math.min(items.length, limit); i++) {
-                    const conv = items[i];
-                    if (!collectedIds.has(conv.uuid || conv.id)) {
-                      collectedIds.add(conv.uuid || conv.id);
-                      conversations.push({
-                        id: conv.uuid || conv.id,
-                        title: conv.name || conv.title || 'Untitled',
-                        created_at: conv.created_at,
-                        updated_at: conv.updated_at,
-                        platform: 'claude'
-                      });
-                    }
-                  }
-                }
-              } catch (err) {
-                console.error('[LLM Collector Content] Claude fetch error:', err);
-              }
-            }
-            // Add other platforms as needed...
-            
-            console.log('[LLM Collector Content] Collected', conversations.length, 'conversations');
-            
-            return {
-              platform: '${platform}',
-              collected: conversations.length,
-              conversations: conversations
-            };
-            
-          } catch (error) {
-            console.error('[LLM Collector Content] Collection error:', error);
-            return {
-              platform: '${platform}',
-              collected: 0,
-              error: error.message
-            };
-          }
-        })();
-      `
-    });
+    const collectionCode = getCollectionCode(platform, platformConfig, settings);
+    const results = await browser.tabs.executeScript(tab.id, { code: collectionCode });
     
     const result = results[0];
     console.log(`[LLM Collector] Collection result for ${platform}:`, result);
@@ -664,6 +549,123 @@ async function performPlatformSyncWithSessionCheck(platform, settings) {
     console.log(`[LLM Collector] Closing ${platform} tab...`);
     await browser.tabs.remove(tab.id);
   }
+}
+
+function getCollectionCode(platform, platformConfig, settings) {
+  return `
+    (async function() {
+      console.log('[LLM Collector Content] Starting collection for ${platform}...');
+      
+      try {
+        const conversations = [];
+        const collectedIds = new Set();
+        const limit = ${settings.maxConversations || 20};
+        
+        // Platform-specific collection logic
+        if ('${platform}' === 'chatgpt') {
+          console.log('[LLM Collector Content] Fetching ChatGPT conversations...');
+          
+          try {
+            const response = await fetch('${platformConfig.conversationListUrl}', {
+              credentials: 'include',
+              headers: {
+                'Accept': 'application/json',
+              }
+            });
+            
+            console.log('[LLM Collector Content] Response status:', response.status);
+            
+            if (response.ok) {
+              const data = await response.json();
+              const items = data.items || [];
+              console.log('[LLM Collector Content] Found', items.length, 'conversations');
+              
+              for (let i = 0; i < Math.min(items.length, limit); i++) {
+                const conv = items[i];
+                if (!collectedIds.has(conv.id)) {
+                  collectedIds.add(conv.id);
+                  conversations.push({
+                    id: conv.id,
+                    title: conv.title || 'Untitled',
+                    created_at: conv.create_time || conv.created_at,
+                    updated_at: conv.update_time || conv.updated_at,
+                    platform: 'chatgpt'
+                  });
+                }
+              }
+            }
+          } catch (err) {
+            console.error('[LLM Collector Content] ChatGPT fetch error:', err);
+            
+            // Fallback: try to scrape from DOM
+            const convElements = document.querySelectorAll('[data-testid="conversation-list-item"]');
+            convElements.forEach((elem, idx) => {
+              if (idx < limit) {
+                const titleElem = elem.querySelector('[class*="title"]');
+                conversations.push({
+                  id: 'chatgpt_' + Date.now() + '_' + idx,
+                  title: titleElem ? titleElem.textContent : 'Conversation ' + (idx + 1),
+                  created_at: new Date().toISOString(),
+                  platform: 'chatgpt'
+                });
+              }
+            });
+          }
+        }
+        else if ('${platform}' === 'claude') {
+          console.log('[LLM Collector Content] Fetching Claude conversations...');
+          
+          try {
+            const response = await fetch('${platformConfig.conversationListUrl}', {
+              credentials: 'include',
+              headers: {
+                'Accept': 'application/json',
+              }
+            });
+            
+            if (response.ok) {
+              const data = await response.json();
+              const items = data.chats || data.conversations || [];
+              
+              for (let i = 0; i < Math.min(items.length, limit); i++) {
+                const conv = items[i];
+                const convId = conv.uuid || conv.id;
+                if (!collectedIds.has(convId)) {
+                  collectedIds.add(convId);
+                  conversations.push({
+                    id: convId,
+                    title: conv.name || conv.title || 'Untitled',
+                    created_at: conv.created_at,
+                    updated_at: conv.updated_at,
+                    platform: 'claude'
+                  });
+                }
+              }
+            }
+          } catch (err) {
+            console.error('[LLM Collector Content] Claude fetch error:', err);
+          }
+        }
+        // Add other platforms as needed...
+        
+        console.log('[LLM Collector Content] Collected', conversations.length, 'conversations');
+        
+        return {
+          platform: '${platform}',
+          collected: conversations.length,
+          conversations: conversations
+        };
+        
+      } catch (error) {
+        console.error('[LLM Collector Content] Collection error:', error);
+        return {
+          platform: '${platform}',
+          collected: 0,
+          error: error.message
+        };
+      }
+    })();
+  `;
 }
 
 // ======================== Helper Functions ========================
@@ -727,17 +729,6 @@ async function getStats() {
 
 // ======================== Event Listeners ========================
 
-// Set up alarm for daily session check (every 24 hours)
-browser.alarms.create('dailySessionCheck', {
-  periodInMinutes: 24 * 60
-});
-
-browser.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name === 'dailySessionCheck') {
-    dailySessionCheck();
-  }
-});
-
 // Listen for messages from popup or content scripts
 browser.runtime.onMessage.addListener(async (message, sender, sendResponse) => {
   console.log('[LLM Collector] Received message:', message);
@@ -779,37 +770,34 @@ browser.runtime.onMessage.addListener(async (message, sender, sendResponse) => {
       const result = await testAPIConnection();
       sendResponse({ connected: result });
       break;
-      
-    case 'checkSessions':
-      // Frontend request for session check
-      const platforms = message.platforms || Object.keys(PLATFORMS);
-      const results = {};
-      
-      for (const platform of platforms) {
-        results[platform] = await performActualSessionCheck(platform);
-        // Delay between platforms
-        await new Promise(resolve => setTimeout(resolve, 3000));
-      }
-      
-      sendResponse({ success: true, results });
+    
+    case 'getStats':
+      // Return stats to popup
+      const stats = await getStats();
+      sendResponse({ stats: stats });
       break;
   }
   
   return true;
 });
 
-// BACKUP: URL trigger detection
+// URL trigger detection - 개선된 버전
 browser.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
-  if (changeInfo.url && 
-      (changeInfo.url.includes('#sync-trigger') || 
-       changeInfo.url.includes('#llm-sync-trigger') ||
-       changeInfo.url === 'about:blank#sync')) {
+  if (!changeInfo.url) return;
+  
+  const url = changeInfo.url;
+  
+  // Sync trigger detection
+  if (url.includes('#sync-trigger') || 
+      url.includes('#llm-sync-trigger') ||
+      url === 'about:blank#sync' ||
+      url.includes('about:blank#llm-sync-trigger')) {
     
-    console.log('[LLM Collector] 🎯 URL trigger detected!', changeInfo.url);
+    console.log('[LLM Collector] 🎯 Sync trigger detected!', url);
     
-    // Close the trigger tab
+    // Close the trigger tab after delay
     setTimeout(() => {
-      browser.tabs.remove(tabId);
+      browser.tabs.remove(tabId).catch(() => {});
     }, 1000);
     
     // Check for pending sync after a short delay
@@ -818,6 +806,57 @@ browser.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
         await checkForPendingSync();
       }
     }, 2000);
+  }
+  
+  // Login page detection
+  else if (url.includes('#llm-collector-login')) {
+    console.log('[LLM Collector] 🔐 Login page detected!', url);
+    
+    // Detect which platform
+    let platform = null;
+    for (const [key, config] of Object.entries(PLATFORMS)) {
+      if (url.includes(config.url)) {
+        platform = key;
+        break;
+      }
+    }
+    
+    if (platform) {
+      console.log(`[LLM Collector] Monitoring ${platform} login...`);
+      
+      // Start monitoring for login
+      setTimeout(() => {
+        monitorLoginPage(tabId, platform);
+      }, 5000); // Wait 5 seconds for page to load
+    }
+  }
+  
+  // Session check trigger
+  else if (url.includes('#check-session-')) {
+    console.log('[LLM Collector] 🔍 Session check trigger detected!', url);
+    
+    // Extract platform from URL
+    const match = url.match(/#check-session-(\w+)/);
+    if (match && match[1]) {
+      const platform = match[1];
+      
+      // Wait for page load
+      setTimeout(async () => {
+        try {
+          const tab = await browser.tabs.get(tabId);
+          const isLoggedIn = await checkPlatformSession(platform, tab);
+          
+          console.log(`[LLM Collector] ${platform} session check result:`, isLoggedIn);
+          
+          // Close tab after check
+          setTimeout(() => {
+            browser.tabs.remove(tabId).catch(() => {});
+          }, 2000);
+        } catch (error) {
+          console.error('[LLM Collector] Session check error:', error);
+        }
+      }, 5000);
+    }
   }
 });
 
@@ -829,19 +868,22 @@ browser.runtime.onInstalled.addListener(initialize);
 console.log('[LLM Collector] Starting initialization...');
 initialize();
 
-// Show console message every 10 seconds to confirm extension is running
+// Show console message every 30 seconds to confirm extension is running
 setInterval(() => {
   console.log('[LLM Collector] Extension active -', new Date().toISOString(), {
     ready: extensionReady,
     syncing: isSyncing,
     syncId: currentSyncId
   });
-}, 10000);
+}, 30000);
 
 // Cleanup on extension unload
 self.addEventListener('unload', () => {
   console.log('[LLM Collector] Extension unloading...');
   if (syncCheckInterval) {
     clearInterval(syncCheckInterval);
+  }
+  if (loginCheckInterval) {
+    clearInterval(loginCheckInterval);
   }
 });

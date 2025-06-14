@@ -59,37 +59,50 @@ async function updateStats() {
     // Check if using API mode
     const { useAPI } = await browser.storage.local.get(['useAPI']);
     
-    if (useAPI) {
+    if (useAPI !== false) { // Default to true if not set
       // Get stats from background script (which gets from API)
-      const response = await browser.runtime.sendMessage({ action: 'getStats' });
+      console.log('[Popup] Getting stats from background...');
       
-      if (response && response.stats) {
-        const stats = response.stats;
+      try {
+        const response = await browser.runtime.sendMessage({ action: 'getStats' });
+        console.log('[Popup] Stats response:', response);
         
-        // Update total conversations
-        let totalConversations = 0;
-        let todayCount = 0;
-        const today = new Date().toISOString().split('T')[0];
-        
-        // Calculate totals from daily_stats
-        if (stats.daily_stats) {
-          Object.values(stats.daily_stats).forEach(platformStats => {
-            Object.entries(platformStats).forEach(([date, count]) => {
-              totalConversations += count;
-              if (date === today) {
-                todayCount += count;
-              }
+        if (response && response.stats) {
+          const stats = response.stats;
+          
+          // Update total conversations
+          let totalConversations = 0;
+          let todayCount = 0;
+          const today = new Date().toISOString().split('T')[0];
+          
+          // Calculate totals from daily_stats
+          if (stats.daily_stats) {
+            Object.values(stats.daily_stats).forEach(platformStats => {
+              Object.entries(platformStats).forEach(([date, count]) => {
+                totalConversations += count;
+                if (date === today) {
+                  todayCount += count;
+                }
+              });
             });
-          });
+          }
+          
+          document.getElementById('totalConversations').textContent = totalConversations;
+          document.getElementById('todayCount').textContent = todayCount;
+          
+          // Update storage size estimate
+          const avgSizePerConv = 5 * 1024; // 5KB average
+          const totalSize = (totalConversations * avgSizePerConv) / (1024 * 1024);
+          document.getElementById('storageSize').textContent = `${totalSize.toFixed(1)} MB`;
+          
+          console.log('[Popup] Stats updated:', { totalConversations, todayCount });
         }
-        
-        document.getElementById('totalConversations').textContent = totalConversations;
-        document.getElementById('todayCount').textContent = todayCount;
-        
-        // Update storage size estimate
-        const avgSizePerConv = 5 * 1024; // 5KB average
-        const totalSize = (totalConversations * avgSizePerConv) / (1024 * 1024);
-        document.getElementById('storageSize').textContent = `${totalSize.toFixed(1)} MB`;
+      } catch (error) {
+        console.error('[Popup] Failed to get stats:', error);
+        // Show default values
+        document.getElementById('totalConversations').textContent = '0';
+        document.getElementById('todayCount').textContent = '0';
+        document.getElementById('storageSize').textContent = '0 MB';
       }
     } else {
       // Local storage mode - get from local data
@@ -101,8 +114,6 @@ async function updateStats() {
         );
         
         document.getElementById('totalConversations').textContent = totalConversations;
-        
-        // Today's count (simplified)
         document.getElementById('todayCount').textContent = '0';
         
         // Storage size
@@ -111,7 +122,11 @@ async function updateStats() {
       }
     }
   } catch (error) {
-    console.error('Error loading stats:', error);
+    console.error('[Popup] Error loading stats:', error);
+    // Set default values on error
+    document.getElementById('totalConversations').textContent = '0';
+    document.getElementById('todayCount').textContent = '0';
+    document.getElementById('storageSize').textContent = '0 MB';
   }
 }
 
@@ -162,7 +177,8 @@ async function handleSyncNow() {
   const loading = document.getElementById('loading');
   const { platforms, useAPI } = await browser.storage.local.get(['platforms', 'useAPI']);
   
-  if (useAPI) {
+  // Always use API mode (default)
+  if (useAPI !== false) {
     // API mode - open dashboard
     showAlert('Opening Argosa dashboard...', 'info');
     window.open('http://localhost:3000', '_blank');
@@ -186,6 +202,7 @@ async function handleSyncNow() {
   
   try {
     // Start manual sync
+    console.log('[Popup] Starting manual sync...');
     const result = await browser.runtime.sendMessage({ action: 'startManualSync' });
     
     if (result && result.success) {
@@ -204,7 +221,7 @@ async function handleSyncNow() {
       showAlert('Sync failed: ' + (result?.error || 'Unknown error'), 'error');
     }
   } catch (error) {
-    console.error('Sync error:', error);
+    console.error('[Popup] Sync error:', error);
     showAlert('Failed to start sync. Please check the console for details.', 'error');
   } finally {
     // Re-enable button and hide loading
@@ -249,6 +266,7 @@ function showAlert(message, type = 'info') {
     max-width: 350px;
     text-align: center;
     animation: slideDown 0.3s ease;
+    white-space: pre-line;
   `;
   
   // Style based on type
@@ -309,3 +327,10 @@ document.head.appendChild(style);
 
 // Auto-refresh stats every 30 seconds
 setInterval(updateStats, 30000);
+
+// Initial connection test
+browser.runtime.sendMessage({ action: 'testConnection' }).then(response => {
+  console.log('[Popup] Extension connection test:', response);
+}).catch(error => {
+  console.error('[Popup] Extension not responding:', error);
+});
