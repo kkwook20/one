@@ -1,4 +1,4 @@
-// LLM Conversation Collector Extension - Background Script (개선된 버전)
+// LLM Conversation Collector Extension - Background Script (완전히 개선된 버전)
 console.log('[LLM Collector] Extension loaded at', new Date().toISOString());
 
 // Configuration - Fixed API URL
@@ -9,6 +9,7 @@ let isSyncing = false;
 let extensionReady = false;
 let loginCheckInterval = null;
 let sessionCheckTimeouts = {};
+let sessionMonitorInterval = null;
 
 // Platform configurations
 const PLATFORMS = {
@@ -17,42 +18,66 @@ const PLATFORMS = {
     url: 'https://chat.openai.com',
     conversationListUrl: 'https://chat.openai.com/backend-api/conversations',
     conversationDetailUrl: (id) => `https://chat.openai.com/backend-api/conversation/${id}`,
-    loginSelectors: ['[data-testid="profile-button"]', 'nav button img']
+    loginSelectors: ['[data-testid="profile-button"]', 'nav button img'],
+    loginIndicators: [
+      () => window.location.pathname === '/chat' || window.location.pathname.startsWith('/c/'),
+      () => !window.location.pathname.includes('auth'),
+      () => !!document.querySelector('[data-testid="profile-button"]'),
+      () => !!document.querySelector('nav button img'),
+      () => !!document.querySelector('main'),
+      () => !!document.querySelector('[class*="chat"]')
+    ]
   },
   claude: {
     name: 'Claude',
     url: 'https://claude.ai',
     conversationListUrl: 'https://claude.ai/api/chat_conversations',
     conversationDetailUrl: (id) => `https://claude.ai/api/chat_conversations/${id}`,
-    loginSelectors: ['[class*="chat"]', '[data-testid="user-menu"]']
+    loginSelectors: ['[class*="chat"]', '[data-testid="user-menu"]'],
+    loginIndicators: [
+      () => !!document.querySelector('[class*="chat"]'),
+      () => !document.querySelector('button:has-text("Log in")')
+    ]
   },
   gemini: {
     name: 'Gemini',
     url: 'https://gemini.google.com',
     conversationListUrl: 'https://gemini.google.com/api/conversations',
     conversationDetailUrl: (id) => `https://gemini.google.com/api/conversations/${id}`,
-    loginSelectors: ['[aria-label*="Google Account"]', '[data-testid="account-menu"]']
+    loginSelectors: ['[aria-label*="Google Account"]', '[data-testid="account-menu"]'],
+    loginIndicators: [
+      () => !!document.querySelector('[aria-label*="Google Account"]')
+    ]
   },
   deepseek: {
     name: 'DeepSeek',
     url: 'https://chat.deepseek.com',
     conversationListUrl: 'https://chat.deepseek.com/api/v0/chat/conversations',
     conversationDetailUrl: (id) => `https://chat.deepseek.com/api/v0/chat/conversation/${id}`,
-    loginSelectors: ['[class*="avatar"]', '[class*="user-menu"]']
+    loginSelectors: ['[class*="avatar"]', '[class*="user-menu"]'],
+    loginIndicators: [
+      () => !!document.querySelector('[class*="avatar"]')
+    ]
   },
   grok: {
     name: 'Grok',
     url: 'https://grok.x.ai',
     conversationListUrl: 'https://grok.x.ai/api/conversations',
     conversationDetailUrl: (id) => `https://grok.x.ai/api/conversations/${id}`,
-    loginSelectors: ['[data-testid="SideNav_AccountSwitcher_Button"]']
+    loginSelectors: ['[data-testid="SideNav_AccountSwitcher_Button"]'],
+    loginIndicators: [
+      () => !!document.querySelector('[data-testid="SideNav_AccountSwitcher_Button"]')
+    ]
   },
   perplexity: {
     name: 'Perplexity',
     url: 'https://www.perplexity.ai',
     conversationListUrl: 'https://www.perplexity.ai/api/conversations',
     conversationDetailUrl: (id) => `https://www.perplexity.ai/api/conversations/${id}`,
-    loginSelectors: ['[class*="profile"]', '[class*="user-info"]']
+    loginSelectors: ['[class*="profile"]', '[class*="user-info"]'],
+    loginIndicators: [
+      () => !!document.querySelector('[class*="profile"]')
+    ]
   }
 };
 
@@ -92,6 +117,9 @@ async function initialize() {
     // Start periodic sync check
     startPeriodicCheck();
     
+    // Start session monitor
+    startSessionMonitor();
+    
     // Check immediately on startup
     await checkForPendingSync();
     
@@ -123,6 +151,54 @@ async function testAPIConnection() {
     console.error('[LLM Collector] API connection test error:', error);
     return false;
   }
+}
+
+// ======================== Session Monitor ========================
+
+function startSessionMonitor() {
+  if (sessionMonitorInterval) {
+    clearInterval(sessionMonitorInterval);
+  }
+  
+  // Monitor active tabs for session changes
+  sessionMonitorInterval = setInterval(async () => {
+    if (!extensionReady || isSyncing) return;
+    
+    try {
+      const tabs = await browser.tabs.query({ active: true, currentWindow: true });
+      
+      for (const tab of tabs) {
+        // Check if it's a supported platform
+        for (const [platform, config] of Object.entries(PLATFORMS)) {
+          if (tab.url && tab.url.includes(config.url)) {
+            // Check session status
+            const isLoggedIn = await checkPlatformSession(platform, tab);
+            
+            if (isLoggedIn) {
+              // Update backend if logged in
+              const { apiUrl } = await browser.storage.local.get(['apiUrl']);
+              const apiEndpoint = apiUrl || DEFAULT_API_URL;
+              
+              await fetch(`${apiEndpoint}/sessions/update`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  platform: platform,
+                  valid: true
+                })
+              });
+            }
+            
+            break;
+          }
+        }
+      }
+    } catch (error) {
+      // Silently fail
+    }
+  }, 10000); // Check every 10 seconds
+  
+  console.log('[LLM Collector] Started session monitor');
 }
 
 // ======================== Sync Management ========================
@@ -341,51 +417,106 @@ async function checkPlatformSession(platform, tab) {
   if (!platformConfig) return false;
   
   try {
-    // Try multiple selectors
-    const selectors = platformConfig.loginSelectors || [];
+    // Create comprehensive check code
     const checkCode = `
-      (function() {
-        const selectors = ${JSON.stringify(selectors)};
-        let loggedIn = false;
+      (async function() {
+        const platform = '${platform}';
+        const config = ${JSON.stringify({
+          loginSelectors: platformConfig.loginSelectors,
+          loginIndicators: platformConfig.loginIndicators.map(fn => fn.toString())
+        })};
         
-        for (const selector of selectors) {
+        console.log('[Session Check] Starting check for', platform);
+        console.log('[Session Check] Current URL:', window.location.href);
+        
+        // Method 1: Check selectors
+        let selectorFound = false;
+        for (const selector of config.loginSelectors) {
           try {
             const element = document.querySelector(selector);
             if (element) {
-              loggedIn = true;
+              console.log('[Session Check] Found selector:', selector);
+              selectorFound = true;
               break;
             }
-          } catch (e) {}
-        }
-        
-        // Platform-specific checks
-        if (!loggedIn) {
-          if ('${platform}' === 'chatgpt') {
-            loggedIn = !!document.querySelector('[data-testid="profile-button"]') || 
-                      !!document.querySelector('nav button img');
-          } else if ('${platform}' === 'claude') {
-            const hasChat = !!document.querySelector('[class*="chat"]');
-            const noLogin = !document.querySelector('button:has-text("Log in")');
-            loggedIn = hasChat && noLogin;
+          } catch (e) {
+            console.error('[Session Check] Selector error:', e);
           }
         }
         
-        return { loggedIn, platform: '${platform}' };
+        // Method 2: Execute indicator functions
+        let indicatorPassed = false;
+        for (let i = 0; i < config.loginIndicators.length; i++) {
+          try {
+            const fnStr = config.loginIndicators[i];
+            const fn = new Function('return ' + fnStr)();
+            const result = fn();
+            console.log('[Session Check] Indicator', i, 'result:', result);
+            if (result) {
+              indicatorPassed = true;
+              break;
+            }
+          } catch (e) {
+            console.error('[Session Check] Indicator error:', e);
+          }
+        }
+        
+        // Method 3: Platform-specific checks
+        let platformSpecificCheck = false;
+        if (platform === 'chatgpt') {
+          // Check for ChatGPT specific elements
+          platformSpecificCheck = (
+            window.location.pathname === '/chat' ||
+            window.location.pathname.startsWith('/c/') ||
+            !!document.querySelector('[role="main"]') ||
+            !!document.querySelector('[class*="thread"]') ||
+            !!document.querySelector('[class*="message"]')
+          );
+        }
+        
+        const loggedIn = selectorFound || indicatorPassed || platformSpecificCheck;
+        
+        console.log('[Session Check] Results:', {
+          selectorFound,
+          indicatorPassed,
+          platformSpecificCheck,
+          loggedIn
+        });
+        
+        return { 
+          loggedIn, 
+          platform,
+          url: window.location.href,
+          checks: {
+            selectors: selectorFound,
+            indicators: indicatorPassed,
+            specific: platformSpecificCheck
+          }
+        };
       })();
     `;
     
     const results = await browser.tabs.executeScript(tab.id, { code: checkCode });
-    
     const sessionStatus = results[0];
-    console.log(`[LLM Collector] ${platform} session status:`, sessionStatus);
     
-    // Update backend with session status
+    console.log(`[LLM Collector] ${platform} detailed session check:`, sessionStatus);
+    
+    // Always update backend with session status
     const { apiUrl } = await browser.storage.local.get(['apiUrl']);
     const url = apiUrl || DEFAULT_API_URL;
     
-    await fetch(`${url}/sessions/update?platform=${platform}&valid=${sessionStatus.loggedIn}`, {
-      method: 'POST'
+    const updateResponse = await fetch(`${url}/sessions/update`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        platform: platform,
+        valid: sessionStatus.loggedIn
+      })
     });
+    
+    if (updateResponse.ok) {
+      console.log(`[LLM Collector] ✅ Session status updated for ${platform}: ${sessionStatus.loggedIn}`);
+    }
     
     return sessionStatus.loggedIn;
     
@@ -727,6 +858,42 @@ async function getStats() {
   return { daily_stats: {} };
 }
 
+async function handleSessionVerifyTrigger(platform) {
+  console.log(`[LLM Collector] Session verify trigger for ${platform}`);
+  
+  const triggerFile = `session-verify-${platform}.trigger`;
+  const resultFile = `session-verify-${platform}.result`;
+  
+  try {
+    // Check current session
+    const tabs = await browser.tabs.query({ active: true, currentWindow: true });
+    if (tabs.length > 0) {
+      const isLoggedIn = await checkPlatformSession(platform, tabs[0]);
+      
+      // Save result for backend
+      const result = {
+        platform: platform,
+        valid: isLoggedIn,
+        timestamp: new Date().toISOString()
+      };
+      
+      // Send result to backend
+      const { apiUrl } = await browser.storage.local.get(['apiUrl']);
+      const url = apiUrl || DEFAULT_API_URL;
+      
+      await fetch(`${url}/sessions/verify-result`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(result)
+      });
+      
+      console.log(`[LLM Collector] Verify result sent for ${platform}: ${isLoggedIn}`);
+    }
+  } catch (error) {
+    console.error(`[LLM Collector] Error in verify trigger:`, error);
+  }
+}
+
 // ======================== Event Listeners ========================
 
 // Listen for messages from popup or content scripts
@@ -787,6 +954,26 @@ browser.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
   
   const url = changeInfo.url;
   
+  // Platform detection for automatic session check
+  for (const [platform, config] of Object.entries(PLATFORMS)) {
+    if (url.includes(config.url) && !url.includes('#')) {
+      // Automatically check session when visiting platform
+      console.log(`[LLM Collector] ${platform} page detected, scheduling session check...`);
+      
+      // Wait for page to fully load
+      setTimeout(async () => {
+        try {
+          const isLoggedIn = await checkPlatformSession(platform, tab);
+          console.log(`[LLM Collector] ${platform} auto-check result: ${isLoggedIn}`);
+        } catch (error) {
+          console.error(`[LLM Collector] Auto session check error:`, error);
+        }
+      }, 5000);
+      
+      break;
+    }
+  }
+  
   // Sync trigger detection
   if (url.includes('#sync-trigger') || 
       url.includes('#llm-sync-trigger') ||
@@ -828,6 +1015,20 @@ browser.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
       setTimeout(() => {
         monitorLoginPage(tabId, platform);
       }, 5000); // Wait 5 seconds for page to load
+    }
+  }
+  
+  // Session verify trigger
+  else if (url.includes('#verify-session-')) {
+    const match = url.match(/#verify-session-(\w+)/);
+    if (match && match[1]) {
+      const platform = match[1];
+      await handleSessionVerifyTrigger(platform);
+      
+      // Close tab after verification
+      setTimeout(() => {
+        browser.tabs.remove(tabId).catch(() => {});
+      }, 3000);
     }
   }
   
@@ -885,5 +1086,8 @@ self.addEventListener('unload', () => {
   }
   if (loginCheckInterval) {
     clearInterval(loginCheckInterval);
+  }
+  if (sessionMonitorInterval) {
+    clearInterval(sessionMonitorInterval);
   }
 });

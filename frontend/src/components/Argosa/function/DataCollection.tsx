@@ -1,7 +1,5 @@
-// Related files:
-// - frontend/src/App.tsx
-// - frontend/src/components/Argosa/ArgosaSystem.tsx
-// Location: frontend/src/components/Argosa/function/DataCollection.tsx
+// frontend/src/components/Argosa/function/DataCollection.tsx
+// 자동 세션 관리가 적용된 개선된 버전
 
 import { useState, useEffect, ReactNode, useCallback, useRef } from "react";
 import { motion } from "framer-motion";
@@ -67,7 +65,7 @@ interface LLMConfig {
   sessionValid?: boolean;
   sessionLastChecked?: string;
   sessionExpiresAt?: string;
-  color: string; // Platform color
+  color: string;
 }
 
 interface DailyStats {
@@ -107,7 +105,7 @@ interface SyncSettings {
   maxConversations: number;
   randomDelay: number;
   dataRetention: number;
-  firefoxVisible: boolean;  // Added for Firefox visibility control
+  firefoxVisible: boolean;
 }
 
 interface SyncStatus {
@@ -194,7 +192,7 @@ const INITIAL_LLM_CONFIGS: Record<string, LLMConfig> = {
     name: 'Gemini',
     type: 'Google',
     url: 'https://gemini.google.com',
-    enabled: false,  // CHANGED: Default to false
+    enabled: false,
     status: 'disconnected',
     icon: 'G',
     todayCount: 0,
@@ -206,7 +204,7 @@ const INITIAL_LLM_CONFIGS: Record<string, LLMConfig> = {
     name: 'DeepSeek',
     type: 'DeepSeek',
     url: 'https://chat.deepseek.com',
-    enabled: false,  // CHANGED: Default to false
+    enabled: false,
     status: 'disconnected',
     icon: 'DS',
     todayCount: 0,
@@ -318,7 +316,7 @@ export default function DataCollection() {
     maxConversations: 20,
     randomDelay: 5,
     dataRetention: 30,
-    firefoxVisible: true  // Default to visible
+    firefoxVisible: true
   });
   const [currentSyncId, setCurrentSyncId] = useState<string | null>(null);
   const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
@@ -336,6 +334,8 @@ export default function DataCollection() {
   const statsIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const retryConnectionRef = useRef<NodeJS.Timeout | null>(null);
   const sessionUpdateIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const sessionAutoCheckRef = useRef<NodeJS.Timeout | null>(null);
+  const loginCheckIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
   // Update daily totals
   const updateDailyTotals = useCallback(() => {
@@ -477,16 +477,14 @@ export default function DataCollection() {
     }
   }, [backendConnected]);
 
-  // Check session status - FIXED to check all platforms, not just enabled ones
+  // Check session status - 개선된 버전 (자동 세션 체크)
   const checkSessionStatus = useCallback(async (showProgress = false) => {
     if (isCheckingSessions || !backendConnected) return;
     
     setIsCheckingSessions(true);
     setSessionCheckError(null);
-    let hasAnyInvalidSession = false;
     
-    console.log('🔄 Starting session check...');
-    console.log('📍 Current Firefox profile: llm-collector');
+    console.log('🔄 Starting automatic session check...');
     
     try {
       // Check ALL platforms to maintain session status
@@ -514,8 +512,7 @@ export default function DataCollection() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               platform: platform,
-              enabled: false,  // Always pass false to prevent auto-opening
-              debug: true  // Request debug info
+              enabled: config.enabled // Pass actual enabled state for auto-verification
             })
           });
           
@@ -526,8 +523,7 @@ export default function DataCollection() {
               platform,
               valid: sessionData.valid,
               lastChecked: sessionData.lastChecked,
-              expiresAt: sessionData.expiresAt,
-              debugInfo: (sessionData as any).debug  // Check if backend sends debug info
+              expiresAt: sessionData.expiresAt
             });
             
             updatedConfigs[platform] = {
@@ -536,15 +532,9 @@ export default function DataCollection() {
               sessionLastChecked: sessionData.lastChecked,
               sessionExpiresAt: sessionData.expiresAt,
               status: 'disconnected'
-              // NOTE: enabled state is preserved from updatedConfigs
             };
             
             console.log(`✅ ${platform}: sessionValid=${sessionData.valid}`);
-            
-            // Only flag as invalid if it's enabled and invalid
-            if (!sessionData.valid && config.enabled) {
-              hasAnyInvalidSession = true;
-            }
           } else {
             const errorText = await response.text();
             console.error(`❌ Failed to check session for ${platform}:`, response.status, errorText);
@@ -567,12 +557,6 @@ export default function DataCollection() {
       // Update all configs at once after checking all platforms
       setLlmConfigs(updatedConfigs);
       
-      if (hasAnyInvalidSession) {
-        localStorage.setItem('argosa_session_issue', 'true');
-      } else {
-        localStorage.removeItem('argosa_session_issue');
-      }
-      
     } catch (error) {
       setSessionCheckError('Failed to check sessions');
     } finally {
@@ -580,18 +564,26 @@ export default function DataCollection() {
     }
   }, [llmConfigs, isCheckingSessions, backendConnected]);
 
-  // Open login page for specific platform - FIXED to only open requested platform
+  // Start automatic session checking
+  const startAutoSessionCheck = useCallback(() => {
+    if (sessionAutoCheckRef.current) {
+      clearInterval(sessionAutoCheckRef.current);
+    }
+    
+    // Check sessions every 30 seconds
+    sessionAutoCheckRef.current = setInterval(() => {
+      checkSessionStatus(false);
+    }, 30000);
+    
+    console.log('🔄 Started automatic session checking (every 30s)');
+  }, [checkSessionStatus]);
+
+  // Open login page for specific platform - 개선된 버전
   const handleOpenLogin = async (platform: string) => {
     const config = llmConfigs[platform];
     if (!config || openingLoginPlatform || !backendConnected) return;
     
     console.log(`🔐 Opening login for ${platform}`);
-    console.log('📝 Instructions:');
-    console.log('1. A Firefox window will open');
-    console.log('2. Log in to the platform');
-    console.log('3. IMPORTANT: After login, navigate to the main page (not a specific chat)');
-    console.log('4. Wait for "Session active" status to appear here');
-    console.log('5. Do NOT close the browser manually - it will close automatically');
     
     setOpeningLoginPlatform(platform);
     
@@ -618,75 +610,32 @@ export default function DataCollection() {
       
       if (result.success) {
         console.log(`✅ Opening ${config.name} login page`);
-        console.log('Please log in and the session will be automatically detected');
-        console.log('⚠️ Important: Do NOT close the browser window manually!');
-        console.log('The system will detect when login is complete.');
+        console.log('The session will be automatically detected when you log in.');
         
-        // Start monitoring session updates for this specific platform
-        if (sessionUpdateIntervalRef.current) {
-          clearInterval(sessionUpdateIntervalRef.current);
-        }
-        
+        // 로그인 감지를 위한 폴링 시작
         let checkCount = 0;
-        const maxChecks = 60; // 5 minutes max (60 * 5 seconds)
+        const maxChecks = 60; // 최대 5분 (5초 * 60)
         
-        sessionUpdateIntervalRef.current = setInterval(async () => {
+        loginCheckIntervalRef.current = setInterval(async () => {
           checkCount++;
           
-          // Check session status for this platform only
-          const response = await fetch(`${API_BASE_URL}/llm/sessions/check-single`, {
+          // 세션 체크
+          const sessionResponse = await fetch(`${API_BASE_URL}/llm/sessions/check-single`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               platform: platform,
-              enabled: false // Don't trigger re-check
+              enabled: true
             })
           });
           
-          if (response.ok) {
-            const sessionData = await response.json() as SessionCheckResponse;
+          if (sessionResponse.ok) {
+            const sessionData = await sessionResponse.json() as SessionCheckResponse;
             
-            // If still in "checking" status after 30 seconds, assume logged in
-            if (checkCount > 6 && !sessionData.valid) {
-              console.log(`🔧 Auto-updating ${platform} session after timeout`);
+            if (sessionData.valid) {
+              console.log(`✅ ${platform} login detected!`);
               
-              // Force update the session
-              const updateResponse = await fetch(`${API_BASE_URL}/llm/sessions/update`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  platform: platform,
-                  valid: true
-                })
-              });
-              
-              if (updateResponse.ok) {
-                setLlmConfigs(prev => ({
-                  ...prev,
-                  [platform]: {
-                    ...prev[platform],
-                    sessionValid: true,
-                    sessionLastChecked: new Date().toISOString(),
-                    sessionExpiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
-                    status: 'disconnected'
-                  }
-                }));
-                
-                console.log(`✅ ${config.name} session forcefully updated!`);
-                
-                // Clear interval
-                if (sessionUpdateIntervalRef.current) {
-                  clearInterval(sessionUpdateIntervalRef.current);
-                  sessionUpdateIntervalRef.current = null;
-                }
-                
-                // Reload stats after login
-                setTimeout(() => {
-                  loadStats();
-                }, 1000);
-              }
-            } else if (sessionData.valid) {
-              // Session is now valid!
+              // 상태 업데이트
               setLlmConfigs(prev => ({
                 ...prev,
                 [platform]: {
@@ -698,77 +647,44 @@ export default function DataCollection() {
                 }
               }));
               
-              console.log(`✅ ${config.name} session is now valid!`);
-              console.log('You can now close the browser window.');
-              
-              // Clear interval
-              if (sessionUpdateIntervalRef.current) {
-                clearInterval(sessionUpdateIntervalRef.current);
-                sessionUpdateIntervalRef.current = null;
+              setOpeningLoginPlatform(null);
+              if (loginCheckIntervalRef.current) {
+                clearInterval(loginCheckIntervalRef.current);
+                loginCheckIntervalRef.current = null;
               }
               
-              // Reload stats after login
-              setTimeout(() => {
-                loadStats();
-              }, 1000);
+              // 성공 메시지 표시
+              setSuccessMessageText(`${config.name} login successful!`);
+              setShowSuccessMessage(true);
+              setTimeout(() => setShowSuccessMessage(false), 5000);
             }
           }
           
-          // Stop after 5 minutes
-          if (checkCount > maxChecks) {
-            if (sessionUpdateIntervalRef.current) {
-              clearInterval(sessionUpdateIntervalRef.current);
-              sessionUpdateIntervalRef.current = null;
+          // 타임아웃 체크
+          if (checkCount >= maxChecks) {
+            console.log(`⏱️ Login monitoring timeout for ${platform}`);
+            setOpeningLoginPlatform(null);
+            if (loginCheckIntervalRef.current) {
+              clearInterval(loginCheckIntervalRef.current);
+              loginCheckIntervalRef.current = null;
             }
             
-            // Force update if still not valid
-            console.log(`⚠️ ${config.name} login timeout - forcing session update`);
-            
-            const updateResponse = await fetch(`${API_BASE_URL}/llm/sessions/update`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                platform: platform,
-                valid: true
-              })
-            });
-            
-            if (updateResponse.ok) {
-              setLlmConfigs(prev => ({
-                ...prev,
-                [platform]: {
-                  ...prev[platform],
-                  sessionValid: true,
-                  sessionLastChecked: new Date().toISOString(),
-                  sessionExpiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
-                  status: 'disconnected'
-                }
-              }));
-              
-              console.log(`✅ ${config.name} session forcefully updated after timeout!`);
-            } else {
-              setLlmConfigs(prev => ({
-                ...prev,
-                [platform]: {
-                  ...prev[platform],
-                  status: 'disconnected'
-                }
-              }));
-              
-              console.warn(`⚠️ ${config.name} session update failed`);
-            }
+            setLlmConfigs(prev => ({
+              ...prev,
+              [platform]: {
+                ...prev[platform],
+                status: 'disconnected'
+              }
+            }));
           }
-        }, 5000); // Check every 5 seconds
+        }, 5000); // 5초마다 체크
         
       } else {
         console.error(`❌ Failed to open ${config.name} login page`);
         console.error(`Error: ${result.error}`);
         console.error(`Details: ${result.details || 'None'}`);
-        console.error('Troubleshooting:');
-        console.error('1. Make sure Firefox is installed');
-        console.error('2. Create Firefox profile: firefox -P');
-        console.error('3. Name the profile: "llm-collector"');
-        console.error('4. Make sure to save the profile after creating it');
+        
+        setOpeningLoginPlatform(null);
         
         setLlmConfigs(prev => ({
           ...prev,
@@ -781,6 +697,8 @@ export default function DataCollection() {
     } catch (error) {
       console.error(`❌ Failed to open login page: ${error}`);
       
+      setOpeningLoginPlatform(null);
+      
       setLlmConfigs(prev => ({
         ...prev,
         [platform]: {
@@ -788,8 +706,6 @@ export default function DataCollection() {
           status: 'disconnected'
         }
       }));
-    } finally {
-      setOpeningLoginPlatform(null);
     }
   };
 
@@ -809,7 +725,7 @@ export default function DataCollection() {
           setLlmConfigs(prev => {
             const updated = { ...prev };
             Object.keys(updated).forEach(key => {
-              if (updated[key].enabled) { // Only update enabled platforms
+              if (updated[key].enabled) {
                 updated[key].status = key === status.current_platform ? 'syncing' : 'disconnected';
               }
             });
@@ -832,7 +748,7 @@ export default function DataCollection() {
           setLlmConfigs(prev => {
             const updated = { ...prev };
             Object.keys(updated).forEach(key => {
-              if (updated[key].enabled) { // Only reset enabled platforms
+              if (updated[key].enabled) {
                 updated[key].status = 'disconnected';
               }
             });
@@ -852,7 +768,7 @@ export default function DataCollection() {
             console.log(`⚠️ Sync was cancelled.`);
           } else if (status.error === 'session_expired') {
             console.error(`❌ Sync failed: Session expired. Please log in and try again.`);
-            checkSessionStatus(); // Re-check all sessions
+            checkSessionStatus(true); // Re-check all sessions
           } else {
             console.error(`❌ Sync failed: ${status.message}`);
           }
@@ -885,7 +801,7 @@ export default function DataCollection() {
         setLlmConfigs(prev => {
           const updated = { ...prev };
           Object.keys(updated).forEach(key => {
-            if (updated[key].enabled) { // Only reset enabled platforms
+            if (updated[key].enabled) {
               updated[key].status = 'disconnected';
             }
           });
@@ -923,7 +839,10 @@ export default function DataCollection() {
         await loadStats();
         await checkScheduleFailures();
         console.log('🔍 Initial session check...');
-        await checkSessionStatus(false); // Check all platforms
+        await checkSessionStatus(false);
+        
+        // Start automatic session checking
+        startAutoSessionCheck();
         
         // Set up periodic refresh
         statsIntervalRef.current = setInterval(() => {
@@ -941,6 +860,8 @@ export default function DataCollection() {
       if (syncStatusIntervalRef.current) clearInterval(syncStatusIntervalRef.current);
       if (retryConnectionRef.current) clearInterval(retryConnectionRef.current);
       if (sessionUpdateIntervalRef.current) clearInterval(sessionUpdateIntervalRef.current);
+      if (sessionAutoCheckRef.current) clearInterval(sessionAutoCheckRef.current);
+      if (loginCheckIntervalRef.current) clearInterval(loginCheckIntervalRef.current);
     };
   }, []); // Empty deps - only run once
 
@@ -964,9 +885,8 @@ export default function DataCollection() {
     }
   }, [isRunning, currentSyncId, backendConnected, checkSyncStatus]);
 
-  // Save configs - FIXED to properly save enabled state
+  // Save configs
   useEffect(() => {
-    // Deep clone the configs to ensure all properties are saved
     const configsToSave: Record<string, LLMConfig> = {};
     Object.keys(llmConfigs).forEach(key => {
       configsToSave[key] = { ...llmConfigs[key] };
@@ -975,7 +895,6 @@ export default function DataCollection() {
     const jsonString = JSON.stringify(configsToSave);
     localStorage.setItem('llmConfigs', jsonString);
     
-    // Debug logging
     console.log('Saving configs to localStorage:', configsToSave);
     console.log('Enabled states:', Object.entries(configsToSave).map(([k, v]) => `${k}: ${v.enabled}`).join(', '));
     
@@ -1052,7 +971,7 @@ export default function DataCollection() {
     await checkSessionStatus(true);
   };
 
-  // Handle sync now - FIXED validation logic
+  // Handle sync now
   const handleSyncNow = async () => {
     console.log('🔍 Sync button clicked');
     
@@ -1067,10 +986,6 @@ export default function DataCollection() {
       const isConnected = await checkBackendConnection();
       if (!isConnected) {
         console.error('❌ Cannot connect to backend server');
-        console.error('Please ensure:');
-        console.error('1. Backend server is running: python main.py');
-        console.error('2. Server is on http://localhost:8000');
-        console.error('3. Check firewall settings');
         return;
       }
     }
@@ -1087,7 +1002,7 @@ export default function DataCollection() {
     }
     
     // Force session check before sync
-    console.log('🔄 Force checking sessions before sync...');
+    console.log('🔄 Checking sessions before sync...');
     await checkSessionStatus(false);
     
     // Wait a bit for state to update
@@ -1109,80 +1024,29 @@ export default function DataCollection() {
       const updatedEnabledPlatforms = Object.entries(latestConfigs)
         .filter(([_, config]) => config.enabled);
       
-      console.log(`✅ Found ${updatedEnabledPlatforms.length} enabled platforms after session check:`, updatedEnabledPlatforms.map(([key]) => key));
+      console.log(`✅ Found ${updatedEnabledPlatforms.length} enabled platforms after session check:`, 
+        updatedEnabledPlatforms.map(([key]) => key));
       
       if (updatedEnabledPlatforms.length === 0) {
         console.error('❌ Please enable at least one platform.');
         return;
       }
       
-      // Check sessions (enabled platforms only)
-      const invalidSessions = updatedEnabledPlatforms
-        .filter(([_, config]) => !config.sessionValid)
-        .map(([_, config]) => config.name);
-      
-      console.log('📋 Frontend session status check:');
-      updatedEnabledPlatforms.forEach(([key, config]) => {
-        console.log(`  - ${config.name} (${key}): sessionValid=${config.sessionValid}, sessionLastChecked=${config.sessionLastChecked}`);
-      });
-      
-      if (invalidSessions.length > 0) {
-        console.error(`⚠️ Frontend shows session expired for: ${invalidSessions.join(', ')}`);
-        console.error('Please log in to these platforms first.');
-        return;
-      }
-    
-      console.log('🚀 Frontend checks passed, validating with backend...');
-      
-      console.log('🚀 Frontend checks passed, now calling backend...');
-      console.log('📤 Enabled platforms being sent:', updatedEnabledPlatforms.map(([key, config]) => ({
-        platform: key,
-        sessionValid: config.sessionValid,
-        lastChecked: config.sessionLastChecked
-      })));
-      
-      // Let's see what backend validation says before main request
-      console.log('🔍 Pre-flight check: Testing backend session validation...');
-      for (const [platform, config] of updatedEnabledPlatforms) {
-        try {
-          const testResponse = await fetch(`${API_BASE_URL}/llm/sessions/check-single`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              platform: platform,
-              enabled: false
-            })
-          });
-          
-          if (testResponse.ok) {
-            const testData = await testResponse.json();
-            console.log(`📊 ${platform} backend check:`, {
-              frontend: config.sessionValid,
-              backend: testData.valid,
-              match: config.sessionValid === testData.valid
-            });
-          }
-        } catch (e) {
-          console.error(`❌ Failed to check ${platform}:`, e);
-        }
-      }
+      // Session validation will be handled by backend automatically
+      console.log('🚀 Starting sync process...');
       
       setIsRunning(true);
       
       try {
-        // Use the validated enabled platforms
-        const finalValidPlatforms = updatedEnabledPlatforms
-          .filter(([_, config]) => config.enabled && config.sessionValid);
-          
         const requestBody = {
-          platforms: finalValidPlatforms
+          platforms: updatedEnabledPlatforms
             .map(([key, config]) => ({
               platform: key,
               enabled: true
             })),
           settings: {
             ...syncSettings,
-            debug: syncSettings.firefoxVisible  // Use firefoxVisible for debug mode
+            debug: syncSettings.firefoxVisible
           }
         };
         
@@ -1199,7 +1063,6 @@ export default function DataCollection() {
         });
         
         console.log('📥 Response status:', response.status);
-        console.log('📥 Response headers:', response.headers);
         
         const responseText = await response.text();
         console.log('📥 Response text:', responseText);
@@ -1220,42 +1083,16 @@ export default function DataCollection() {
           console.log('✅ Firefox launched successfully!');
           console.log('🆔 Sync ID:', result.sync_id);
           console.log('The extension will now collect conversations.');
-          console.log('Progress will be shown here.');
         } else {
           console.error('❌ Launch failed:', result);
           if (result.invalidSessions) {
-            // Filter to only show invalid sessions for enabled platforms
-            const relevantInvalidSessions = result.invalidSessions.filter((platform: string) =>
-              latestConfigs[platform]?.enabled
-            );
-            
-            if (relevantInvalidSessions.length > 0) {
-              console.error(`❌ Invalid sessions: ${relevantInvalidSessions.join(', ')}`);
-              console.error('Please log in first.');
-              console.error('');
-              console.error('📝 Troubleshooting steps:');
-              console.error('1. Click the "Login" button for each platform');
-              console.error('2. Complete the login process in the opened browser');
-              console.error('3. Wait for "Session active" status to appear');
-              console.error('4. If session doesn\'t activate, try refreshing this page');
-              console.error('5. Make sure Firefox profile "llm-collector" exists');
-              
-              // Update session status for invalid platforms
-              setLlmConfigs(prev => {
-                const updated = { ...prev };
-                relevantInvalidSessions.forEach((platform: string) => {
-                  if (updated[platform]) {
-                    updated[platform].sessionValid = false;
-                  }
-                });
-                return updated;
-              });
-            }
+            // Backend will auto-verify these sessions
+            console.log('⏳ Backend is verifying sessions...');
             
             // Force re-check sessions
             setTimeout(() => {
               checkSessionStatus(true);
-            }, 500);
+            }, 2000);
           } else if (result.reason === 'smart_scheduling') {
             console.log('⚠️ ' + result.error);
           } else {
@@ -1607,6 +1444,15 @@ export default function DataCollection() {
                           </Alert>
                         )}
 
+                        {/* Auto Session Check Notice */}
+                        <Alert className="bg-blue-50 border-blue-200">
+                          <CheckCircle className="h-4 w-4 text-blue-600" />
+                          <AlertDescription className="text-blue-800">
+                            <strong>Automatic Session Management:</strong> Sessions are checked every 30 seconds. 
+                            Just log in once and the system will maintain your session.
+                          </AlertDescription>
+                        </Alert>
+
                         {/* Platform List */}
                         <div className="space-y-2">
                           {Object.entries(llmConfigs).map(([key, config]) => (
@@ -1746,201 +1592,10 @@ export default function DataCollection() {
                           </Button>
                         </div>
 
-                        {/* Session Status Help */}
-                        {Object.entries(llmConfigs).some(([_, config]) => config.enabled && !config.sessionValid) && (
-                          <Alert className="mt-4">
-                            <AlertCircle className="h-4 w-4" />
-                            <AlertDescription>
-                              <strong>Session Required:</strong> Some enabled platforms need login.
-                              <br />
-                              <span className="text-sm">
-                                Click the "Login" button next to each platform, complete the login process, 
-                                and wait for the "Session active" status to appear.
-                              </span>
-                            </AlertDescription>
-                          </Alert>
-                        )}
-
                         {/* Advanced Options */}
                         {showAdvanced && (
                           <Card className="mt-4">
                             <CardContent className="pt-6 space-y-4">
-                              {/* Firefox Profile Debug */}
-                              <div className="p-4 bg-yellow-50 rounded-lg space-y-3">
-                                <div className="flex items-center justify-between">
-                                  <div className="space-y-0.5">
-                                    <Label className="text-base">Firefox Profile Debug</Label>
-                                    <p className="text-sm text-gray-600">
-                                      Check Firefox profile and sessions
-                                    </p>
-                                  </div>
-                                  <Button
-                                    variant="outline"
-                                    size="sm"
-                                    onClick={async () => {
-                                      console.log('🔍 Checking Firefox profile and sessions...');
-                                      console.log('=====================================');
-                                      
-                                      // 1. Check Firefox profile exists
-                                      try {
-                                        const profileResponse = await fetch(`${API_BASE_URL}/llm/debug/firefox-profile`, {
-                                          method: 'GET'
-                                        });
-                                        
-                                        if (profileResponse.ok) {
-                                          const profileData = await profileResponse.json();
-                                          console.log('📦 Firefox Profile Info:', profileData);
-                                        }
-                                      } catch (e) {
-                                        console.error('Failed to check Firefox profile:', e);
-                                      }
-                                      
-                                      // 2. Check each platform's session in detail
-                                      console.log('\n📋 Detailed Session Check:');
-                                      for (const [platform, config] of Object.entries(llmConfigs)) {
-                                        if (!config.enabled) continue;
-                                        
-                                        console.log(`\n🔍 Checking ${platform}...`);
-                                        
-                                        try {
-                                          // Check session with debug flag
-                                          const response = await fetch(`${API_BASE_URL}/llm/sessions/check-single`, {
-                                            method: 'POST',
-                                            headers: { 'Content-Type': 'application/json' },
-                                            body: JSON.stringify({
-                                              platform: platform,
-                                              enabled: false,
-                                              debug: true,
-                                              verbose: true  // Request verbose output
-                                            })
-                                          });
-                                          
-                                          if (response.ok) {
-                                            const data = await response.json();
-                                            console.log(`${platform} session details:`, data);
-                                            
-                                            // Compare with frontend state
-                                            console.log(`Frontend state: sessionValid=${config.sessionValid}`);
-                                            console.log(`Backend state: sessionValid=${data.valid}`);
-                                            
-                                            if (config.sessionValid !== data.valid) {
-                                              console.warn(`⚠️ State mismatch for ${platform}!`);
-                                            }
-                                          } else {
-                                            const errorText = await response.text();
-                                            console.error(`Failed to check ${platform}:`, errorText);
-                                          }
-                                          
-                                          // Also check the actual cookies
-                                          const cookieResponse = await fetch(`${API_BASE_URL}/llm/debug/cookies/${platform}`, {
-                                            method: 'GET'
-                                          });
-                                          
-                                          if (cookieResponse.ok) {
-                                            const cookieData = await cookieResponse.json();
-                                            console.log(`${platform} cookies:`, cookieData);
-                                          }
-                                          
-                                        } catch (e) {
-                                          console.error(`Error checking ${platform}:`, e);
-                                        }
-                                      }
-                                      
-                                      console.log('\n=====================================');
-                                      console.log('✅ Debug check complete. Check console for details.');
-                                    }}
-                                    disabled={!backendConnected}
-                                  >
-                                    Debug Sessions
-                                  </Button>
-                                </div>
-                                
-                                <Alert className="bg-yellow-100 border-yellow-200">
-                                  <AlertCircle className="h-4 w-4 text-yellow-800" />
-                                  <AlertDescription className="text-yellow-800">
-                                    <strong>Session Sync Issues?</strong><br />
-                                    1. Close ALL Firefox windows<br />
-                                    2. Click "Check Profile" button<br />
-                                    3. Re-login to each platform<br />
-                                    4. Wait for "Session active" before syncing<br />
-                                    <br />
-                                    <strong>Still not working?</strong><br />
-                                    Try manual Firefox profile reset:<br />
-                                    <code className="bg-yellow-200 px-1 rounded">rm -rf ~/.mozilla/firefox/*.llm-collector</code>
-                                  </AlertDescription>
-                                </Alert>
-                                
-                                {/* Manual Session Update */}
-                                <div className="p-4 bg-green-50 rounded-lg space-y-3">
-                                  <div className="flex items-center justify-between">
-                                    <div className="space-y-0.5">
-                                      <Label className="text-base">Manual Session Update</Label>
-                                      <p className="text-sm text-gray-600">
-                                        If login was successful but session not detected
-                                      </p>
-                                    </div>
-                                    <Button
-                                      variant="outline"
-                                      size="sm"
-                                      onClick={async () => {
-                                        console.log('🔧 Manually updating sessions...');
-                                        
-                                        // Get enabled platforms
-                                        const enabledPlatforms = Object.entries(llmConfigs)
-                                          .filter(([_, config]) => config.enabled)
-                                          .map(([key]) => key);
-                                        
-                                        for (const platform of enabledPlatforms) {
-                                          console.log(`📝 Updating ${platform} session...`);
-                                          
-                                          try {
-                                            const response = await fetch(`${API_BASE_URL}/llm/sessions/update`, {
-                                              method: 'POST',
-                                              headers: { 'Content-Type': 'application/json' },
-                                              body: JSON.stringify({
-                                                platform: platform,
-                                                valid: true
-                                              })
-                                            });
-                                            
-                                            if (response.ok) {
-                                              const result = await response.json();
-                                              console.log(`✅ ${platform} session updated:`, result);
-                                            } else {
-                                              console.error(`❌ Failed to update ${platform} session`);
-                                            }
-                                          } catch (error) {
-                                            console.error(`❌ Error updating ${platform}:`, error);
-                                          }
-                                        }
-                                        
-                                        // Refresh session status
-                                        setTimeout(() => {
-                                          checkSessionStatus(true);
-                                        }, 1000);
-                                        
-                                        setSuccessMessageText('Sessions manually updated');
-                                        setShowSuccessMessage(true);
-                                        setTimeout(() => setShowSuccessMessage(false), 5000);
-                                      }}
-                                      disabled={!backendConnected || isCheckingSessions}
-                                    >
-                                      Force Update Sessions
-                                    </Button>
-                                  </div>
-                                  
-                                  <Alert className="bg-green-100 border-green-200">
-                                    <AlertCircle className="h-4 w-4 text-green-800" />
-                                    <AlertDescription className="text-green-800">
-                                      <strong>Use this if:</strong><br />
-                                      1. You logged in successfully<br />
-                                      2. But session shows as "Login required"<br />
-                                      3. Extension may not be working properly
-                                    </AlertDescription>
-                                  </Alert>
-                                </div>
-                              </div>
-
                               {/* Firefox Visibility Toggle */}
                               <div className="flex items-center justify-between p-4 bg-gray-50 rounded-lg">
                                 <div className="space-y-0.5">
@@ -2017,7 +1672,7 @@ export default function DataCollection() {
                               <Alert>
                                 <AlertCircle className="h-4 w-4" />
                                 <AlertDescription>
-                                  All settings are automatically saved when changed. No need to click save buttons!
+                                  All settings are automatically saved when changed.
                                   <br />
                                   <button
                                     className="text-blue-600 underline text-sm mt-2"

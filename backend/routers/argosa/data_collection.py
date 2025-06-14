@@ -1,4 +1,4 @@
-# backend/routers/argosa/data_collection.py - 통합된 Argosa 데이터 수집 시스템
+# backend/routers/argosa/data_collection.py - 통합된 Argosa 데이터 수집 시스템 (세션 관리 개선)
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, HTTPException, BackgroundTasks, UploadFile, File
 from typing import Dict, List, Optional, Any
@@ -281,6 +281,120 @@ async def should_sync_today(platform: str) -> bool:
         print(f"Error checking sync necessity: {e}")
         return True
 
+# ======================== 개선된 세션 관리 함수 ========================
+
+async def verify_session_with_firefox(platform: str) -> bool:
+    """Firefox를 통해 실제 세션 상태를 확인"""
+    print(f"[Session] Verifying {platform} session with Firefox...")
+    
+    try:
+        # Platform URLs
+        platform_urls = {
+            'chatgpt': 'https://chat.openai.com',
+            'claude': 'https://claude.ai',
+            'gemini': 'https://gemini.google.com',
+            'deepseek': 'https://chat.deepseek.com',
+            'grok': 'https://grok.x.ai',
+            'perplexity': 'https://www.perplexity.ai'
+        }
+        
+        if platform not in platform_urls:
+            return False
+        
+        # 세션 체크 트리거 파일 생성
+        trigger_file = SYNC_STATUS_PATH / f"session-verify-{platform}.trigger"
+        trigger_file.write_text(json.dumps({
+            "platform": platform,
+            "action": "verify_session",
+            "timestamp": datetime.now().isoformat()
+        }))
+        
+        # Firefox 실행
+        firefox_cmd = get_firefox_command("llm-collector")
+        check_url = f"{platform_urls[platform]}#verify-session-{platform}"
+        
+        process = subprocess.Popen(firefox_cmd + [check_url])
+        
+        # 결과 파일 경로
+        result_file = SYNC_STATUS_PATH / f"session-verify-{platform}.result"
+        
+        # 최대 15초 대기
+        max_wait = 15
+        for i in range(max_wait):
+            await asyncio.sleep(1)
+            
+            # Extension이 결과를 저장했는지 확인
+            if result_file.exists():
+                try:
+                    with open(result_file, 'r') as f:
+                        result = json.load(f)
+                    
+                    # 정리
+                    trigger_file.unlink()
+                    result_file.unlink()
+                    
+                    # Firefox 종료
+                    try:
+                        if platform.system() == "Windows":
+                            subprocess.run(["taskkill", "/F", "/PID", str(process.pid)], capture_output=True)
+                        else:
+                            process.terminate()
+                    except:
+                        pass
+                    
+                    return result.get("valid", False)
+                except:
+                    pass
+        
+        # 시간 초과
+        print(f"[Session] Verification timeout for {platform}")
+        
+        # 정리
+        try:
+            trigger_file.unlink()
+            if result_file.exists():
+                result_file.unlink()
+            process.terminate()
+        except:
+            pass
+        
+        return False
+        
+    except Exception as e:
+        print(f"[Session] Error verifying {platform}: {e}")
+        return False
+
+async def update_session_status(platform: str, valid: bool, auto_verify: bool = True):
+    """세션 상태 업데이트 - 자동 검증 포함"""
+    print(f"[Session] Updating {platform}: valid={valid}, auto_verify={auto_verify}")
+    
+    # auto_verify가 True이고 valid가 False인 경우 실제 검증
+    if auto_verify and not valid:
+        actual_valid = await verify_session_with_firefox(platform)
+        if actual_valid:
+            print(f"[Session] Verification showed {platform} is actually logged in!")
+            valid = True
+    
+    # 세션 데이터 업데이트
+    session_data = {}
+    if SESSION_DATA_PATH.exists():
+        with open(SESSION_DATA_PATH, 'r') as f:
+            session_data = json.load(f)
+    
+    session_data[platform] = {
+        "valid": valid,
+        "lastChecked": datetime.now().isoformat(),
+        "expiresAt": (datetime.now() + timedelta(days=7)).isoformat() if valid else None,
+        "status": "active" if valid else "expired"
+    }
+    
+    SESSION_DATA_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with open(SESSION_DATA_PATH, 'w') as f:
+        json.dump(session_data, f, indent=2)
+    
+    print(f"[Session] Updated {platform}: valid={valid}")
+    return valid
+
 # ======================== Data Collection Helper Functions ========================
 
 async def analyze_chat_messages(messages: List[ChatMessage]) -> List[Dict[str, Any]]:
@@ -403,43 +517,6 @@ async def cleanup_expired_sessions():
             
     except Exception as e:
         print(f"[Session] Error cleaning sessions: {e}")
-
-async def trigger_session_check_in_firefox(platform: str, profile_name: str = "llm-collector"):
-    """Firefox를 열어서 세션 체크를 트리거"""
-    try:
-        # 세션 체크 트리거 파일 생성
-        trigger_file = SYNC_STATUS_PATH / f"session-check-{platform}.trigger"
-        trigger_file.write_text(json.dumps({
-            "platform": platform,
-            "action": "check_session",
-            "timestamp": datetime.now().isoformat()
-        }))
-        
-        # Firefox 실행 (특별한 URL로)
-        firefox_cmd = get_firefox_command(profile_name)
-        check_url = f"about:blank#check-session-{platform}"
-        
-        process = subprocess.Popen(firefox_cmd + [check_url])
-        
-        # 30초 후 자동으로 Firefox 종료
-        async def auto_close():
-            await asyncio.sleep(30)
-            try:
-                if platform.system() == "Windows":
-                    subprocess.run(["taskkill", "/F", "/PID", str(process.pid)], capture_output=True)
-                else:
-                    process.terminate()
-            except:
-                pass
-        
-        # 백그라운드에서 자동 종료 실행
-        asyncio.create_task(auto_close())
-        
-        return True
-        
-    except Exception as e:
-        print(f"[Session Check] Failed to trigger check: {e}")
-        return False
 
 # ======================== Initialization ========================
 
@@ -914,7 +991,7 @@ async def check_sessions(request: SessionCheckRequest):
 
 @router.post("/llm/sessions/check-single")
 async def check_single_session(request: SingleSessionCheckRequest):
-    """단일 플랫폼의 세션 상태 확인"""
+    """단일 플랫폼의 세션 상태 확인 - 개선된 버전"""
     print(f"\n[Session Check] Platform: {request.platform}, Enabled: {request.enabled}", flush=True)
     
     try:
@@ -929,44 +1006,39 @@ async def check_single_session(request: SingleSessionCheckRequest):
         session_info = session_data.get(request.platform, {})
         print(f"[Session Check] Session info for {request.platform}: {session_info}", flush=True)
         
-        expires_at = session_info.get("expiresAt")
-        if expires_at:
-            expires_date = datetime.fromisoformat(expires_at)
-            is_valid = expires_date > datetime.now()
-            print(f"[Session Check] Has expiry date: {expires_at}, Valid: {is_valid}", flush=True)
+        # status가 "checking"이면 valid로 간주
+        if session_info.get("status") == "checking":
+            print(f"[Session Check] Status is 'checking', assuming valid", flush=True)
+            # 자동으로 valid로 업데이트
+            is_valid = await update_session_status(request.platform, True, auto_verify=False)
         else:
-            last_checked = session_info.get("lastChecked")
-            if last_checked:
-                last_date = datetime.fromisoformat(last_checked)
-                hours_since = (datetime.now() - last_date).total_seconds() / 3600
-                # 24시간 이내면 유효한 것으로 간주
-                is_valid = hours_since < 24
-                print(f"[Session Check] Last checked: {last_checked}, Hours since: {hours_since:.1f}, Valid: {is_valid}", flush=True)
+            expires_at = session_info.get("expiresAt")
+            if expires_at:
+                expires_date = datetime.fromisoformat(expires_at)
+                is_valid = expires_date > datetime.now()
+                print(f"[Session Check] Has expiry date: {expires_at}, Valid: {is_valid}", flush=True)
             else:
-                is_valid = False
-                print(f"[Session Check] No session info, Valid: False", flush=True)
+                last_checked = session_info.get("lastChecked")
+                if last_checked:
+                    last_date = datetime.fromisoformat(last_checked)
+                    hours_since = (datetime.now() - last_date).total_seconds() / 3600
+                    # 24시간 이내면 유효한 것으로 간주
+                    is_valid = hours_since < 24
+                    print(f"[Session Check] Last checked: {last_checked}, Hours since: {hours_since:.1f}, Valid: {is_valid}", flush=True)
+                else:
+                    is_valid = False
+                    print(f"[Session Check] No session info, Valid: False", flush=True)
         
-        # 실제 세션 체크가 필요한 경우 Firefox 트리거
-        if request.enabled and not is_valid:
-            print(f"[Session Check] Session invalid and platform enabled, considering Firefox trigger", flush=True)
-            # 마지막 체크로부터 1시간 이상 지났으면 실제 체크
-            should_recheck = True
-            if session_info.get("lastChecked"):
-                last_date = datetime.fromisoformat(session_info["lastChecked"])
-                hours_since_check = (datetime.now() - last_date).total_seconds() / 3600
-                should_recheck = hours_since_check > 1
-                print(f"[Session Check] Hours since last check: {hours_since_check:.1f}, Should recheck: {should_recheck}", flush=True)
-            
-            if should_recheck:
-                print(f"[Session Check] Triggering Firefox session check", flush=True)
-                # Firefox를 통한 실제 세션 체크 트리거
-                await trigger_session_check_in_firefox(request.platform)
+        # 세션이 invalid이고 enabled인 경우 자동 검증
+        if not is_valid and request.enabled:
+            print(f"[Session Check] Session invalid and enabled, attempting auto-verification...", flush=True)
+            is_valid = await update_session_status(request.platform, False, auto_verify=True)
         
         response = {
             "platform": request.platform,
             "valid": is_valid,
             "lastChecked": session_info.get("lastChecked", datetime.now().isoformat()),
-            "expiresAt": expires_at
+            "expiresAt": session_info.get("expiresAt")
         }
         
         print(f"[Session Check] Returning: {json.dumps(response, indent=2)}", flush=True)
@@ -1045,57 +1117,23 @@ async def open_login_page(request: OpenLoginRequest):
         }
 
 @router.post("/llm/sessions/update")
-async def update_session_status(update: SessionUpdate):
+async def update_session_status_endpoint(update: SessionUpdate):
     """Extension에서 세션 상태 업데이트 (개선된 버전)"""
-    print(f"\n[Session Update] Platform: {update.platform}, Valid: {update.valid}", flush=True)
+    print(f"\n[Session Update] ===== RECEIVED UPDATE =====", flush=True)
+    print(f"[Session Update] Platform: {update.platform}, Valid: {update.valid}", flush=True)
+    print(f"[Session Update] Request from Extension detected!", flush=True)
     
     try:
-        session_data = {}
-        if SESSION_DATA_PATH.exists():
-            with open(SESSION_DATA_PATH, 'r') as f:
-                session_data = json.load(f)
-            print(f"[Session Update] Existing data: {json.dumps(session_data, indent=2)}", flush=True)
+        # 세션 상태 업데이트 (자동 검증 없이)
+        await update_session_status(update.platform, update.valid, auto_verify=False)
         
-        # 세션 유효기간을 7일로 설정
-        expires_at = None
-        if update.valid:
-            expires_at = (datetime.now() + timedelta(days=7)).isoformat()
+        print(f"[Session Update] ✅ Successfully updated {update.platform} session", flush=True)
+        print(f"[Session Update] ===== UPDATE COMPLETE =====\n", flush=True)
         
-        # 세션 정보 저장
-        session_info = {
-            "valid": update.valid,
-            "lastChecked": datetime.now().isoformat(),
-            "expiresAt": expires_at,
-            "status": "active" if update.valid else "expired"
-        }
-        
-        # 추가 정보가 있으면 저장 (cookies, headers 등)
-        if update.cookies:
-            session_info["cookies"] = update.cookies
-        if update.headers:
-            session_info["headers"] = update.headers
-        
-        session_data[update.platform] = session_info
-        
-        # 디렉토리 생성 및 파일 저장
-        SESSION_DATA_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with open(SESSION_DATA_PATH, 'w') as f:
-            json.dump(session_data, f, indent=2)
-        
-        print(f"[Session Update] ✅ Updated {update.platform} session: valid={update.valid}, expires={expires_at}", flush=True)
-        print(f"[Session Update] Saved to: {SESSION_DATA_PATH}", flush=True)
-        
-        # 세션 백업 (추가 안전장치)
-        backup_path = SESSION_DATA_PATH.parent / f"sessions_backup_{datetime.now().strftime('%Y%m%d')}.json"
-        with open(backup_path, 'w') as f:
-            json.dump(session_data, f, indent=2)
-        print(f"[Session Update] Backup saved to: {backup_path}", flush=True)
-        
-        return {"success": True, "expiresAt": expires_at}
+        return {"success": True, "expiresAt": (datetime.now() + timedelta(days=7)).isoformat() if update.valid else None}
         
     except Exception as e:
         print(f"[Session Update] ❌ Error: {e}", flush=True)
-        print(f"[Session Update] Traceback: {traceback.format_exc()}", flush=True)
         return {"success": False, "error": str(e)}
 
 # ======================== Schedule Management ========================
@@ -1129,7 +1167,7 @@ async def get_last_schedule_failure():
 
 @router.post("/llm/firefox/launch")
 async def launch_firefox_sync(request: SyncRequest, background_tasks: BackgroundTasks):
-    """Firefox를 실행하고 Extension sync를 트리거"""
+    """Firefox를 실행하고 Extension sync를 트리거 - 개선된 세션 검증"""
     print(f"\n[Firefox] ===== Launch Request Received =====", flush=True)
     print(f"[Firefox] Request data: {json.dumps(request.dict(), indent=2)}", flush=True)
     
@@ -1153,11 +1191,8 @@ async def launch_firefox_sync(request: SyncRequest, background_tasks: Background
                 "details": "Please enable at least one platform"
             }
         
-        # Skip session validation if requested
-        if skip_session_check:
-            print(f"[Firefox] ⚠️ Skipping session validation (skipSessionCheck=True)", flush=True)
-            invalid_sessions = []
-        else:
+        # 세션 검증을 skip하지 않는 경우
+        if not skip_session_check:
             # sessions.json 읽기
             session_data = {}
             if SESSION_DATA_PATH.exists():
@@ -1173,34 +1208,47 @@ async def launch_firefox_sync(request: SyncRequest, background_tasks: Background
             invalid_sessions = []
             for platform in enabled_platforms:
                 session_info = session_data.get(platform, {})
-                is_valid = session_info.get("valid", False)
                 
-                if not is_valid:
-                    invalid_sessions.append(platform)
+                # status가 "checking"이면 valid로 간주
+                if session_info.get("status") == "checking":
+                    print(f"[Firefox] {platform} is in 'checking' status, treating as valid", flush=True)
+                    await update_session_status(platform, True, auto_verify=False)
+                else:
+                    is_valid = session_info.get("valid", False)
+                    
+                    # 세션이 invalid면 Firefox로 실제 확인
+                    if not is_valid:
+                        print(f"[Firefox] {platform} appears invalid, verifying with Firefox...", flush=True)
+                        actual_valid = await verify_session_with_firefox(platform)
+                        if actual_valid:
+                            print(f"[Firefox] {platform} is actually logged in!", flush=True)
+                            await update_session_status(platform, True, auto_verify=False)
+                        else:
+                            invalid_sessions.append(platform)
+                
+            print(f"[Firefox] Invalid sessions after verification: {invalid_sessions}", flush=True)
             
-            print(f"[Firefox] Invalid sessions: {invalid_sessions}", flush=True)
-        
-        if invalid_sessions and not skip_session_check:
-            print(f"[Firefox] ❌ Session validation failed", flush=True)
-            
-            failure_data = {
-                "reason": "session_expired",
-                "timestamp": datetime.now().isoformat(),
-                "details": {
-                    "invalid_sessions": invalid_sessions,
-                    "message": f"Invalid sessions for: {', '.join(invalid_sessions)}"
+            if invalid_sessions:
+                print(f"[Firefox] ❌ Session validation failed", flush=True)
+                
+                failure_data = {
+                    "reason": "session_expired",
+                    "timestamp": datetime.now().isoformat(),
+                    "details": {
+                        "invalid_sessions": invalid_sessions,
+                        "message": f"Invalid sessions for: {', '.join(invalid_sessions)}"
+                    }
                 }
-            }
-            
-            SCHEDULE_FAILURE_PATH.parent.mkdir(parents=True, exist_ok=True)
-            with open(SCHEDULE_FAILURE_PATH, 'w') as f:
-                json.dump(failure_data, f, indent=2)
-            
-            return {
-                "success": False,
-                "error": f"Invalid sessions for: {', '.join(invalid_sessions)}",
-                "invalidSessions": invalid_sessions
-            }
+                
+                SCHEDULE_FAILURE_PATH.parent.mkdir(parents=True, exist_ok=True)
+                with open(SCHEDULE_FAILURE_PATH, 'w') as f:
+                    json.dump(failure_data, f, indent=2)
+                
+                return {
+                    "success": False,
+                    "error": f"Invalid sessions for: {', '.join(invalid_sessions)}",
+                    "invalidSessions": invalid_sessions
+                }
         
         print(f"[Firefox] ✅ All sessions valid or skip session check enabled", flush=True)
         
@@ -1466,7 +1514,6 @@ async def debug_platform_cookies(platform: str):
     except Exception as e:
         print(f"[Debug] Error: {e}", flush=True)
         return {"error": str(e), "platform": platform}
-    
 
 @router.post("/llm/firefox/toggle-visibility")
 async def toggle_firefox_visibility():

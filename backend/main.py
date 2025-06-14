@@ -59,7 +59,7 @@ app.add_middleware(
 
 # Include routers
 app.include_router(oneai.router, prefix="/api/oneai", tags=["One AI"])
-app.include_router(argosa_router, prefix="/api/argosa", tags=["Argosa"])
+app.include_router(argosa_router, prefix="/api/argosa", tags=["argosa"])
 app.include_router(neuronet.router, prefix="/api/neuronet", tags=["NeuroNet"])
 app.include_router(projects.router, prefix="/projects", tags=["Projects"])
 print(f"[DEBUG] Argosa router paths: {[r.path for r in argosa_router.routes]}", flush=True)
