@@ -80,12 +80,6 @@ export default function WebCrawlerTab({
   // Search States
   const [webSearchQuery, setWebSearchQuery] = useState('');
   const [searchObjective, setSearchObjective] = useState('');
-  const [searchSources, setSearchSources] = useState({
-    apis: true,
-    websites: false,
-    focused: false,
-    ai_enhanced: true
-  });
   const [isSearching, setIsSearching] = useState(false);
   const [searchResults, setSearchResults] = useState<SearchResults | null>(null);
   
@@ -102,28 +96,18 @@ export default function WebCrawlerTab({
     setSearchResults(null);
     
     try {
-      // Prepare search sources
-      const sources = [];
-      if (searchSources.apis) sources.push('apis');
-      if (searchSources.websites) sources.push('websites');
-      if (searchSources.focused) sources.push('focused');
-      
+      // API 호출을 위한 context 구성
       const context: any = {
-        objective: searchObjective,
-        ai_enhanced: searchSources.ai_enhanced
+        objective: searchObjective || undefined
       };
-      
-      // Add Firefox profile path if available
-      if (systemState.firefox_status === 'ready') {
-        context.firefox_profile_path = '/path/to/firefox/profile'; // This should come from backend
-      }
       
       const response = await fetch(`${apiBaseUrl}/crawler/search`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           query: webSearchQuery,
-          context: context
+          context: context,
+          timeout: 300 // 5분 타임아웃
         })
       });
       
@@ -236,52 +220,6 @@ export default function WebCrawlerTab({
                 disabled={isSearching}
                 className="mt-1"
               />
-            </div>
-
-            <div>
-              <Label>Search Sources</Label>
-              <div className="grid grid-cols-2 gap-2 mt-2">
-                <label className="flex items-center space-x-2">
-                  <input
-                    type="checkbox"
-                    checked={searchSources.apis}
-                    onChange={(e) => setSearchSources(prev => ({ ...prev, apis: e.target.checked }))}
-                    disabled={isSearching}
-                    className="rounded"
-                  />
-                  <span className="text-sm">APIs (Google, News)</span>
-                </label>
-                <label className="flex items-center space-x-2">
-                  <input
-                    type="checkbox"
-                    checked={searchSources.websites}
-                    onChange={(e) => setSearchSources(prev => ({ ...prev, websites: e.target.checked }))}
-                    disabled={isSearching}
-                    className="rounded"
-                  />
-                  <span className="text-sm">Direct Website Crawl</span>
-                </label>
-                <label className="flex items-center space-x-2">
-                  <input
-                    type="checkbox"
-                    checked={searchSources.focused}
-                    onChange={(e) => setSearchSources(prev => ({ ...prev, focused: e.target.checked }))}
-                    disabled={isSearching}
-                    className="rounded"
-                  />
-                  <span className="text-sm">Focused Sites</span>
-                </label>
-                <label className="flex items-center space-x-2">
-                  <input
-                    type="checkbox"
-                    checked={searchSources.ai_enhanced}
-                    onChange={(e) => setSearchSources(prev => ({ ...prev, ai_enhanced: e.target.checked }))}
-                    disabled={isSearching}
-                    className="rounded"
-                  />
-                  <span className="text-sm">AI Enhancement</span>
-                </label>
-              </div>
             </div>
           </div>
         </CardContent>

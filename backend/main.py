@@ -17,10 +17,10 @@ from storage import ensure_directories
 
 # Router imports
 from routers import oneai, neuronet, projects
-from backend.routers.argosa import router as argosa_router
+from routers.argosa import router as argosa_router
 
 # argosa의 initialize와 shutdown 함수는 __init__.py에서 export되었으므로 같이 import
-from backend.routers.argosa import initialize as argosa_initialize, shutdown as argosa_shutdown
+from routers.argosa import initialize as argosa_initialize, shutdown as argosa_shutdown
 
 # 전역 변수
 shutdown_event = asyncio.Event()

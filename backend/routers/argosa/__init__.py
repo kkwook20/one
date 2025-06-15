@@ -3,6 +3,7 @@
 
 from fastapi import APIRouter
 import logging
+import traceback
 
 # Create main router with prefix and tags
 router = APIRouter(prefix="/api/argosa", tags=["argosa"])
@@ -53,6 +54,10 @@ except ImportError as e:
 try:
     from .data_collection import router as collection_router
     router.include_router(collection_router, prefix="/data", tags=["Data Collection"])
+    logger.info("[Argosa] data_collection router loaded successfully")
+except ImportError as e:
+    logger.error(f"[Argosa] Failed to import data_collection: {e}")
+    traceback.print_exc()
     
     # Collection 서브모듈들 추가
     try:
@@ -72,9 +77,6 @@ try:
         router.include_router(crawler_router, prefix="/data", tags=["Web Crawler"])
     except ImportError:
         logger.info("[Argosa] web_crawler_agent module not found")
-        
-except ImportError:
-    logger.warning("[Argosa] data_collection module not found")
 
 # 기타 모듈들
 try:
@@ -103,7 +105,7 @@ except ImportError:
 
 try:
     from .user_input import router as user_router
-    router.include_router(user_router, prefix="/user", tags=["User Input"])
+    router.include_router(user_input, prefix="/user", tags=["User Input"])
 except ImportError:
     logger.info("[Argosa] user_input module not found")
 

@@ -49,6 +49,7 @@ interface LLMConversationTabProps {
   onSuccess: (message: string) => void;
   onError: (error: string) => void;
   apiBaseUrl: string;
+  wsRef?: React.MutableRefObject<WebSocket | null>;
 }
 
 interface LLMConfig {
@@ -203,7 +204,8 @@ export default function LLMConversationTab({
   loadStats,
   onSuccess,
   onError,
-  apiBaseUrl
+  apiBaseUrl,
+  wsRef
 }: LLMConversationTabProps) {
   // ==================== State Management ====================
   
@@ -260,54 +262,37 @@ export default function LLMConversationTab({
   // Timer refs
   const sessionAutoCheckRef = useRef<NodeJS.Timeout | null>(null);
   const loginCheckIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const websocketRef = wsRef || { current: null }; // fallback if not provided
   
   // ==================== API Functions ====================
   
   const loadScheduleFailure = useCallback(async () => {
-    try {
-      const response = await fetch(`${apiBaseUrl}/llm/schedule/last-failure`);
-      if (response.ok) {
-        const data = await response.json();
-        if (data.failure) {
-          setScheduleFailure(data);
-        } else {
-          setScheduleFailure(null);
-        }
-      }
-    } catch (error) {
-      console.error('Failed to load schedule failure:', error);
-    }
-  }, [apiBaseUrl]);
+    // Schedule failure는 systemState에서 직접 확인
+    // 백엔드에 별도 엔드포인트가 없음
+  }, []);
   
   const checkSessionManual = async (platform: string) => {
     setCheckingSession(platform);
     
     try {
-      const response = await fetch(`${apiBaseUrl}/sessions/check-immediate`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          platform, 
-          force_fresh: true 
-        })
-      });
+      // 세션 정보는 WebSocket을 통해 자동 업데이트되므로
+      // 현재 상태를 확인하기만 하면 됨
+      const sessionInfo = systemState.sessions[platform];
       
-      if (response.ok) {
-        const result = await response.json();
+      if (!sessionInfo) {
+        // 세션 정보가 없으면 강제로 체크 요청
+        console.log(`No session info for ${platform}, waiting for update...`);
         
-        // Update local state immediately
-        setSystemState(prev => ({
-          ...prev,
-          sessions: {
-            ...prev.sessions,
-            [platform]: result
-          }
-        }));
-        
-        return result.valid;
+        // WebSocket이 연결되어 있다면 state update를 기다림
+        if (websocketRef?.current?.readyState === WebSocket.OPEN) {
+          // 잠시 대기 후 다시 확인
+          await new Promise(resolve => setTimeout(resolve, 2000));
+          const updatedInfo = systemState.sessions[platform];
+          return updatedInfo?.valid || false;
+        }
       }
       
-      return false;
+      return sessionInfo?.valid || false;
       
     } catch (error) {
       console.error('Session check error:', error);
@@ -340,7 +325,7 @@ export default function LLMConversationTab({
   const startSync = async () => {
     const enabledPlatforms = Object.values(platformConfigs)
       .filter(p => p.enabled)
-      .map(p => ({ platform: p.key, enabled: true }));
+      .map(p => p.key);
     
     if (enabledPlatforms.length === 0) {
       onSuccess('Please enable at least one platform');
@@ -349,7 +334,7 @@ export default function LLMConversationTab({
     
     // Check sessions before sync
     const invalidSessions = [];
-    for (const { platform } of enabledPlatforms) {
+    for (const platform of enabledPlatforms) {
       const sessionInfo = systemState.sessions[platform];
       if (!sessionInfo?.valid) {
         invalidSessions.push(platform);
@@ -368,74 +353,48 @@ export default function LLMConversationTab({
     }
     
     try {
-      const response = await fetch(`${apiBaseUrl}/llm/firefox/launch`, {
+      // Native Messaging을 통한 수집
+      const response = await fetch(`${apiBaseUrl}/collect/start`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           platforms: enabledPlatforms,
           settings: {
             ...syncSettings,
-            debug: syncSettings.firefoxVisible
+            visible: syncSettings.firefoxVisible
           }
         })
       });
       
       if (!response.ok) {
         const error = await response.json();
-        
-        if (error.invalidSessions?.length > 0) {
-          const platformNames = error.invalidSessions.map((p: string) => 
-            PLATFORMS[p]?.name || p
-          ).join(', ');
-          
-          onError(`Invalid sessions for: ${platformNames}. Please log in and try again.`);
-          
-          // Update session states
-          setSystemState(prev => {
-            const updatedSessions = { ...prev.sessions };
-            error.invalidSessions.forEach((platform: string) => {
-              if (updatedSessions[platform]) {
-                updatedSessions[platform].valid = false;
-              }
-            });
-            return { ...prev, sessions: updatedSessions };
-          });
-          
-          // Offer to open login
-          if (window.confirm(`${platformNames} requires login.\n\nWould you like to open the login page?`)) {
-            openLoginPage(error.invalidSessions[0]);
-          }
-        } else if (error.reason === 'smart_scheduling') {
-          onSuccess('Sync skipped: Data is already up to date');
-        } else {
-          throw new Error(error.detail || error.error || 'Sync failed');
-        }
-        
-        return;
+        throw new Error(error.detail || error.error || 'Collection failed');
       }
       
       const result = await response.json();
-      console.log('Sync started:', result);
+      console.log('Collection started:', result);
+      
+      if (result.success) {
+        onSuccess(`Collected ${result.collected} conversations (${result.excluded_llm || 0} LLM queries excluded)`);
+      } else {
+        throw new Error(result.error || 'Collection failed');
+      }
       
       // Clear any schedule failure
       setScheduleFailure(null);
       
+      // Reload stats
+      await loadStats();
+      
     } catch (error: any) {
-      console.error('Failed to start sync:', error);
+      console.error('Failed to start collection:', error);
       onError(`Error: ${error.message}`);
     }
   };
   
   const cancelSync = async () => {
-    if (!systemState.sync_status?.sync_id) return;
-    
-    try {
-      await fetch(`${apiBaseUrl}/llm/sync/cancel/${systemState.sync_status.sync_id}`, {
-        method: 'POST'
-      });
-    } catch (error) {
-      console.error('Failed to cancel sync:', error);
-    }
+    // Native collection은 취소 기능이 없음
+    console.log('Collection cancellation not available with Native Messaging');
   };
   
   const openLoginPage = async (platform: string) => {
@@ -446,56 +405,43 @@ export default function LLMConversationTab({
     setOpeningLoginPlatform(platform);
     
     try {
-      const response = await fetch(`${apiBaseUrl}/llm/sessions/open-login`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          platform: platform,
-          url: config.url,
-          profileName: 'llm-collector'
-        })
-      });
+      // 브라우저에서 직접 열기
+      window.open(config.url, '_blank');
+      console.log(`✅ Opening ${config.name} login page in new tab`);
       
-      const result = await response.json();
+      // 로그인 성공 확인을 위한 주기적 체크
+      let checkCount = 0;
+      const maxChecks = 60; // 5 minutes
       
-      if (result.success) {
-        console.log(`✅ Opening ${config.name} login page`);
+      loginCheckIntervalRef.current = setInterval(async () => {
+        checkCount++;
         
-        // Start checking for successful login
-        let checkCount = 0;
-        const maxChecks = 60; // 5 minutes
+        // WebSocket을 통해 업데이트된 세션 정보 확인
+        const sessionInfo = systemState.sessions[platform];
+        const isValid = sessionInfo?.valid || false;
         
-        loginCheckIntervalRef.current = setInterval(async () => {
-          checkCount++;
+        if (isValid) {
+          console.log(`✅ ${platform} login detected!`);
           
-          const isValid = await checkSessionManual(platform);
-          
-          if (isValid) {
-            console.log(`✅ ${platform} login detected!`);
-            
-            setOpeningLoginPlatform(null);
-            if (loginCheckIntervalRef.current) {
-              clearInterval(loginCheckIntervalRef.current);
-              loginCheckIntervalRef.current = null;
-            }
-            
-            onSuccess(`${config.name} login successful!`);
+          setOpeningLoginPlatform(null);
+          if (loginCheckIntervalRef.current) {
+            clearInterval(loginCheckIntervalRef.current);
+            loginCheckIntervalRef.current = null;
           }
           
-          if (checkCount >= maxChecks) {
-            console.log(`⏱️ Login monitoring timeout for ${platform}`);
-            setOpeningLoginPlatform(null);
-            if (loginCheckIntervalRef.current) {
-              clearInterval(loginCheckIntervalRef.current);
-              loginCheckIntervalRef.current = null;
-            }
-          }
-        }, 5000);
+          onSuccess(`${config.name} login successful!`);
+        }
         
-      } else {
-        console.error(`❌ Failed to open ${config.name} login page`);
-        setOpeningLoginPlatform(null);
-      }
+        if (checkCount >= maxChecks) {
+          console.log(`⏱️ Login monitoring timeout for ${platform}`);
+          setOpeningLoginPlatform(null);
+          if (loginCheckIntervalRef.current) {
+            clearInterval(loginCheckIntervalRef.current);
+            loginCheckIntervalRef.current = null;
+          }
+        }
+      }, 5000);
+      
     } catch (error) {
       console.error(`❌ Failed to open login page: ${error}`);
       setOpeningLoginPlatform(null);
@@ -510,14 +456,14 @@ export default function LLMConversationTab({
     )) return;
     
     try {
-      const response = await fetch(`${apiBaseUrl}/llm/conversations/clean?days=0`, {
+      const response = await fetch(`${apiBaseUrl}/llm/conversations/clean`, {
         method: 'DELETE'
       });
       
       if (response.ok) {
         const result = await response.json();
         
-        onSuccess(`Deleted ${result.deleted} files.`);
+        onSuccess(`Deleted ${result.deleted_files} files.`);
         
         // Reload stats
         await loadStats();
@@ -529,11 +475,14 @@ export default function LLMConversationTab({
   
   const viewFiles = async () => {
     try {
-      const response = await fetch(`${apiBaseUrl}/llm/conversations/files`);
-      
-      if (response.ok) {
-        const data = await response.json();
-        setFilesList(data.files || []);
+      // stats 데이터에서 파일 정보 구성
+      if (stats) {
+        const files = Object.keys(stats).map(platform => ({
+          platform,
+          files: [`${platform}_conversations.json`] // 실제 파일 구조에 맞게 추정
+        }));
+        
+        setFilesList(files);
         setShowFilesModal(true);
       }
     } catch (error) {
@@ -570,9 +519,6 @@ export default function LLMConversationTab({
   // ==================== Effects ====================
   
   useEffect(() => {
-    // Load initial data
-    loadScheduleFailure();
-    
     // Check all sessions on mount
     checkAllSessions();
     
@@ -589,7 +535,7 @@ export default function LLMConversationTab({
         clearInterval(loginCheckIntervalRef.current);
       }
     };
-  }, [loadScheduleFailure]);
+  }, []);
   
   // Save sync settings when changed
   useEffect(() => {
@@ -631,7 +577,7 @@ export default function LLMConversationTab({
     Object.values(platformConfigs).some(p => p.enabled);
     
   const getDailyStats = () => {
-    if (!stats?.daily_stats) return { today: 0, yesterday: 0, dayBefore: 0 };
+    if (!stats) return { today: 0, yesterday: 0, dayBefore: 0 };
     
     const today = new Date().toISOString().split('T')[0];
     const yesterday = new Date(Date.now() - 86400000).toISOString().split('T')[0];
@@ -639,16 +585,17 @@ export default function LLMConversationTab({
     
     let totals = { today: 0, yesterday: 0, dayBefore: 0 };
     
-    Object.entries(stats.daily_stats).forEach(([platform, platformStats]: [string, any]) => {
-      totals.today += platformStats[today] || 0;
-      totals.yesterday += platformStats[yesterday] || 0;
-      totals.dayBefore += platformStats[dayBefore] || 0;
-      
-      // Update platform counts
-      if (platformConfigs[platform]) {
-        platformConfigs[platform].todayCount = platformStats[today] || 0;
-        platformConfigs[platform].yesterdayCount = platformStats[yesterday] || 0;
-        platformConfigs[platform].dayBeforeCount = platformStats[dayBefore] || 0;
+    // stats 구조에 따라 적절히 처리
+    Object.entries(stats).forEach(([platform, platformStats]: [string, any]) => {
+      if (platformStats && typeof platformStats === 'object') {
+        // 플랫폼별 통계에서 총 대화 수 추출
+        const totalConversations = platformStats.total_conversations || 0;
+        totals.today += totalConversations; // 임시로 전체를 오늘로 계산
+        
+        // 플랫폼 설정 업데이트
+        if (platformConfigs[platform]) {
+          platformConfigs[platform].todayCount = totalConversations;
+        }
       }
     });
     
@@ -876,9 +823,9 @@ export default function LLMConversationTab({
                                   )}
                                 </>
                               )}
-                              {stats?.latest_sync?.[config.key] && (
+                              {stats?.[config.key]?.last_sync && (
                                 <span className="text-xs text-gray-400">
-                                  • Last: {formatDate(stats.latest_sync[config.key])}
+                                  • Last: {formatDate(stats[config.key].last_sync)}
                                 </span>
                               )}
                             </div>
@@ -914,19 +861,18 @@ export default function LLMConversationTab({
               <div className="flex gap-2 pt-2">
                 <Button 
                   className="flex-1" 
-                  onClick={systemState.system_status === 'collecting' ? cancelSync : startSync}
-                  disabled={!canSync || checkingSession !== null}
-                  variant={systemState.system_status === 'collecting' ? "destructive" : "default"}
+                  onClick={startSync}
+                  disabled={!canSync || checkingSession !== null || systemState.system_status === 'collecting'}
                 >
                   {systemState.system_status === 'collecting' ? (
                     <>
-                      <X className="h-4 w-4 mr-2" />
-                      Cancel Sync
+                      <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+                      Collecting...
                     </>
                   ) : (
                     <>
                       <RefreshCw className="h-4 w-4 mr-2" />
-                      Sync All Enabled
+                      Collect Conversations
                     </>
                   )}
                 </Button>
@@ -1094,7 +1040,8 @@ export default function LLMConversationTab({
           <div className="space-y-4">
             <StatCard
               title="Total Conversations"
-              value={systemState.total_conversations.toString()}
+              value={Object.values(stats || {}).reduce((sum: number, platform: any) => 
+                sum + (platform.total_conversations || 0), 0).toString()}
               change={`+${dailyStats.today}`}
               trend="up"
             />
@@ -1139,21 +1086,20 @@ export default function LLMConversationTab({
           <Card>
             <CardContent className="p-4">
               <div className="space-y-3">
-                {stats?.latest_sync && Object.entries(stats.latest_sync)
+                {stats && Object.entries(stats)
                   .filter(([platform]) => platformConfigs[platform])
-                  .sort(([, a], [, b]) => new Date(b as string).getTime() - new Date(a as string).getTime())
                   .slice(0, 5)
-                  .map(([platform, syncTime]) => (
+                  .map(([platform, platformStats]: [string, any]) => (
                     <ActivityItem
                       key={platform}
-                      time={formatDate(syncTime as string)}
-                      action="Sync completed"
+                      time={formatDate(platformStats.last_sync)}
+                      action="Data collected"
                       source={platformConfigs[platform].name}
-                      count={`${platformConfigs[platform].todayCount || 0} conversations`}
+                      count={`${platformStats.total_conversations || 0} conversations`}
                       type="success"
                     />
                   ))}
-                {(!stats?.latest_sync || Object.keys(stats.latest_sync).length === 0) && (
+                {(!stats || Object.keys(stats).length === 0) && (
                   <div className="text-center text-gray-500 py-4">
                     <Clock className="h-8 w-8 mx-auto mb-2 text-gray-300" />
                     <p className="text-sm">No activity yet</p>

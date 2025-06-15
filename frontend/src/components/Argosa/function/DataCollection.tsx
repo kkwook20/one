@@ -1,13 +1,8 @@
 /**
- * DataCollection.tsx - 메인 파일
+ * DataCollection.tsx - 메인 파일 (백엔드 변경사항 반영 버전)
  * 
  * 모든 state와 함수는 여기서 관리하고,
  * 각 탭은 단순히 UI 렌더링만 담당
- * 
- * 수정 가이드:
- * - Web Crawler 기능 → WebCrawlerTab.tsx
- * - LLM Query 기능 → LLMQueryTab.tsx
- * - LLM Conversation 수집 → LLMConversationTab.tsx
  */
 
 import { useState, useEffect, useCallback, useRef } from "react";
@@ -167,13 +162,28 @@ export default function DataCollection() {
   
   const loadStats = useCallback(async () => {
     try {
-      const response = await fetch(`${API_BASE_URL}/llm/conversations/stats`);
+      const response = await fetch(`${API_BASE_URL}/llm/conversations/stats/all`);
       if (response.ok) {
         const data = await response.json();
         setStats(data);
       }
     } catch (error) {
       console.error('Failed to load stats:', error);
+    }
+  }, []);
+  
+  const loadSystemStatus = useCallback(async () => {
+    try {
+      const response = await fetch(`${API_BASE_URL}/status`);
+      if (response.ok) {
+        const data = await response.json();
+        // Update state with backend status
+        if (data.state) {
+          setSystemState(data.state);
+        }
+      }
+    } catch (error) {
+      console.error('Failed to load system status:', error);
     }
   }, []);
   
@@ -185,6 +195,7 @@ export default function DataCollection() {
     
     // Load initial data
     loadStats();
+    loadSystemStatus();
     
     // Set up periodic refresh
     statsIntervalRef.current = setInterval(() => {
@@ -202,7 +213,7 @@ export default function DataCollection() {
         clearInterval(statsIntervalRef.current);
       }
     };
-  }, [connectWebSocket, loadStats]);
+  }, [connectWebSocket, loadStats, loadSystemStatus]);
   
   // Auto-clear messages
   useEffect(() => {
@@ -211,6 +222,13 @@ export default function DataCollection() {
       return () => clearTimeout(timer);
     }
   }, [sessionCheckError]);
+  
+  useEffect(() => {
+    if (successMessage) {
+      const timer = setTimeout(() => setSuccessMessage(null), 5000);
+      return () => clearTimeout(timer);
+    }
+  }, [successMessage]);
   
   // ==================== Computed Values ====================
   
@@ -363,6 +381,7 @@ export default function DataCollection() {
                 onSuccess={setSuccessMessage}
                 onError={setSessionCheckError}
                 apiBaseUrl={API_BASE_URL}
+                wsRef={wsRef}
               />
             </TabsContent>
 

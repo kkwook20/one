@@ -109,7 +109,7 @@ export default function LLMQueryTab({
     
     try {
       // Get all conversations from stats
-      const conversationsResponse = await fetch(`${apiBaseUrl}/llm/conversations/stats`);
+      const conversationsResponse = await fetch(`${apiBaseUrl}/llm/conversations/stats/all`);
       if (!conversationsResponse.ok) throw new Error('Failed to load conversations');
       
       const statsData = await conversationsResponse.json();
@@ -149,14 +149,15 @@ export default function LLMQueryTab({
     setAnalysisResults(null);
     
     try {
-      // Get platform data
+      // Get platform data from stats
       const platformData: any = {};
       
-      const response = await fetch(`${apiBaseUrl}/llm/conversations/files`);
-      if (response.ok) {
-        const data = await response.json();
-        data.files.forEach((f: any) => {
-          platformData[f.platform] = f.files || [];
+      if (stats) {
+        Object.entries(stats).forEach(([platform, data]: [string, any]) => {
+          platformData[platform] = {
+            total_conversations: data.total_conversations || 0,
+            ...data
+          };
         });
       }
       
@@ -200,7 +201,7 @@ export default function LLMQueryTab({
       
       if (response.ok) {
         const data = await response.json();
-        setQueryHistory(data);
+        setQueryHistory(data.history || []);
       }
     } catch (error) {
       console.error('Failed to load query history:', error);
@@ -265,9 +266,11 @@ export default function LLMQueryTab({
                   onChange={(e) => setLlmProvider(e.target.value)}
                   disabled={isQuerying}
                 >
+                  <option value="chatgpt">ChatGPT</option>
+                  <option value="claude">Claude</option>
+                  <option value="gemini">Gemini</option>
+                  <option value="pplx">Perplexity</option>
                   <option value="lm_studio">LM Studio (Local)</option>
-                  <option value="openai">OpenAI</option>
-                  <option value="anthropic">Anthropic</option>
                 </select>
               </div>
             </div>
@@ -439,7 +442,7 @@ export default function LLMQueryTab({
                     <p className="whitespace-pre-wrap">{analysisResults.results}</p>
                   ) : (
                     <pre className="bg-white p-2 rounded overflow-x-auto">
-                      {JSON.stringify(analysisResults.results, null, 2)}
+                      {JSON.stringify(analysisResults.results || analysisResults, null, 2)}
                     </pre>
                   )}
                 </div>
@@ -519,7 +522,7 @@ export default function LLMQueryTab({
             {queryHistory.map((entry, idx) => (
               <div key={idx} className="text-sm p-2 bg-gray-50 rounded">
                 <div className="flex items-center justify-between">
-                  <span className="font-medium">{entry.query}</span>
+                  <span className="font-medium truncate">{entry.query.substring(0, 50)}{entry.query.length > 50 && '...'}</span>
                   <Badge variant="outline" className="text-xs">
                     {entry.query_type}
                   </Badge>
