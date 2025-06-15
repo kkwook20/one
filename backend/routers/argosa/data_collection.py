@@ -25,6 +25,7 @@ from .shared.llm_tracker import llm_tracker
 from .shared.command_queue import command_queue
 from .shared.metrics import metrics
 from .shared.conversation_saver import conversation_saver
+from .shared.error_handler import error_handler, with_retry, ErrorSeverity
 
 # 설정
 logger = logging.getLogger(__name__)
@@ -312,10 +313,15 @@ class ExtensionMonitor:
     def __init__(self):
         self.last_heartbeat: Optional[datetime] = None
         self.check_interval = 10  # seconds
-        asyncio.create_task(self.start_monitoring())
+        self._monitor_task = None
         
     async def start_monitoring(self):
         """Start monitoring Extension heartbeat"""
+        if self._monitor_task is None:
+            self._monitor_task = asyncio.create_task(self._monitoring_loop())
+    
+    async def _monitoring_loop(self):
+        """Monitoring loop"""
         while True:
             await asyncio.sleep(self.check_interval)
             await self.check_heartbeat()
@@ -359,6 +365,16 @@ class ExtensionMonitor:
                     
         except Exception as e:
             logger.error(f"Error updating heartbeat: {e}")
+    
+    async def stop_monitoring(self):
+        """Stop monitoring"""
+        if self._monitor_task:
+            self._monitor_task.cancel()
+            try:
+                await self._monitor_task
+            except asyncio.CancelledError:
+                pass
+            self._monitor_task = None
 
 # Global Extension monitor
 extension_monitor = ExtensionMonitor()
@@ -398,16 +414,37 @@ async def state_websocket(websocket: WebSocket):
         while True:
             try:
                 await websocket.send_json({"type": "ping"})
-                await asyncio.sleep(30)
-            except:
+                # 클라이언트 응답 대기 (타임아웃 설정)
+                pong_msg = await asyncio.wait_for(
+                    websocket.receive_json(), 
+                    timeout=60  # 60초 타임아웃
+                )
+                
+                # pong 메시지 확인
+                if pong_msg.get("type") != "pong":
+                    logger.warning("Expected pong message, got: {}", pong_msg)
+                    
+            except asyncio.TimeoutError:
+                logger.warning("WebSocket client timeout")
                 break
+            except WebSocketDisconnect:
+                break
+            except Exception as e:
+                logger.error(f"WebSocket error: {e}")
+                break
+            
+            await asyncio.sleep(30)
                 
     except WebSocketDisconnect:
-        pass
+        logger.info("WebSocket client disconnected")
     except Exception as e:
         logger.error(f"WebSocket error: {e}")
-    finally:  # finally 추가
+    finally:
         active_websockets.discard(websocket)
+        try:
+            await websocket.close()
+        except:
+            pass
 
 # ======================== Command Queue Endpoints ========================
 
@@ -428,6 +465,7 @@ async def complete_command_endpoint(command_id: str, result: Dict[str, Any]):
 # ======================== Native Message Handler ========================
 
 @router.post("/native/message")
+@with_retry(max_retries=3)  # 데코레이터 추가
 async def handle_native_message(message: Dict[str, Any]):
     """Native Messaging Bridge로부터 메시지 처리"""
     
@@ -560,6 +598,25 @@ async def handle_native_message(message: Dict[str, Any]):
         await metrics.increment_counter("native_message.error")
         return {"status": "error", "message": str(e)}
 
+# 에러 처리가 적용된 명령 처리 함수
+@error_handler.with_error_handling(
+    severity=ErrorSeverity.HIGH,
+    max_retries=2,
+    fallback_value={"status": "error", "message": "Command processing failed"}
+)
+async def process_command_with_retry(command_type: str, data: Dict[str, Any]):
+    """에러 처리가 적용된 명령 처리"""
+    # Native 명령 전송
+    command_id = await native_command_manager.send_command(command_type, data)
+    
+    # 응답 대기
+    result = await native_command_manager.wait_for_response(command_id, timeout=60)
+    
+    if not result.get("success", False):
+        raise Exception(result.get("error", "Command failed"))
+    
+    return result
+
 # ======================== Native Collection Endpoints ========================
 
 @router.post("/collect/start")
@@ -568,28 +625,26 @@ async def start_collection_native(request: Dict[str, Any]):
     platforms = request.get('platforms', [])
     settings = request.get('settings', {})
     
-    # Native 명령 전송
-    command_id = await native_command_manager.send_command(
-        "collect_conversations",
-        {
-            "platforms": platforms,
-            "exclude_llm": True,
-            "settings": settings
-        }
-    )
-    
-    # 응답 대기
     try:
-        result = await native_command_manager.wait_for_response(command_id, timeout=60)
+        result = await process_command_with_retry(
+            "collect_conversations",
+            {
+                "platforms": platforms,
+                "exclude_llm": True,
+                "settings": settings
+            }
+        )
+        
         return {
             "success": True,
             "collected": result.get('collected', 0),
             "excluded_llm": result.get('excluded', 0)
         }
-    except asyncio.TimeoutError:
+    except Exception as e:
+        logger.error(f"Collection failed: {e}")
         return {
             "success": False,
-            "error": "Collection timeout"
+            "error": str(e)
         }
 
 @router.post("/query/llm")
@@ -601,19 +656,16 @@ async def query_llm_native(request: Dict[str, Any]):
     if not platform or not query:
         raise HTTPException(status_code=400, detail="Platform and query required")
     
-    # Native 명령 전송
-    command_id = await native_command_manager.send_command(
-        "execute_llm_query",
-        {
-            "platform": platform,
-            "query": query,
-            "mark_as_llm": True
-        }
-    )
-    
-    # 응답 대기 (LLM은 시간이 걸림)
     try:
-        result = await native_command_manager.wait_for_response(command_id, timeout=120)
+        result = await process_command_with_retry(
+            "execute_llm_query",
+            {
+                "platform": platform,
+                "query": query,
+                "mark_as_llm": True
+            }
+        )
+        
         return {
             "success": True,
             "conversation_id": result.get('conversation_id'),
@@ -623,10 +675,11 @@ async def query_llm_native(request: Dict[str, Any]):
                 "platform": platform
             }
         }
-    except asyncio.TimeoutError:
+    except Exception as e:
+        logger.error(f"LLM query failed: {e}")
         return {
             "success": False,
-            "error": "LLM query timeout"
+            "error": str(e)
         }
 
 @router.post("/crawl/web")
@@ -638,28 +691,26 @@ async def crawl_web_native(request: Dict[str, Any]):
     if not url:
         raise HTTPException(status_code=400, detail="URL required")
     
-    # Native 명령 전송
-    command_id = await native_command_manager.send_command(
-        "crawl_web",
-        {
-            "url": url,
-            "search_query": search_query,
-            "extract_rules": request.get('extract_rules', {})
-        }
-    )
-    
-    # 응답 대기
     try:
-        result = await native_command_manager.wait_for_response(command_id, timeout=30)
+        result = await process_command_with_retry(
+            "crawl_web",
+            {
+                "url": url,
+                "search_query": search_query,
+                "extract_rules": request.get('extract_rules', {})
+            }
+        )
+        
         return {
             "success": True,
             "content": result.get('content'),
             "extracted": result.get('extracted_data', {})
         }
-    except asyncio.TimeoutError:
+    except Exception as e:
+        logger.error(f"Web crawl failed: {e}")
         return {
             "success": False,
-            "error": "Crawl timeout"
+            "error": str(e)
         }
 
 # ======================== Metrics Endpoints ========================
@@ -683,6 +734,9 @@ async def initialize():
     await command_queue.initialize()
     await metrics.initialize()
     
+    # Start extension monitoring
+    await extension_monitor.start_monitoring()
+    
     # Command handlers 등록
     command_queue.register_handler("collect_conversations", handle_collect_command)
     command_queue.register_handler("execute_llm_query", handle_llm_query_command)
@@ -698,6 +752,9 @@ async def initialize():
 async def shutdown():
     """Shutdown Argosa core system"""
     logger.info("Shutting down Argosa core system...")
+    
+    # Stop extension monitoring
+    await extension_monitor.stop_monitoring()
     
     # Close WebSocket connections
     for websocket in list(active_websockets):

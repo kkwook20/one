@@ -13,12 +13,16 @@ import pandas as pd
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint import MemorySaver
 import os
+import sys
 import hashlib
 from pathlib import Path
 import aiofiles
 import uuid
 
 logger = logging.getLogger(__name__)
+
+# 프로젝트 루트를 Python 경로에 추가
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
 
 # Native Command Manager는 초기화 시점에 import
 async def get_native_command_manager():
@@ -275,6 +279,11 @@ class GoogleSearchAPI(BaseAPIClient):
         self.cse_id = GOOGLE_CSE_ID
         self.daily_limit = 100
         self.used_today = 0
+        self._engine = None  # WebCrawlerEngine 참조 저장
+    
+    def set_engine(self, engine):
+        """엔진 참조 설정"""
+        self._engine = engine
     
     async def search(self, query: str, num_results: int = 10, **kwargs) -> Dict[str, Any]:
         """Google 검색 실행 - Native 경유"""
@@ -296,7 +305,10 @@ class GoogleSearchAPI(BaseAPIClient):
         
         try:
             # Native Command Manager 가져오기
-            ncm = await get_native_command_manager()
+            if not self._engine:
+                raise RuntimeError("Engine not set for GoogleSearchAPI")
+            
+            ncm = await self._engine._get_native_command_manager()
             
             # Native로 검색 요청
             command_id = await ncm.send_command(
@@ -329,12 +341,17 @@ class GoogleSearchAPI(BaseAPIClient):
                 "query": query,
                 "results": []
             }
-
+        
 class NewsAPI(BaseAPIClient):
     """News API 클라이언트 - Native 통합"""
     
     def __init__(self):
         super().__init__(NEWS_API_KEY, "https://newsapi.org/v2")
+        self._engine = None  # WebCrawlerEngine 참조 저장
+    
+    def set_engine(self, engine):
+        """엔진 참조 설정"""
+        self._engine = engine
     
     async def search(self, query: str, from_date: str = None, 
                     sort_by: str = "relevancy", page_size: int = 20) -> Dict[str, Any]:
@@ -353,7 +370,10 @@ class NewsAPI(BaseAPIClient):
         
         try:
             # Native Command Manager 가져오기
-            ncm = await get_native_command_manager()
+            if not self._engine:
+                raise RuntimeError("Engine not set for NewsAPI")
+            
+            ncm = await self._engine._get_native_command_manager()
             
             command_id = await ncm.send_command(
                 "search_news",
@@ -376,7 +396,7 @@ class NewsAPI(BaseAPIClient):
                 "error": str(e),
                 "results": []
             }
-
+        
 # ===== 웹 크롤링 엔진 (Native Messaging 전용) =====
 
 class WebCrawlerEngine:
@@ -384,13 +404,12 @@ class WebCrawlerEngine:
     
     def __init__(self):
         self.cache = CrawlerCache()
-        self.api_clients = {
-            "google": GoogleSearchAPI(),
-            "newsapi": NewsAPI(),
-        }
+        # API 클라이언트 초기화는 나중에
+        self.api_clients = {}
         self.llm_model = DEFAULT_LLM_MODEL
         self.lm_studio_url = LM_STUDIO_URL
         self._session: Optional[aiohttp.ClientSession] = None
+        self._native_command_manager = None  # 초기화 시 설정
     
     async def initialize(self):
         """엔진 초기화"""
@@ -399,48 +418,31 @@ class WebCrawlerEngine:
             self._session = aiohttp.ClientSession(
                 timeout=aiohttp.ClientTimeout(total=REQUEST_TIMEOUT)
             )
+        
+        # Native Command Manager 가져오기
+        try:
+            from ..data_collection import native_command_manager
+            self._native_command_manager = native_command_manager
+            logger.info("Native Command Manager connected")
+        except ImportError:
+            logger.warning("Native Command Manager not available - some features will be limited")
+        
+        # API 클라이언트 초기화 및 엔진 참조 설정
+        google_api = GoogleSearchAPI()
+        google_api.set_engine(self)
+        news_api = NewsAPI()
+        news_api.set_engine(self)
+        
+        self.api_clients = {
+            "google": google_api,
+            "newsapi": news_api,
+        }
     
-    async def search_web(self, query: str, sources: List[str], 
-                        options: Dict[str, Any] = {}) -> Dict[str, Any]:
-        """웹 검색 실행"""
-        results = {}
-        
-        # 동시 실행을 위한 태스크
-        tasks = []
-
-        # Semaphore 추가 (여기만 추가)
-        semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
-        
-        async def limited_task(coro):
-            async with semaphore:
-                return await coro
-        
-        # API 검색
-        if "apis" in sources:
-            for api_name in options.get("apis", ["google", "newsapi"]):
-                if api_name in self.api_clients:
-                    # limited_task로 감싸기
-                    tasks.append(limited_task(self._search_with_api(api_name, query, options)))
-
-        # 웹사이트 크롤링
-        if "websites" in sources and options.get("sites"):
-            tasks.append(self._crawl_websites(query, options.get("sites", [])))
-        
-        # 특정 사이트 집중 검색
-        if "focused" in sources and options.get("focused_sites"):
-            tasks.append(self._focused_crawl(query, options.get("focused_sites", [])))
-        
-        # 모든 태스크 실행
-        if tasks:
-            task_results = await asyncio.gather(*tasks, return_exceptions=True)
-            
-            for result in task_results:
-                if isinstance(result, Exception):
-                    logger.error(f"Search task error: {result}")
-                elif isinstance(result, dict):
-                    results.update(result)
-        
-        return results
+    async def _get_native_command_manager(self):
+        """Native Command Manager 가져오기"""
+        if not self._native_command_manager:
+            raise RuntimeError("Native Command Manager not initialized. Call initialize() first.")
+        return self._native_command_manager
     
     async def _search_with_api(self, api_name: str, query: str, 
                               options: Dict[str, Any]) -> Dict[str, Any]:
@@ -473,32 +475,12 @@ class WebCrawlerEngine:
             logger.error(f"API search error ({api_name}): {e}")
             return {api_name: {"error": str(e)}}
     
-    async def _crawl_websites(self, query: str, sites: List[str]) -> Dict[str, Any]:
-        """웹사이트 크롤링 - Native 사용"""
-        crawl_results = {}
-        
-        for site in sites:
-            if not SecurityValidator.is_valid_url(site):
-                crawl_results[site] = {"error": "Invalid URL"}
-                continue
-            
-            try:
-                # Native로 크롤링 요청
-                result = await self._crawl_with_native(site, query)
-                crawl_results[urlparse(site).netloc] = result
-                        
-            except Exception as e:
-                logger.error(f"Error crawling {site}: {e}")
-                crawl_results[urlparse(site).netloc] = {"error": str(e)}
-        
-        return {"websites": crawl_results}
-    
     async def _crawl_with_native(self, url: str, query: str) -> Dict[str, Any]:
         """Native Messaging을 사용한 크롤링"""
         
         try:
             # Native Command Manager 가져오기
-            ncm = await get_native_command_manager()
+            ncm = await self._get_native_command_manager()
             
             # Native로 크롤링 명령 전송
             command_id = await ncm.send_command(
@@ -556,6 +538,45 @@ class WebCrawlerEngine:
                 "error": str(e)
             }
     
+    async def download_file(self, url: str, filename: str = None) -> Optional[str]:
+        """파일 다운로드 - Native 사용"""
+        
+        if not SecurityValidator.is_valid_url(url):
+            logger.error(f"Invalid URL for download: {url}")
+            return None
+        
+        if not filename:
+            filename = SecurityValidator.sanitize_filename(
+                url.split('/')[-1] or f"download_{datetime.now().timestamp()}"
+            )
+        
+        try:
+            # Native Command Manager 가져오기
+            ncm = await self._get_native_command_manager()
+            
+            command_id = await ncm.send_command(
+                "download_file",
+                {
+                    "url": url,
+                    "filename": filename,
+                    "save_path": str(DOWNLOADS_PATH)
+                }
+            )
+            
+            result = await ncm.wait_for_response(command_id, timeout=60)
+            
+            if result.get("status") == "success":
+                file_path = result.get("file_path")
+                logger.info(f"Downloaded file: {file_path}")
+                return file_path
+            else:
+                logger.error(f"Download failed: {result.get('error')}")
+                return None
+                
+        except Exception as e:
+            logger.error(f"Download error: {e}")
+            return None
+        
     def _extract_relevant_content(self, soup: BeautifulSoup, query: str, 
                                  max_length: int = 10000) -> str:
         """관련 콘텐츠 추출"""
@@ -1198,7 +1219,7 @@ class WebCrawlerAgentSystem:
     """웹 크롤링 에이전트 시스템"""
     
     def __init__(self):
-        self.crawler_engine = WebCrawlerEngine()
+        self.crawler_engine = None  # 초기화에서 생성
         self.quota_manager = APIQuotaManager()
         self.site_tracker = SiteAccessibilityTracker()
         self.learning_system = SearchLearningSystem()
@@ -1216,14 +1237,20 @@ class WebCrawlerAgentSystem:
     
     async def initialize(self):
         """시스템 초기화"""
+        # 크롤러 엔진 생성 및 초기화
+        self.crawler_engine = WebCrawlerEngine()
         await self.crawler_engine.initialize()
+        
+        # 학습 시스템 초기화
         await self.learning_system.initialize()
         
         if not self._session:
             self._session = aiohttp.ClientSession(
                 timeout=aiohttp.ClientTimeout(total=60)
             )
-    
+        
+        logger.info("WebCrawlerAgentSystem initialized")
+
     def _initialize_agents(self):
         """에이전트 초기화"""
         
@@ -1867,3 +1894,37 @@ async def clear_cache():
         "deleted_files": deleted,
         "message": "Cache cleared successfully"
     }
+
+# 파일 끝부분의 전역 인스턴스 생성 수정
+# ===== API 엔드포인트 =====
+
+from fastapi import APIRouter, HTTPException, BackgroundTasks
+from pydantic import BaseModel, Field
+
+crawler_router = APIRouter(prefix="/api/crawler", tags=["web_crawler"])
+
+# 전역 인스턴스 (초기화는 startup에서)
+web_crawler_system = None
+
+# 설정 검증
+if not GOOGLE_API_KEY:
+    logger.warning("GOOGLE_API_KEY not set - Google search will not work")
+if not NEWS_API_KEY:
+    logger.warning("NEWS_API_KEY not set - News search will not work")
+
+@crawler_router.on_event("startup")
+async def startup():
+    """시작 시 초기화"""
+    global web_crawler_system
+    
+    # 시스템 생성 및 초기화
+    web_crawler_system = WebCrawlerAgentSystem()
+    await web_crawler_system.initialize()
+    logger.info("Web crawler system initialized")
+
+@crawler_router.on_event("shutdown")
+async def shutdown():
+    """종료 시 정리"""
+    if web_crawler_system:
+        await web_crawler_system.cleanup()
+    logger.info("Web crawler system shutdown")

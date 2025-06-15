@@ -134,8 +134,8 @@ class CacheManager:
     
     async def cleanup(self):
         """리소스 정리"""
-        # cleanup task 취소 추가
-        if hasattr(self, '_cleanup_task'):
+        # cleanup task가 존재하고 실행 중인 경우만 취소
+        if hasattr(self, '_cleanup_task') and self._cleanup_task and not self._cleanup_task.done():
             self._cleanup_task.cancel()
             try:
                 await self._cleanup_task
@@ -144,7 +144,7 @@ class CacheManager:
         
         if self.redis:
             await self.redis.close()
-            
+
 # 싱글톤 인스턴스
 cache_manager = CacheManager()
 
@@ -230,8 +230,8 @@ class LLMTracker:
             
             logger.info(f"Tracked LLM conversation: {conversation_id} on {platform}")
         
-        # 비동기 저장
-        asyncio.create_task(self._save_state())
+        # 비동기 저장 (await 추가)
+        await self._save_state()
         return True
     
     async def is_tracked(self, conversation_id: str) -> bool:

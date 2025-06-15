@@ -76,6 +76,32 @@ class LLMConversationCollector:
         
         if platform not in self.platforms:
             raise ValueError(f"Unsupported platform: {platform}")
+        # conversation_saver 사용
+        try:
+            from ..shared.conversation_saver import conversation_saver
+            
+            result = await conversation_saver.save_conversations(
+                platform=platform,
+                conversations=conversations,
+                metadata={
+                    **metadata,
+                    "source": "llm_collector",
+                    "timestamp": timestamp or datetime.now().isoformat()
+                }
+            )
+            
+            # 히스토리 업데이트
+            self.collection_history[platform] = {
+                "last_sync": datetime.now().isoformat(),
+                "conversation_count": result.get("count", 0),
+                "excluded_llm_count": result.get("excluded_llm_count", 0)
+            }
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Failed to save conversations: {e}")
+            raise        
         
         # LLM tracker 사용 (여기에 추가)
         try:
@@ -501,7 +527,7 @@ try:
     conversation_saver.set_collector(collector)
 except ImportError:
     logger.warning("Failed to register with conversation_saver")
-    
+
 @router.post("/save")
 async def save_conversations(request: ConversationSaveRequest):
     """대화 저장 API - LLM 소스 체크 추가"""

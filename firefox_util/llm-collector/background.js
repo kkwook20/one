@@ -492,270 +492,378 @@ class NativeExtension {
     }
   }
   
+  // getCollectionCode 함수 수정 - 모든 플랫폼 구현
   getCollectionCode(platform, config, settings, excludeIds) {
-    return `
-      (async function() {
-        const excludeSet = new Set(${JSON.stringify(excludeIds)});
-        const conversations = [];
-        const excluded = [];
-        const limit = ${settings.maxConversations || 20};
-        
-        try {
-          // Platform-specific collection logic
-          if ('${platform}' === 'chatgpt') {
-            const response = await fetch('${config.conversationListUrl}?offset=0&limit=' + limit, {
-              credentials: 'include'
-            });
-            
-            if (response.ok) {
-              const data = await response.json();
-              
-              for (const item of data.items || []) {
-                if (excludeSet.has(item.id)) {
-                  excluded.push(item.id);
-                  continue;
-                }
-                
-                conversations.push({
-                  id: item.id,
-                  title: item.title || 'Untitled',
-                  created_at: item.create_time,
-                  updated_at: item.update_time
-                });
-              }
-            }
-          }
-          else if ('${platform}' === 'claude') {
-            const response = await fetch('${config.conversationListUrl}', {
-              credentials: 'include'
-            });
-            
-            if (response.ok) {
-              const data = await response.json();
-              
-              for (const item of data.chats || data.conversations || []) {
-                const id = item.uuid || item.id;
-                if (excludeSet.has(id)) {
-                  excluded.push(id);
-                  continue;
-                }
-                
-                conversations.push({
-                  id: id,
-                  title: item.name || item.title || 'Untitled',
-                  created_at: item.created_at,
-                  updated_at: item.updated_at
-                });
-              }
-            }
-          }
-          else if ('${platform}' === 'gemini') {
-              const response = await fetch('${config.conversationListUrl}', {
-                  credentials: 'include'
+      return `
+        (async function() {
+          const excludeSet = new Set(${JSON.stringify(excludeIds)});
+          const conversations = [];
+          const excluded = [];
+          const limit = ${settings.maxConversations || 20};
+          
+          try {
+            // Platform-specific collection logic
+            if ('${platform}' === 'chatgpt') {
+              const response = await fetch('${config.conversationListUrl}?offset=0&limit=' + limit, {
+                credentials: 'include'
               });
               
               if (response.ok) {
-                  const data = await response.json();
-                  
-                  // 이 부분 추가
-                  for (const item of data.conversations || data.threads || []) {
-                      if (excludeSet.has(item.id)) {
-                          excluded.push(item.id);
-                          continue;
-                      }
-                      
-                      conversations.push({
-                          id: item.id,
-                          title: item.title || item.name || 'Untitled',
-                          created_at: item.created_at || item.created_time,
-                          updated_at: item.updated_at || item.modified_time
-                      });
+                const data = await response.json();
+                
+                for (const item of data.items || []) {
+                  if (excludeSet.has(item.id)) {
+                    excluded.push(item.id);
+                    continue;
                   }
+                  
+                  conversations.push({
+                    id: item.id,
+                    title: item.title || 'Untitled',
+                    created_at: item.create_time,
+                    updated_at: item.update_time
+                  });
+                }
               }
+            }
+            else if ('${platform}' === 'claude') {
+              const response = await fetch('${config.conversationListUrl}', {
+                credentials: 'include'
+              });
+              
+              if (response.ok) {
+                const data = await response.json();
+                
+                for (const item of data.chats || data.conversations || []) {
+                  const id = item.uuid || item.id;
+                  if (excludeSet.has(id)) {
+                    excluded.push(id);
+                    continue;
+                  }
+                  
+                  conversations.push({
+                    id: id,
+                    title: item.name || item.title || 'Untitled',
+                    created_at: item.created_at,
+                    updated_at: item.updated_at
+                  });
+                }
+              }
+            }
+            else if ('${platform}' === 'gemini') {
+              const response = await fetch('${config.conversationListUrl}', {
+                credentials: 'include'
+              });
+              
+              if (response.ok) {
+                const data = await response.json();
+                
+                for (const item of data.conversations || data.threads || []) {
+                  if (excludeSet.has(item.id)) {
+                    excluded.push(item.id);
+                    continue;
+                  }
+                  
+                  conversations.push({
+                    id: item.id,
+                    title: item.title || item.name || 'Untitled',
+                    created_at: item.created_at || item.created_time,
+                    updated_at: item.updated_at || item.modified_time
+                  });
+                }
+              }
+            }
+            else if ('${platform}' === 'deepseek') {
+              const response = await fetch('${config.conversationListUrl}', {
+                credentials: 'include',
+                headers: {
+                  'Accept': 'application/json',
+                  'Content-Type': 'application/json'
+                }
+              });
+              
+              if (response.ok) {
+                const data = await response.json();
+                const items = data.data || data.conversations || [];
+                
+                for (const item of items) {
+                  if (excludeSet.has(item.id)) {
+                    excluded.push(item.id);
+                    continue;
+                  }
+                  
+                  conversations.push({
+                    id: item.id,
+                    title: item.title || 'Untitled',
+                    created_at: item.created_at || item.create_time,
+                    updated_at: item.updated_at || item.update_time
+                  });
+                }
+              }
+            }
+            else if ('${platform}' === 'grok') {
+              // Grok uses Twitter's API structure
+              const response = await fetch('${config.conversationListUrl}', {
+                credentials: 'include',
+                headers: {
+                  'Accept': 'application/json'
+                }
+              });
+              
+              if (response.ok) {
+                const data = await response.json();
+                const items = data.conversations || [];
+                
+                for (const item of items) {
+                  if (excludeSet.has(item.conversation_id)) {
+                    excluded.push(item.conversation_id);
+                    continue;
+                  }
+                  
+                  conversations.push({
+                    id: item.conversation_id,
+                    title: item.title || 'Grok Conversation',
+                    created_at: item.created_at,
+                    updated_at: item.updated_at
+                  });
+                }
+              }
+            }
+            else if ('${platform}' === 'perplexity') {
+              const response = await fetch('${config.conversationListUrl}', {
+                credentials: 'include'
+              });
+              
+              if (response.ok) {
+                const data = await response.json();
+                const items = data.threads || data.conversations || [];
+                
+                for (const item of items) {
+                  if (excludeSet.has(item.id)) {
+                    excluded.push(item.id);
+                    continue;
+                  }
+                  
+                  conversations.push({
+                    id: item.id,
+                    title: item.query || item.title || 'Perplexity Thread',
+                    created_at: item.created_at || item.timestamp,
+                    updated_at: item.updated_at || item.timestamp
+                  });
+                }
+              }
+            }
+            
+          } catch (error) {
+            console.error('[Collector] Error:', error);
+          }
+          
+          return { conversations, excluded };
+        })();
+      `;
+    }
+
+  // injectLLMQuery 함수 완성
+  async injectLLMQuery(tabId, platform, query) {
+      const code = `
+        (async function() {
+          // Platform-specific query injection
+          if ('${platform}' === 'chatgpt') {
+            // 새 대화 시작
+            const newChatButton = document.querySelector('[data-testid="new-chat-button"], button[aria-label="New chat"], a[href="/"]');
+            if (newChatButton) {
+              newChatButton.click();
+              await new Promise(resolve => setTimeout(resolve, 1000));
+            }
+            
+            // 입력 필드 찾기
+            const textarea = document.querySelector('textarea[data-id="root"], #prompt-textarea, textarea[placeholder*="Message"]');
+            if (textarea) {
+              // 텍스트 입력
+              textarea.value = ${JSON.stringify(query)};
+              textarea.dispatchEvent(new Event('input', { bubbles: true }));
+              
+              // 전송 버튼 클릭
+              const sendButton = document.querySelector('button[data-testid="send-button"], button[aria-label="Send"], button[type="submit"]');
+              if (sendButton && !sendButton.disabled) {
+                sendButton.click();
+              }
+              
+              // conversation ID 추출 (URL에서)
+              await new Promise(resolve => setTimeout(resolve, 2000));
+              const match = window.location.pathname.match(/\\/c\\/([a-zA-Z0-9-]+)/);
+              return match ? match[1] : 'chatgpt-' + Date.now();
+            }
+          }
+          else if ('${platform}' === 'claude') {
+            // Claude-specific implementation
+            const newChatBtn = document.querySelector('button[aria-label="New chat"], button[data-testid="new-chat-button"]');
+            if (newChatBtn) {
+              newChatBtn.click();
+              await new Promise(resolve => setTimeout(resolve, 1000));
+            }
+            
+            const input = document.querySelector('div[contenteditable="true"], textarea[placeholder*="Talk to Claude"]');
+            if (input) {
+              // contenteditable의 경우
+              if (input.contentEditable === 'true') {
+                input.textContent = ${JSON.stringify(query)};
+                input.dispatchEvent(new Event('input', { bubbles: true }));
+              } else {
+                // textarea의 경우
+                input.value = ${JSON.stringify(query)};
+                input.dispatchEvent(new Event('input', { bubbles: true }));
+              }
+              
+              const sendBtn = document.querySelector('button[aria-label="Send"], button[type="submit"]');
+              if (sendBtn) {
+                sendBtn.click();
+              }
+              
+              await new Promise(resolve => setTimeout(resolve, 2000));
+              return 'claude-conv-' + Date.now();
+            }
+          }
+          else if ('${platform}' === 'gemini') {
+            // Gemini-specific implementation
+            const input = document.querySelector('rich-textarea textarea, textarea[aria-label*="Talk to Gemini"]');
+            if (input) {
+              input.value = ${JSON.stringify(query)};
+              input.dispatchEvent(new Event('input', { bubbles: true }));
+              
+              const sendBtn = document.querySelector('button[aria-label="Send"], button[mattooltip="Send message"]');
+              if (sendBtn) {
+                sendBtn.click();
+              }
+              
+              await new Promise(resolve => setTimeout(resolve, 2000));
+              return 'gemini-' + Date.now();
+            }
           }
           else if ('${platform}' === 'deepseek') {
-            const response = await fetch('${config.conversationListUrl}', {
-              credentials: 'include'
-            });
-            
-            if (response.ok) {
-              const data = await response.json();
-              // Process DeepSeek data
+            // DeepSeek-specific implementation
+            const textarea = document.querySelector('textarea[placeholder*="Ask me anything"], #chat-input');
+            if (textarea) {
+              textarea.value = ${JSON.stringify(query)};
+              textarea.dispatchEvent(new Event('input', { bubbles: true }));
+              
+              const sendBtn = document.querySelector('button[type="submit"], button.send-button');
+              if (sendBtn) {
+                sendBtn.click();
+              }
+              
+              await new Promise(resolve => setTimeout(resolve, 2000));
+              return 'deepseek-' + Date.now();
             }
           }
-          // Add other platforms...
+          else if ('${platform}' === 'grok') {
+            // Grok-specific implementation
+            const input = document.querySelector('textarea[placeholder*="Ask Grok"], div[contenteditable="true"]');
+            if (input) {
+              if (input.tagName === 'TEXTAREA') {
+                input.value = ${JSON.stringify(query)};
+              } else {
+                input.textContent = ${JSON.stringify(query)};
+              }
+              input.dispatchEvent(new Event('input', { bubbles: true }));
+              
+              const sendBtn = document.querySelector('button[aria-label="Send"], div[role="button"][tabindex="0"]');
+              if (sendBtn) {
+                sendBtn.click();
+              }
+              
+              await new Promise(resolve => setTimeout(resolve, 2000));
+              return 'grok-' + Date.now();
+            }
+          }
+          else if ('${platform}' === 'perplexity') {
+            // Perplexity-specific implementation
+            const textarea = document.querySelector('textarea[placeholder*="Ask anything"], textarea[name="query"]');
+            if (textarea) {
+              textarea.value = ${JSON.stringify(query)};
+              textarea.dispatchEvent(new Event('input', { bubbles: true }));
+              
+              // Perplexity는 Enter 키로 전송
+              const enterEvent = new KeyboardEvent('keydown', {
+                key: 'Enter',
+                code: 'Enter',
+                keyCode: 13,
+                which: 13,
+                bubbles: true
+              });
+              textarea.dispatchEvent(enterEvent);
+              
+              await new Promise(resolve => setTimeout(resolve, 2000));
+              return 'perplexity-' + Date.now();
+            }
+          }
           
-        } catch (error) {
-          console.error('[Collector] Error:', error);
-        }
-        
-        return { conversations, excluded };
-      })();
-    `;
-  }
-  
-  async checkTabSession(tabId, platform) {
-    try {
-      const results = await browser.tabs.executeScript(tabId, {
-        code: `
-          (function() {
-            const config = ${JSON.stringify({
-              loginSelectors: PLATFORMS[platform].loginSelectors,
-              loginIndicators: PLATFORMS[platform].loginIndicators.map(fn => fn.toString())
-            })};
-            
-            // Check selectors
-            for (const selector of config.loginSelectors) {
-              try {
-                if (document.querySelector(selector)) {
-                  return true;
-                }
-              } catch (e) {}
-            }
-            
-            // Check indicators
-            for (const fnStr of config.loginIndicators) {
-              try {
-                const fn = new Function('return ' + fnStr)();
-                if (fn()) return true;
-              } catch (e) {}
-            }
-            
-            return false;
-          })();
-        `
-      });
+          throw new Error('Could not find input field for ' + '${platform}');
+        })();
+      `;
       
-      const isLoggedIn = results[0] || false;
-      this.updateSessionState(platform, isLoggedIn);
-      return isLoggedIn;
-      
-    } catch (error) {
-      console.error(`[Extension] Session check error for ${platform}:`, error);
-      return false;
+      const results = await browser.tabs.executeScript(tabId, { code });
+      return results[0];
     }
-  }
-  
-  // ======================== LLM Query Functions ========================
-  
-  async injectLLMQuery(tabId, platform, query) {
-    const code = `
-      (async function() {
-        // Platform-specific query injection
-        if ('${platform}' === 'chatgpt') {
-          // 새 대화 시작
-          const newChatButton = document.querySelector('[data-testid="new-chat-button"], button[aria-label="New chat"]');
-          if (newChatButton) {
-            newChatButton.click();
-            await new Promise(resolve => setTimeout(resolve, 1000));
-          }
-          
-          // 입력 필드 찾기
-          const textarea = document.querySelector('textarea[data-id="chat-input"], textarea[placeholder*="Message"]');
-          if (textarea) {
-            // 텍스트 입력
-            textarea.value = ${JSON.stringify(query)};
-            textarea.dispatchEvent(new Event('input', { bubbles: true }));
-            
-            // 전송 버튼 클릭
-            const sendButton = document.querySelector('button[data-testid="send-button"], button[aria-label="Send"]');
-            if (sendButton && !sendButton.disabled) {
-              sendButton.click();
-            }
-            
-            // conversation ID 추출 (URL에서)
-            await new Promise(resolve => setTimeout(resolve, 2000));
-            const match = window.location.pathname.match(/\\/c\\/([a-zA-Z0-9-]+)/);
-            return match ? match[1] : 'unknown';
-          }
-        }
-        else if ('${platform}' === 'claude') {
-          // Claude-specific implementation
-          const newChatBtn = document.querySelector('button[aria-label="New chat"]');
-          if (newChatBtn) {
-            newChatBtn.click();
-            await new Promise(resolve => setTimeout(resolve, 1000));
-          }
-          
-          const input = document.querySelector('div[contenteditable="true"]');
-          if (input) {
-            input.textContent = ${JSON.stringify(query)};
-            input.dispatchEvent(new Event('input', { bubbles: true }));
-            
-            const sendBtn = input.parentElement.querySelector('button[aria-label="Send"]');
-            if (sendBtn) {
-              sendBtn.click();
-            }
-            
-            await new Promise(resolve => setTimeout(resolve, 2000));
-            // Extract conversation ID from URL or DOM
-            return 'claude-conv-' + Date.now();
-          }
-        }
-        else if ('${platform}' === 'gemini') {
-          // Gemini-specific implementation
-          // Add appropriate selectors for Gemini
-        }
-        else if ('${platform}' === 'deepseek') {
-          // DeepSeek-specific implementation
-          // Add appropriate selectors for DeepSeek
-        }
-        // Add other platforms...
-        
-        throw new Error('Could not find input field');
-      })();
-    `;
-    
-    const results = await browser.tabs.executeScript(tabId, { code });
-    return results[0];
-  }
-  
+
+  // waitForLLMResponse 함수 완성
   async waitForLLMResponse(tabId, platform, timeout = 30000) {
-    const startTime = Date.now();
-    
-    while (Date.now() - startTime < timeout) {
-      try {
-        const results = await browser.tabs.executeScript(tabId, {
-          code: `
-            (function() {
-              // Check for response indicators
-              if ('${platform}' === 'chatgpt') {
-                // Check if response is complete
-                const thinking = document.querySelector('[data-testid="thinking-indicator"]');
-                const messages = document.querySelectorAll('[data-message-author-role="assistant"]');
-                return !thinking && messages.length > 0;
-              }
-              else if ('${platform}' === 'claude') {
-                // Claude response check
-                const messages = document.querySelectorAll('[data-testid="assistant-message"]');
-                return messages.length > 0;
-              }
-              else if ('${platform}' === 'gemini') {
-                // Gemini response check
-                // Add appropriate checks
-              }
-              else if ('${platform}' === 'deepseek') {
-                // DeepSeek response check
-                // Add appropriate checks
-              }
-              return false;
-            })();
-          `
-        });
-        
-        if (results[0]) {
-          return true;
+      const startTime = Date.now();
+      
+      while (Date.now() - startTime < timeout) {
+        try {
+          const results = await browser.tabs.executeScript(tabId, {
+            code: `
+              (function() {
+                // Check for response indicators
+                if ('${platform}' === 'chatgpt') {
+                  const thinking = document.querySelector('[data-testid="thinking-indicator"], .result-thinking');
+                  const messages = document.querySelectorAll('[data-message-author-role="assistant"], .group\\\\.w-full.bg-gray-50');
+                  return !thinking && messages.length > 0;
+                }
+                else if ('${platform}' === 'claude') {
+                  const thinking = document.querySelector('.loading-indicator, [data-testid="message-loading"]');
+                  const messages = document.querySelectorAll('[data-testid="assistant-message"], .assistant-message');
+                  return !thinking && messages.length > 0;
+                }
+                else if ('${platform}' === 'gemini') {
+                  const loading = document.querySelector('mat-spinner, .loading-indicator');
+                  const messages = document.querySelectorAll('.model-response, [data-message-author="assistant"]');
+                  return !loading && messages.length > 0;
+                }
+                else if ('${platform}' === 'deepseek') {
+                  const loading = document.querySelector('.loading, .thinking-indicator');
+                  const messages = document.querySelectorAll('.assistant-message, .chat-message.assistant');
+                  return !loading && messages.length > 0;
+                }
+                else if ('${platform}' === 'grok') {
+                  const loading = document.querySelector('[data-testid="loading"], .spinner');
+                  const messages = document.querySelectorAll('[data-testid="grok-message"], .message-grok');
+                  return !loading && messages.length > 0;
+                }
+                else if ('${platform}' === 'perplexity') {
+                  const loading = document.querySelector('.generating, .loading-dots');
+                  const messages = document.querySelectorAll('.prose, .answer-content');
+                  return !loading && messages.length > 0;
+                }
+                return false;
+              })();
+            `
+          });
+          
+          if (results[0]) {
+            return true;
+          }
+        } catch (error) {
+          console.error('[Extension] Error checking response:', error);
         }
-      } catch (error) {
-        console.error('[Extension] Error checking response:', error);
+        
+        await this.humanDelay(1);
       }
       
-      await this.humanDelay(1);
+      throw new Error('Response timeout');
     }
     
-    throw new Error('Response timeout');
-  }
-  
   // ======================== Helper Functions ========================
   
   async waitForTabLoad(tabId, timeout = 30000) {

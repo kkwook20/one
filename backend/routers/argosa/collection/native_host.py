@@ -291,6 +291,7 @@ class ImprovedNativeHost:
             except Exception as e:
                 logger.error(f"Message processing error: {e}")
 
+# 로그 경로 설정 부분 수정
 if __name__ == "__main__":
     # Windows 바이너리 모드 설정
     if sys.platform == "win32":
@@ -299,12 +300,13 @@ if __name__ == "__main__":
         msvcrt.setmode(sys.stdin.fileno(), os.O_BINARY)
         msvcrt.setmode(sys.stdout.fileno(), os.O_BINARY)
     
-    # 로깅 설정
-    log_path = 'C:\\ProgramData\\Argosa\\native_host.log' 
+    # 플랫폼별 로그 디렉토리 설정
     if sys.platform == "win32":
-        log_dir = 'C:\\ProgramData\\Argosa'
-    else:
-        log_dir = os.path.expanduser('~/.argosa')  # 홈 디렉토리 사용
+        log_dir = os.path.join(os.getenv('PROGRAMDATA', 'C:\\ProgramData'), 'Argosa')
+    elif sys.platform == "darwin":  # macOS
+        log_dir = os.path.expanduser('~/Library/Logs/Argosa')
+    else:  # Linux
+        log_dir = os.path.expanduser('~/.argosa/logs')
     
     os.makedirs(log_dir, exist_ok=True)
     log_path = os.path.join(log_dir, 'native_host.log')

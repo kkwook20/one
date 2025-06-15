@@ -11,6 +11,6 @@ __all__ = [
     'cache_manager',
     'llm_tracker', 
     'command_queue',
-    'metrics'
+    'metrics',
     'conversation_saver'
 ]
