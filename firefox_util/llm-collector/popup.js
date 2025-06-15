@@ -1,4 +1,4 @@
-// popup.js - LLM Collector popup with API support
+// popup.js - LLM Collector popup with Cookie Status
 
 document.addEventListener('DOMContentLoaded', async () => {
   await loadData();
@@ -15,11 +15,11 @@ async function loadData() {
     document.getElementById('dataFolder').textContent = dataFolder;
   }
   
-  // Update platform cards
+  // Update platform cards with cookie status
   if (platforms) {
     let enabledCount = 0;
     
-    Object.entries(platforms).forEach(([platform, config]) => {
+    for (const [platform, config] of Object.entries(platforms)) {
       const card = document.querySelector(`.platform-card[data-platform="${platform}"]`);
       if (card) {
         if (config.enabled) {
@@ -27,19 +27,31 @@ async function loadData() {
           enabledCount++;
         }
         
-        const status = card.querySelector('.platform-status');
-        if (config.enabled && config.username) {
-          status.textContent = 'Configured';
-          status.style.color = '#10b981';
-        } else if (config.enabled) {
-          status.textContent = 'Missing credentials';
-          status.style.color = '#f59e0b';
-        } else {
-          status.textContent = 'Not configured';
-          status.style.color = '#6b7280';
+        // Check cookie status
+        try {
+          const cookieStatus = await browser.runtime.sendMessage({ 
+            action: 'checkCookies', 
+            platform: platform 
+          });
+          
+          const status = card.querySelector('.platform-status');
+          if (cookieStatus && cookieStatus.valid) {
+            status.textContent = 'Session Active';
+            status.style.color = '#10b981';
+            
+            // Show cookie count
+            if (cookieStatus.cookies) {
+              status.textContent += ` (${cookieStatus.cookies.length} cookies)`;
+            }
+          } else {
+            status.textContent = 'Login Required';
+            status.style.color = '#f59e0b';
+          }
+        } catch (error) {
+          console.error(`Error checking ${platform} cookies:`, error);
         }
       }
-    });
+    }
     
     document.getElementById('enabledPlatforms').textContent = enabledCount;
   }
@@ -51,17 +63,40 @@ async function loadData() {
   
   // Load statistics
   await updateStats();
+  
+  // Check connection status
+  await checkConnectionStatus();
+}
+
+// Check backend connection
+async function checkConnectionStatus() {
+  try {
+    const response = await browser.runtime.sendMessage({ action: 'testConnection' });
+    const statusDot = document.querySelector('.status-dot');
+    const statusText = document.querySelector('.status-indicator span:last-child');
+    
+    if (response && response.connected) {
+      statusDot.style.background = '#10b981';
+      statusText.textContent = 'Connected';
+      
+      // Also update session status
+      await browser.runtime.sendMessage({ action: 'updateSessions' });
+    } else {
+      statusDot.style.background = '#ef4444';
+      statusText.textContent = 'Disconnected';
+    }
+  } catch (error) {
+    console.error('Connection check error:', error);
+  }
 }
 
 // Update statistics
 async function updateStats() {
   try {
-    // Check if using API mode
     const { useAPI } = await browser.storage.local.get(['useAPI']);
     
-    if (useAPI !== false) { // Default to true if not set
-      // Get stats from background script (which gets from API)
-      console.log('[Popup] Getting stats from background...');
+    if (useAPI !== false) {
+      console.log('[Popup] Getting stats from API...');
       
       try {
         const response = await browser.runtime.sendMessage({ action: 'getStats' });
@@ -70,12 +105,10 @@ async function updateStats() {
         if (response && response.stats) {
           const stats = response.stats;
           
-          // Update total conversations
           let totalConversations = 0;
           let todayCount = 0;
           const today = new Date().toISOString().split('T')[0];
           
-          // Calculate totals from daily_stats
           if (stats.daily_stats) {
             Object.values(stats.daily_stats).forEach(platformStats => {
               Object.entries(platformStats).forEach(([date, count]) => {
@@ -90,49 +123,21 @@ async function updateStats() {
           document.getElementById('totalConversations').textContent = totalConversations;
           document.getElementById('todayCount').textContent = todayCount;
           
-          // Update storage size estimate
-          const avgSizePerConv = 5 * 1024; // 5KB average
+          const avgSizePerConv = 5 * 1024;
           const totalSize = (totalConversations * avgSizePerConv) / (1024 * 1024);
           document.getElementById('storageSize').textContent = `${totalSize.toFixed(1)} MB`;
-          
-          console.log('[Popup] Stats updated:', { totalConversations, todayCount });
         }
       } catch (error) {
         console.error('[Popup] Failed to get stats:', error);
-        // Show default values
-        document.getElementById('totalConversations').textContent = '0';
-        document.getElementById('todayCount').textContent = '0';
-        document.getElementById('storageSize').textContent = '0 MB';
-      }
-    } else {
-      // Local storage mode - get from local data
-      const { conversations } = await browser.storage.local.get(['conversations']);
-      
-      if (conversations) {
-        const totalConversations = Object.values(conversations).reduce((sum, platformConvs) => 
-          sum + (Array.isArray(platformConvs) ? platformConvs.length : 0), 0
-        );
-        
-        document.getElementById('totalConversations').textContent = totalConversations;
-        document.getElementById('todayCount').textContent = '0';
-        
-        // Storage size
-        const storageSize = JSON.stringify(conversations).length / (1024 * 1024);
-        document.getElementById('storageSize').textContent = `${storageSize.toFixed(1)} MB`;
       }
     }
   } catch (error) {
     console.error('[Popup] Error loading stats:', error);
-    // Set default values on error
-    document.getElementById('totalConversations').textContent = '0';
-    document.getElementById('todayCount').textContent = '0';
-    document.getElementById('storageSize').textContent = '0 MB';
   }
 }
 
 // Update UI elements
 function updateUI() {
-  // Update next sync time
   const now = new Date();
   const nextSync = new Date();
   nextSync.setHours(3, Math.floor(Math.random() * 60), 0, 0);
@@ -160,15 +165,52 @@ function setupEventListeners() {
     window.close();
   });
   
-  // Platform cards
+  // Platform cards - show cookie details
   document.querySelectorAll('.platform-card').forEach(card => {
-    card.addEventListener('click', () => {
+    card.addEventListener('click', async () => {
       const platform = card.dataset.platform;
-      // Open settings page with platform pre-selected
-      browser.runtime.openOptionsPage();
-      window.close();
+      
+      // Get detailed cookie info
+      const cookieStatus = await browser.runtime.sendMessage({ 
+        action: 'checkCookies', 
+        platform: platform 
+      });
+      
+      if (cookieStatus && cookieStatus.cookies) {
+        let message = `${platform} cookies:\n\n`;
+        cookieStatus.cookies.forEach(cookie => {
+          message += `• ${cookie.name}\n`;
+          if (cookie.expires) {
+            const expDate = new Date(cookie.expires * 1000);
+            message += `  Expires: ${expDate.toLocaleDateString()}\n`;
+          }
+        });
+        
+        showAlert(message, 'info');
+      } else {
+        showAlert(`No cookies found for ${platform}. Please log in.`, 'warning');
+      }
     });
   });
+  
+  // Refresh button
+  const refreshBtn = document.createElement('button');
+  refreshBtn.className = 'btn btn-secondary';
+  refreshBtn.style.cssText = 'position: absolute; top: 10px; right: 10px; padding: 5px;';
+  refreshBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6M1 20v-6h6M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/></svg>';
+  refreshBtn.onclick = async () => {
+    refreshBtn.disabled = true;
+    refreshBtn.style.animation = 'spin 1s linear';
+    
+    await checkConnectionStatus();
+    await loadData();
+    
+    setTimeout(() => {
+      refreshBtn.disabled = false;
+      refreshBtn.style.animation = '';
+    }, 1000);
+  };
+  document.body.appendChild(refreshBtn);
 }
 
 // Handle sync now
@@ -177,54 +219,45 @@ async function handleSyncNow() {
   const loading = document.getElementById('loading');
   const { platforms, useAPI } = await browser.storage.local.get(['platforms', 'useAPI']);
   
-  // Always use API mode (default)
   if (useAPI !== false) {
-    // API mode - open dashboard
     showAlert('Opening Argosa dashboard...', 'info');
     window.open('http://localhost:3000', '_blank');
     window.close();
     return;
   }
   
-  // Check if any platform is enabled
   const enabledPlatforms = Object.entries(platforms || {})
-    .filter(([_, config]) => config.enabled && config.username && config.password);
+    .filter(([_, config]) => config.enabled);
   
   if (enabledPlatforms.length === 0) {
-    showAlert('Please configure at least one platform in settings first!', 'warning');
+    showAlert('Please configure at least one platform in settings!', 'warning');
     browser.runtime.openOptionsPage();
     return;
   }
   
-  // Disable button and show loading
   btn.disabled = true;
   loading.classList.add('active');
   
   try {
-    // Start manual sync
     console.log('[Popup] Starting manual sync...');
     const result = await browser.runtime.sendMessage({ action: 'startManualSync' });
     
     if (result && result.success) {
-      // Update last sync time
       const now = new Date();
       await browser.storage.local.set({ lastSync: now.toISOString() });
       updateLastSync(now);
       
-      // Update stats
       await updateStats();
       
-      // Show success message
-      const message = `Sync completed!\n\nCollected: ${result.totalCollected || 0} conversations\nDuplicates: ${result.totalDuplicates || 0}`;
+      const message = `Sync completed!\n\nCollected: ${result.totalCollected || 0} conversations`;
       showAlert(message, 'success');
     } else {
       showAlert('Sync failed: ' + (result?.error || 'Unknown error'), 'error');
     }
   } catch (error) {
     console.error('[Popup] Sync error:', error);
-    showAlert('Failed to start sync. Please check the console for details.', 'error');
+    showAlert('Failed to start sync. Please check the console.', 'error');
   } finally {
-    // Re-enable button and hide loading
     btn.disabled = false;
     loading.classList.remove('active');
   }
@@ -236,12 +269,12 @@ function updateLastSync(date) {
   const now = new Date();
   const diff = now - date;
   
-  if (diff < 60000) { // Less than 1 minute
+  if (diff < 60000) {
     element.textContent = 'Just synced';
-  } else if (diff < 3600000) { // Less than 1 hour
+  } else if (diff < 3600000) {
     const minutes = Math.floor(diff / 60000);
     element.textContent = `Last sync: ${minutes} minute${minutes > 1 ? 's' : ''} ago`;
-  } else if (diff < 86400000) { // Less than 1 day
+  } else if (diff < 86400000) {
     const hours = Math.floor(diff / 3600000);
     element.textContent = `Last sync: ${hours} hour${hours > 1 ? 's' : ''} ago`;
   } else {
@@ -251,7 +284,6 @@ function updateLastSync(date) {
 
 // Show alert message
 function showAlert(message, type = 'info') {
-  // Create alert element
   const alert = document.createElement('div');
   alert.style.cssText = `
     position: fixed;
@@ -264,12 +296,12 @@ function showAlert(message, type = 'info') {
     font-weight: 500;
     z-index: 1000;
     max-width: 350px;
-    text-align: center;
+    text-align: left;
     animation: slideDown 0.3s ease;
     white-space: pre-line;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.15);
   `;
   
-  // Style based on type
   switch (type) {
     case 'success':
       alert.style.background = '#10b981';
@@ -291,11 +323,10 @@ function showAlert(message, type = 'info') {
   alert.textContent = message;
   document.body.appendChild(alert);
   
-  // Remove after 3 seconds
   setTimeout(() => {
     alert.style.animation = 'slideUp 0.3s ease';
     setTimeout(() => alert.remove(), 300);
-  }, 3000);
+  }, 5000);
 }
 
 // Add CSS animation
@@ -322,11 +353,19 @@ style.textContent = `
       transform: translate(-50%, -20px);
     }
   }
+  
+  @keyframes spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+  }
 `;
 document.head.appendChild(style);
 
-// Auto-refresh stats every 30 seconds
-setInterval(updateStats, 30000);
+// Auto-refresh every 30 seconds
+setInterval(() => {
+  checkConnectionStatus();
+  updateStats();
+}, 30000);
 
 // Initial connection test
 browser.runtime.sendMessage({ action: 'testConnection' }).then(response => {

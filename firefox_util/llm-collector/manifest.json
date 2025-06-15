@@ -17,6 +17,7 @@
     "tabs",
     "notifications",
     "webRequest",
+    "cookies",
     "*://chat.openai.com/*",
     "*://claude.ai/*",
     "*://gemini.google.com/*",

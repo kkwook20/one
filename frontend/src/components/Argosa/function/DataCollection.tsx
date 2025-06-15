@@ -477,14 +477,14 @@ export default function DataCollection() {
     }
   }, [backendConnected]);
 
-  // Check session status - 개선된 버전 (자동 세션 체크)
+  // Check session status - 쿠키 기반 검증 포함
   const checkSessionStatus = useCallback(async (showProgress = false) => {
     if (isCheckingSessions || !backendConnected) return;
     
     setIsCheckingSessions(true);
     setSessionCheckError(null);
     
-    console.log('🔄 Starting automatic session check...');
+    console.log('🔄 Starting session check...');
     
     try {
       // Check ALL platforms to maintain session status
@@ -512,18 +512,24 @@ export default function DataCollection() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               platform: platform,
-              enabled: config.enabled // Pass actual enabled state for auto-verification
+              enabled: config.enabled
             })
           });
           
           if (response.ok) {
-            const sessionData = await response.json() as SessionCheckResponse;
+            const sessionData = await response.json() as SessionCheckResponse & { 
+              cookies?: boolean; 
+              sessionData?: any;
+              status?: string;
+            };
             
             console.log(`📍 Session check for ${platform}:`, {
               platform,
               valid: sessionData.valid,
               lastChecked: sessionData.lastChecked,
-              expiresAt: sessionData.expiresAt
+              expiresAt: sessionData.expiresAt,
+              hasCookies: sessionData.cookies,
+              status: sessionData.status
             });
             
             updatedConfigs[platform] = {
@@ -545,7 +551,6 @@ export default function DataCollection() {
             };
           }
         } catch (error) {
-          // Silently fail for individual platform
           console.error(`Error checking session for ${platform}:`, error);
         }
         
@@ -554,13 +559,11 @@ export default function DataCollection() {
         }
       }
       
-      // Update all configs at once after checking all platforms
+      // Update all configs at once
       setLlmConfigs(updatedConfigs);
       
     } catch (error) {
       setSessionCheckError('Failed to check sessions');
-      // Auto-clear error after 5 seconds
-      setTimeout(() => setSessionCheckError(null), 5000);
     } finally {
       setIsCheckingSessions(false);
     }

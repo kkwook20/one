@@ -1496,6 +1496,38 @@ class AdvancedCodeGenerationEngine:
             scores.append(file_score)
         
         return sum(scores) / len(scores) if scores else 0
+        """전체 품질 점수 계산"""
+        
+        scores = []
+        
+        for file_metrics in metrics.values():
+            # 복잡도 점수 (낮을수록 좋음)
+            complexity_score = max(0, 100 - file_metrics["complexity"] * 10)
+            
+            # 유지보수성 점수
+            maintainability_score = file_metrics["maintainability_index"]
+            
+            # 평균 점수
+            file_score = (complexity_score + maintainability_score) / 2
+            scores.append(file_score)
+        
+        return sum(scores) / len(scores) if scores else 0
+        """전체 품질 점수 계산"""
+        
+        scores = []
+        
+        for file_metrics in metrics.values():
+            # 복잡도 점수 (낮을수록 좋음)
+            complexity_score = max(0, 100 - file_metrics["complexity"] * 10)
+            
+            # 유지보수성 점수
+            maintainability_score = file_metrics["maintainability_index"]
+            
+            # 평균 점수
+            file_score = (complexity_score + maintainability_score) / 2
+            scores.append(file_score)
+        
+        return sum(scores) / len(scores) if scores else 0
     
     async def _evaluate_against_targets(
         self,
@@ -1545,9 +1577,16 @@ class AdvancedCodeGenerationEngine:
         recommendations.append("Add comprehensive unit tests to ensure code reliability")
         
         return recommendations
-    
-    async def _calculate_quality_score(self, metrics: Dict[str, Dict[str, Any]]) -> float:
+
+# ===== 실시간 협업 시스템 =====
+
+class RealtimeCodeCollaborationSystem:
     """실시간 AI 협업 시스템"""
+    
+    def __init__(self):
+        self.active_sessions: Dict[str, Dict[str, Any]] = {}
+        self.websocket_connections: Dict[str, WebSocket] = {}
+        self.message_queue: asyncio.Queue = asyncio.Queue()
     
     def __init__(self):
         self.active_sessions: Dict[str, Dict[str, Any]] = {}

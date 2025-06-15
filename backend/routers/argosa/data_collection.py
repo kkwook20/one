@@ -1,7 +1,7 @@
 # backend/routers/argosa/data_collection.py - 통합된 Argosa 데이터 수집 시스템 (세션 관리 개선)
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, HTTPException, BackgroundTasks, UploadFile, File
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Tuple
 import asyncio
 import json
 from datetime import datetime, timedelta
@@ -364,36 +364,108 @@ async def verify_session_with_firefox(platform: str) -> bool:
         print(f"[Session] Error verifying {platform}: {e}")
         return False
 
-async def update_session_status(platform: str, valid: bool, auto_verify: bool = True):
-    """세션 상태 업데이트 - 자동 검증 포함"""
-    print(f"[Session] Updating {platform}: valid={valid}, auto_verify={auto_verify}")
+async def update_session_status(platform: str, valid: bool, cookies: Optional[List[Dict]] = None, 
+                              session_data: Optional[Dict] = None, reason: str = "manual"):
+    """세션 상태 업데이트 - 쿠키 기반 검증"""
+    print(f"[Session] Updating {platform}: valid={valid}, reason={reason}")
     
-    # auto_verify가 True이고 valid가 False인 경우 실제 검증
-    if auto_verify and not valid:
-        actual_valid = await verify_session_with_firefox(platform)
-        if actual_valid:
-            print(f"[Session] Verification showed {platform} is actually logged in!")
-            valid = True
-    
-    # 세션 데이터 업데이트
-    session_data = {}
+    # 세션 데이터 로드
+    sessions = {}
     if SESSION_DATA_PATH.exists():
         with open(SESSION_DATA_PATH, 'r') as f:
-            session_data = json.load(f)
+            sessions = json.load(f)
     
-    session_data[platform] = {
+    # 기존 상태가 "checking"이고 valid가 False인 경우 처리
+    current_session = sessions.get(platform, {})
+    if current_session.get("status") == "checking" and not valid:
+        print(f"[Session] {platform} is in checking status, keeping as checking")
+        return True
+    
+    # 세션 정보 업데이트
+    sessions[platform] = {
         "valid": valid,
         "lastChecked": datetime.now().isoformat(),
-        "expiresAt": (datetime.now() + timedelta(days=7)).isoformat() if valid else None,
-        "status": "active" if valid else "expired"
+        "expiresAt": None,
+        "status": "active" if valid else "expired",
+        "cookies": cookies or [],
+        "sessionData": session_data or {},
+        "updateReason": reason,
+        "updateTime": datetime.now().isoformat()
     }
     
+    # 쿠키에서 만료 시간 추출
+    if valid and cookies:
+        max_expiry = None
+        for cookie in cookies:
+            if cookie.get("expires"):
+                expiry_time = datetime.fromtimestamp(cookie["expires"])
+                if max_expiry is None or expiry_time > max_expiry:
+                    max_expiry = expiry_time
+        
+        if max_expiry:
+            sessions[platform]["expiresAt"] = max_expiry.isoformat()
+        else:
+            # 쿠키에 만료 시간이 없으면 7일로 설정
+            sessions[platform]["expiresAt"] = (datetime.now() + timedelta(days=7)).isoformat()
+    elif valid and not cookies:
+        # 쿠키 정보 없이 valid인 경우 7일로 설정
+        sessions[platform]["expiresAt"] = (datetime.now() + timedelta(days=7)).isoformat()
+    
+    # 저장
     SESSION_DATA_PATH.parent.mkdir(parents=True, exist_ok=True)
     with open(SESSION_DATA_PATH, 'w') as f:
-        json.dump(session_data, f, indent=2)
+        json.dump(sessions, f, indent=2)
     
-    print(f"[Session] Updated {platform}: valid={valid}")
+    print(f"[Session] Updated {platform}: valid={valid}, expires={sessions[platform].get('expiresAt')}")
     return valid
+
+async def check_session_validity(platform: str) -> Tuple[bool, Optional[str]]:
+    """세션 유효성 확인 - 만료 시간 체크 포함"""
+    print(f"[Session] Checking validity for {platform}")
+    
+    if not SESSION_DATA_PATH.exists():
+        return False, None
+    
+    with open(SESSION_DATA_PATH, 'r') as f:
+        sessions = json.load(f)
+    
+    session = sessions.get(platform, {})
+    
+    # checking 상태는 valid로 간주
+    if session.get("status") == "checking":
+        print(f"[Session] {platform} is in checking status, treating as valid")
+        # checking 상태를 active로 자동 변경
+        session["status"] = "active"
+        session["valid"] = True
+        session["lastChecked"] = datetime.now().isoformat()
+        sessions[platform] = session
+        with open(SESSION_DATA_PATH, 'w') as f:
+            json.dump(sessions, f, indent=2)
+        return True, None
+    
+    # valid 필드 확인
+    if not session.get("valid", False):
+        return False, session.get("expiresAt")
+    
+    # 만료 시간 확인
+    expires_at = session.get("expiresAt")
+    if expires_at:
+        expire_time = datetime.fromisoformat(expires_at)
+        if expire_time < datetime.now():
+            print(f"[Session] {platform} session expired at {expires_at}")
+            # 만료된 세션 업데이트
+            await update_session_status(platform, False, reason="expired")
+            return False, None
+    
+    # 마지막 체크가 24시간 이상 지났으면 재확인 필요
+    last_checked = session.get("lastChecked")
+    if last_checked:
+        last_time = datetime.fromisoformat(last_checked)
+        if (datetime.now() - last_time).total_seconds() > 86400:
+            print(f"[Session] {platform} session needs refresh (>24h)")
+            return False, expires_at
+    
+    return True, expires_at
 
 # ======================== Data Collection Helper Functions ========================
 
@@ -955,26 +1027,16 @@ async def check_sessions(request: SessionCheckRequest):
     try:
         sessions = []
         
-        session_data = {}
-        if SESSION_DATA_PATH.exists():
-            with open(SESSION_DATA_PATH, 'r') as f:
-                session_data = json.load(f)
-        
         for platform in request.platforms:
-            session_info = session_data.get(platform, {})
+            is_valid, expires_at = await check_session_validity(platform)
             
-            expires_at = session_info.get("expiresAt")
-            if expires_at:
-                expires_date = datetime.fromisoformat(expires_at)
-                is_valid = expires_date > datetime.now()
-            else:
-                last_checked = session_info.get("lastChecked")
-                if last_checked:
-                    last_date = datetime.fromisoformat(last_checked)
-                    # 24시간 이내면 유효한 것으로 간주
-                    is_valid = (datetime.now() - last_date).total_seconds() < 86400
-                else:
-                    is_valid = False
+            # 세션 정보 가져오기
+            session_data = {}
+            if SESSION_DATA_PATH.exists():
+                with open(SESSION_DATA_PATH, 'r') as f:
+                    session_data = json.load(f)
+            
+            session_info = session_data.get(platform, {})
             
             sessions.append(SessionStatus(
                 platform=platform,
@@ -995,50 +1057,40 @@ async def check_single_session(request: SingleSessionCheckRequest):
     print(f"\n[Session Check] Platform: {request.platform}, Enabled: {request.enabled}", flush=True)
     
     try:
+        is_valid, expires_at = await check_session_validity(request.platform)
+        
+        # 세션 정보 가져오기
         session_data = {}
         if SESSION_DATA_PATH.exists():
             with open(SESSION_DATA_PATH, 'r') as f:
                 session_data = json.load(f)
-            print(f"[Session Check] Loaded session data: {json.dumps(session_data, indent=2)}", flush=True)
-        else:
-            print(f"[Session Check] No sessions.json file found", flush=True)
         
         session_info = session_data.get(request.platform, {})
-        print(f"[Session Check] Session info for {request.platform}: {session_info}", flush=True)
         
-        # status가 "checking"이면 valid로 간주
-        if session_info.get("status") == "checking":
-            print(f"[Session Check] Status is 'checking', assuming valid", flush=True)
-            # 자동으로 valid로 업데이트
-            is_valid = await update_session_status(request.platform, True, auto_verify=False)
-        else:
-            expires_at = session_info.get("expiresAt")
-            if expires_at:
-                expires_date = datetime.fromisoformat(expires_at)
-                is_valid = expires_date > datetime.now()
-                print(f"[Session Check] Has expiry date: {expires_at}, Valid: {is_valid}", flush=True)
-            else:
-                last_checked = session_info.get("lastChecked")
-                if last_checked:
-                    last_date = datetime.fromisoformat(last_checked)
-                    hours_since = (datetime.now() - last_date).total_seconds() / 3600
-                    # 24시간 이내면 유효한 것으로 간주
-                    is_valid = hours_since < 24
-                    print(f"[Session Check] Last checked: {last_checked}, Hours since: {hours_since:.1f}, Valid: {is_valid}", flush=True)
-                else:
-                    is_valid = False
-                    print(f"[Session Check] No session info, Valid: False", flush=True)
-        
-        # 세션이 invalid이고 enabled인 경우 자동 검증
+        # 세션이 invalid이고 enabled인 경우 Firefox로 실제 검증
         if not is_valid and request.enabled:
-            print(f"[Session Check] Session invalid and enabled, attempting auto-verification...", flush=True)
-            is_valid = await update_session_status(request.platform, False, auto_verify=True)
+            print(f"[Session Check] Session invalid and enabled, attempting Firefox verification...", flush=True)
+            actual_valid = await verify_session_with_firefox(request.platform)
+            if actual_valid:
+                print(f"[Session Check] Firefox verification showed {request.platform} is actually logged in!")
+                is_valid = await update_session_status(request.platform, True, reason="firefox_verified")
+                # 업데이트된 정보 다시 로드
+                with open(SESSION_DATA_PATH, 'r') as f:
+                    session_data = json.load(f)
+                session_info = session_data.get(request.platform, {})
+                expires_at = session_info.get("expiresAt")
+        
+        # 쿠키 정보 포함
+        has_cookies = len(session_info.get("cookies", [])) > 0
         
         response = {
             "platform": request.platform,
             "valid": is_valid,
             "lastChecked": session_info.get("lastChecked", datetime.now().isoformat()),
-            "expiresAt": session_info.get("expiresAt")
+            "expiresAt": expires_at,
+            "cookies": has_cookies,
+            "sessionData": session_info.get("sessionData"),
+            "status": session_info.get("status", "unknown")
         }
         
         print(f"[Session Check] Returning: {json.dumps(response, indent=2)}", flush=True)
@@ -1051,7 +1103,9 @@ async def check_single_session(request: SingleSessionCheckRequest):
             "platform": request.platform,
             "valid": False,
             "lastChecked": datetime.now().isoformat(),
-            "expiresAt": None
+            "expiresAt": None,
+            "cookies": False,
+            "status": "error"
         }
 
 @router.post("/llm/sessions/open-login")
@@ -1078,19 +1132,20 @@ async def open_login_page(request: OpenLoginRequest):
             subprocess.Popen(firefox_cmd + [login_url])
             
             # 세션 파일 업데이트 (checking 상태로)
+            await update_session_status(request.platform, False, reason="login_opened")
+            
+            # checking 상태로 변경
             session_data = {}
             if SESSION_DATA_PATH.exists():
                 with open(SESSION_DATA_PATH, 'r') as f:
                     session_data = json.load(f)
             
             session_data[request.platform] = {
-                "valid": False,
-                "lastChecked": datetime.now().isoformat(),
-                "expiresAt": None,
-                "status": "checking"
+                **session_data.get(request.platform, {}),
+                "status": "checking",
+                "lastChecked": datetime.now().isoformat()
             }
             
-            SESSION_DATA_PATH.parent.mkdir(parents=True, exist_ok=True)
             with open(SESSION_DATA_PATH, 'w') as f:
                 json.dump(session_data, f, indent=2)
             
@@ -1124,13 +1179,48 @@ async def update_session_status_endpoint(update: SessionUpdate):
     print(f"[Session Update] Request from Extension detected!", flush=True)
     
     try:
-        # 세션 상태 업데이트 (자동 검증 없이)
-        await update_session_status(update.platform, update.valid, auto_verify=False)
+        # 쿠키 정보 파싱
+        cookies_list = []
+        if update.cookies:
+            for cookie_data in update.cookies.values():
+                if isinstance(cookie_data, dict):
+                    cookies_list.append(cookie_data)
+        
+        # 세션 상태 업데이트 (쿠키 정보 포함)
+        await update_session_status(
+            update.platform, 
+            update.valid, 
+            cookies=cookies_list,
+            session_data=update.cookies,
+            reason="extension_update"
+        )
         
         print(f"[Session Update] ✅ Successfully updated {update.platform} session", flush=True)
+        print(f"[Session Update] Cookies count: {len(cookies_list)}", flush=True)
         print(f"[Session Update] ===== UPDATE COMPLETE =====\n", flush=True)
         
-        return {"success": True, "expiresAt": (datetime.now() + timedelta(days=7)).isoformat() if update.valid else None}
+        # 만료 시간 계산
+        expires_at = None
+        if update.valid and cookies_list:
+            max_expiry = None
+            for cookie in cookies_list:
+                if cookie.get("expires"):
+                    expiry_time = datetime.fromtimestamp(cookie["expires"])
+                    if max_expiry is None or expiry_time > max_expiry:
+                        max_expiry = expiry_time
+            
+            if max_expiry:
+                expires_at = max_expiry.isoformat()
+            else:
+                expires_at = (datetime.now() + timedelta(days=7)).isoformat()
+        elif update.valid:
+            expires_at = (datetime.now() + timedelta(days=7)).isoformat()
+        
+        return {
+            "success": True, 
+            "expiresAt": expires_at,
+            "cookiesReceived": len(cookies_list)
+        }
         
     except Exception as e:
         print(f"[Session Update] ❌ Error: {e}", flush=True)
@@ -1193,39 +1283,20 @@ async def launch_firefox_sync(request: SyncRequest, background_tasks: Background
         
         # 세션 검증을 skip하지 않는 경우
         if not skip_session_check:
-            # sessions.json 읽기
-            session_data = {}
-            if SESSION_DATA_PATH.exists():
-                try:
-                    with open(SESSION_DATA_PATH, 'r') as f:
-                        session_data = json.load(f)
-                    print(f"[Firefox] Session data loaded: {json.dumps(session_data, indent=2)}", flush=True)
-                except Exception as e:
-                    print(f"[Firefox] Error reading sessions.json: {e}", flush=True)
-                    session_data = {}
-            
-            # 각 플랫폼별 세션 상태 확인
             invalid_sessions = []
+            
             for platform in enabled_platforms:
-                session_info = session_data.get(platform, {})
+                is_valid, _ = await check_session_validity(platform)
                 
-                # status가 "checking"이면 valid로 간주
-                if session_info.get("status") == "checking":
-                    print(f"[Firefox] {platform} is in 'checking' status, treating as valid", flush=True)
-                    await update_session_status(platform, True, auto_verify=False)
-                else:
-                    is_valid = session_info.get("valid", False)
-                    
-                    # 세션이 invalid면 Firefox로 실제 확인
-                    if not is_valid:
-                        print(f"[Firefox] {platform} appears invalid, verifying with Firefox...", flush=True)
-                        actual_valid = await verify_session_with_firefox(platform)
-                        if actual_valid:
-                            print(f"[Firefox] {platform} is actually logged in!", flush=True)
-                            await update_session_status(platform, True, auto_verify=False)
-                        else:
-                            invalid_sessions.append(platform)
-                
+                if not is_valid:
+                    print(f"[Firefox] {platform} appears invalid, verifying with Firefox...", flush=True)
+                    actual_valid = await verify_session_with_firefox(platform)
+                    if actual_valid:
+                        print(f"[Firefox] {platform} is actually logged in!", flush=True)
+                        await update_session_status(platform, True, reason="firefox_verified")
+                    else:
+                        invalid_sessions.append(platform)
+            
             print(f"[Firefox] Invalid sessions after verification: {invalid_sessions}", flush=True)
             
             if invalid_sessions:
@@ -1507,6 +1578,8 @@ async def debug_platform_cookies(platform: str):
             platform_session = session_data.get(platform, {})
             result["session_info"] = platform_session
             result["session_valid"] = platform_session.get("valid", False)
+            result["cookies_count"] = len(platform_session.get("cookies", []))
+            result["cookies_found"] = result["cookies_count"] > 0
         
         print(f"[Debug] Cookie info for {platform}: {json.dumps(result, indent=2)}", flush=True)
         return result

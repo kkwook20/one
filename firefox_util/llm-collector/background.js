@@ -1,21 +1,22 @@
-// LLM Conversation Collector Extension - Background Script (완전히 개선된 버전)
+// LLM Conversation Collector Extension - Background Script with Cookie-based Session Management
 console.log('[LLM Collector] Extension loaded at', new Date().toISOString());
 
-// Configuration - Fixed API URL
-const DEFAULT_API_URL = 'http://localhost:8000/api/argosa/llm';
+// Configuration
+const DEFAULT_API_URL = 'http://localhost:8000/api/argosa';
 let syncCheckInterval = null;
 let currentSyncId = null;
 let isSyncing = false;
 let extensionReady = false;
-let loginCheckInterval = null;
-let sessionCheckTimeouts = {};
 let sessionMonitorInterval = null;
+let cookieCheckInterval = null;
 
-// Platform configurations
+// Platform configurations with cookie domains
 const PLATFORMS = {
   chatgpt: {
     name: 'ChatGPT',
     url: 'https://chat.openai.com',
+    cookieDomain: '.openai.com',
+    sessionCookies: ['__Secure-next-auth.session-token', '_cfuvid'],
     conversationListUrl: 'https://chat.openai.com/backend-api/conversations',
     conversationDetailUrl: (id) => `https://chat.openai.com/backend-api/conversation/${id}`,
     loginSelectors: ['[data-testid="profile-button"]', 'nav button img'],
@@ -23,14 +24,14 @@ const PLATFORMS = {
       () => window.location.pathname === '/chat' || window.location.pathname.startsWith('/c/'),
       () => !window.location.pathname.includes('auth'),
       () => !!document.querySelector('[data-testid="profile-button"]'),
-      () => !!document.querySelector('nav button img'),
-      () => !!document.querySelector('main'),
-      () => !!document.querySelector('[class*="chat"]')
+      () => !!document.querySelector('nav button img')
     ]
   },
   claude: {
     name: 'Claude',
     url: 'https://claude.ai',
+    cookieDomain: '.claude.ai',
+    sessionCookies: ['sessionKey', 'intercom-session'],
     conversationListUrl: 'https://claude.ai/api/chat_conversations',
     conversationDetailUrl: (id) => `https://claude.ai/api/chat_conversations/${id}`,
     loginSelectors: ['[class*="chat"]', '[data-testid="user-menu"]'],
@@ -42,6 +43,8 @@ const PLATFORMS = {
   gemini: {
     name: 'Gemini',
     url: 'https://gemini.google.com',
+    cookieDomain: '.google.com',
+    sessionCookies: ['HSID', 'SSID', 'APISID', 'SAPISID'],
     conversationListUrl: 'https://gemini.google.com/api/conversations',
     conversationDetailUrl: (id) => `https://gemini.google.com/api/conversations/${id}`,
     loginSelectors: ['[aria-label*="Google Account"]', '[data-testid="account-menu"]'],
@@ -52,6 +55,8 @@ const PLATFORMS = {
   deepseek: {
     name: 'DeepSeek',
     url: 'https://chat.deepseek.com',
+    cookieDomain: '.deepseek.com',
+    sessionCookies: ['token', 'session'],
     conversationListUrl: 'https://chat.deepseek.com/api/v0/chat/conversations',
     conversationDetailUrl: (id) => `https://chat.deepseek.com/api/v0/chat/conversation/${id}`,
     loginSelectors: ['[class*="avatar"]', '[class*="user-menu"]'],
@@ -62,6 +67,8 @@ const PLATFORMS = {
   grok: {
     name: 'Grok',
     url: 'https://grok.x.ai',
+    cookieDomain: '.x.ai',
+    sessionCookies: ['auth_token', 'ct0'],
     conversationListUrl: 'https://grok.x.ai/api/conversations',
     conversationDetailUrl: (id) => `https://grok.x.ai/api/conversations/${id}`,
     loginSelectors: ['[data-testid="SideNav_AccountSwitcher_Button"]'],
@@ -72,6 +79,8 @@ const PLATFORMS = {
   perplexity: {
     name: 'Perplexity',
     url: 'https://www.perplexity.ai',
+    cookieDomain: '.perplexity.ai',
+    sessionCookies: ['__session', '_perplexity_session'],
     conversationListUrl: 'https://www.perplexity.ai/api/conversations',
     conversationDetailUrl: (id) => `https://www.perplexity.ai/api/conversations/${id}`,
     loginSelectors: ['[class*="profile"]', '[class*="user-info"]'],
@@ -95,12 +104,9 @@ async function initialize() {
         apiUrl: DEFAULT_API_URL 
       });
       console.log('[LLM Collector] Set default API URL:', DEFAULT_API_URL);
-    } else {
-      console.log('[LLM Collector] Using API URL:', apiUrl);
     }
     
-    // Wait a bit for Firefox to fully start
-    console.log('[LLM Collector] Waiting for Firefox to stabilize...');
+    // Wait for stabilization
     await new Promise(resolve => setTimeout(resolve, 3000));
     
     // Test API connection
@@ -114,18 +120,163 @@ async function initialize() {
     extensionReady = true;
     console.log('[LLM Collector] Extension ready!');
     
-    // Start periodic sync check
+    // Start periodic checks
     startPeriodicCheck();
+    startCookieMonitor();
     
-    // Start session monitor
-    startSessionMonitor();
+    // Initial session update
+    await updateAllSessionsFromCookies();
     
-    // Check immediately on startup
+    // Check for pending sync
     await checkForPendingSync();
     
   } catch (error) {
     console.error('[LLM Collector] Initialization error:', error);
   }
+}
+
+// ======================== Cookie-Based Session Management ========================
+
+async function checkPlatformCookies(platform) {
+  const config = PLATFORMS[platform];
+  if (!config) return false;
+  
+  console.log(`[Cookie Check] Checking cookies for ${platform}...`);
+  
+  try {
+    const cookiePromises = config.sessionCookies.map(cookieName => 
+      browser.cookies.get({
+        url: config.url,
+        name: cookieName
+      })
+    );
+    
+    const cookies = await Promise.all(cookiePromises);
+    const validCookies = cookies.filter(cookie => cookie && cookie.value);
+    
+    console.log(`[Cookie Check] ${platform}: Found ${validCookies.length}/${config.sessionCookies.length} session cookies`);
+    
+    // Platform-specific validation
+    let isValid = false;
+    let sessionData = {};
+    
+    switch (platform) {
+      case 'chatgpt':
+        // ChatGPT needs the session token
+        const sessionToken = validCookies.find(c => c.name.includes('session-token'));
+        isValid = !!sessionToken;
+        if (sessionToken) {
+          sessionData = {
+            hasSessionToken: true,
+            expiresAt: sessionToken.expirationDate ? new Date(sessionToken.expirationDate * 1000).toISOString() : null
+          };
+        }
+        break;
+        
+      case 'claude':
+        // Claude needs sessionKey
+        const sessionKey = validCookies.find(c => c.name === 'sessionKey');
+        isValid = !!sessionKey;
+        if (sessionKey) {
+          sessionData = {
+            hasSessionKey: true,
+            expiresAt: sessionKey.expirationDate ? new Date(sessionKey.expirationDate * 1000).toISOString() : null
+          };
+        }
+        break;
+        
+      case 'gemini':
+        // Google needs multiple auth cookies
+        const hasGoogleAuth = validCookies.some(c => ['HSID', 'SSID', 'APISID'].includes(c.name));
+        isValid = hasGoogleAuth;
+        if (hasGoogleAuth) {
+          sessionData = {
+            hasGoogleAuth: true,
+            cookieCount: validCookies.length
+          };
+        }
+        break;
+        
+      default:
+        // For others, any valid cookie means logged in
+        isValid = validCookies.length > 0;
+        if (isValid) {
+          sessionData = {
+            cookieCount: validCookies.length
+          };
+        }
+    }
+    
+    console.log(`[Cookie Check] ${platform} session valid: ${isValid}`, sessionData);
+    
+    return {
+      valid: isValid,
+      cookies: validCookies.map(c => ({
+        name: c.name,
+        domain: c.domain,
+        expires: c.expirationDate
+      })),
+      sessionData
+    };
+    
+  } catch (error) {
+    console.error(`[Cookie Check] Error checking ${platform} cookies:`, error);
+    return { valid: false, error: error.message };
+  }
+}
+
+async function updateAllSessionsFromCookies() {
+  console.log('[Session Update] Checking all platform sessions via cookies...');
+  
+  for (const platform of Object.keys(PLATFORMS)) {
+    try {
+      const cookieStatus = await checkPlatformCookies(platform);
+      
+      // Update backend with detailed session info
+      const { apiUrl } = await browser.storage.local.get(['apiUrl']);
+      const url = apiUrl || DEFAULT_API_URL;
+      
+      const updateData = {
+        platform: platform,
+        valid: cookieStatus.valid,
+        cookies: cookieStatus.cookies,
+        sessionData: cookieStatus.sessionData,
+        checkedAt: new Date().toISOString(),
+        checkedBy: 'cookie_check'
+      };
+      
+      console.log(`[Session Update] Sending update for ${platform}:`, updateData);
+      
+      const updateResponse = await fetch(`${url}/llm/sessions/update`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updateData)
+      });
+      
+      if (updateResponse.ok) {
+        console.log(`[Session Update] ✅ Updated ${platform} session status`);
+      } else {
+        console.error(`[Session Update] Failed to update ${platform}:`, updateResponse.status);
+      }
+      
+    } catch (error) {
+      console.error(`[Session Update] Error updating ${platform}:`, error);
+    }
+  }
+}
+
+function startCookieMonitor() {
+  if (cookieCheckInterval) {
+    clearInterval(cookieCheckInterval);
+  }
+  
+  // Check cookies every 15 seconds
+  cookieCheckInterval = setInterval(async () => {
+    if (!extensionReady || isSyncing) return;
+    await updateAllSessionsFromCookies();
+  }, 15000);
+  
+  console.log('[Cookie Monitor] Started monitoring cookies every 15s');
 }
 
 // ======================== API Connection ========================
@@ -135,70 +286,22 @@ async function testAPIConnection() {
     const { apiUrl } = await browser.storage.local.get(['apiUrl']);
     const url = apiUrl || DEFAULT_API_URL;
     
-    console.log('[LLM Collector] Testing API connection to:', url);
+    console.log('[API Test] Testing connection to:', url);
     
-    const response = await fetch(`${url}/sync/config`, {
+    const response = await fetch(`${url}/llm/sync/config`, {
       method: 'GET',
       headers: {
         'Content-Type': 'application/json'
       }
     });
     
-    console.log('[LLM Collector] API test response status:', response.status);
+    console.log('[API Test] Response status:', response.status);
     return response.ok;
     
   } catch (error) {
-    console.error('[LLM Collector] API connection test error:', error);
+    console.error('[API Test] Connection error:', error);
     return false;
   }
-}
-
-// ======================== Session Monitor ========================
-
-function startSessionMonitor() {
-  if (sessionMonitorInterval) {
-    clearInterval(sessionMonitorInterval);
-  }
-  
-  // Monitor active tabs for session changes
-  sessionMonitorInterval = setInterval(async () => {
-    if (!extensionReady || isSyncing) return;
-    
-    try {
-      const tabs = await browser.tabs.query({ active: true, currentWindow: true });
-      
-      for (const tab of tabs) {
-        // Check if it's a supported platform
-        for (const [platform, config] of Object.entries(PLATFORMS)) {
-          if (tab.url && tab.url.includes(config.url)) {
-            // Check session status
-            const isLoggedIn = await checkPlatformSession(platform, tab);
-            
-            if (isLoggedIn) {
-              // Update backend if logged in
-              const { apiUrl } = await browser.storage.local.get(['apiUrl']);
-              const apiEndpoint = apiUrl || DEFAULT_API_URL;
-              
-              await fetch(`${apiEndpoint}/sessions/update`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  platform: platform,
-                  valid: true
-                })
-              });
-            }
-            
-            break;
-          }
-        }
-      }
-    } catch (error) {
-      // Silently fail
-    }
-  }, 10000); // Check every 10 seconds
-  
-  console.log('[LLM Collector] Started session monitor');
 }
 
 // ======================== Sync Management ========================
@@ -208,19 +311,18 @@ function startPeriodicCheck() {
     clearInterval(syncCheckInterval);
   }
   
-  // Check every 2 seconds for pending sync
   syncCheckInterval = setInterval(async () => {
     if (!isSyncing && extensionReady) {
       await checkForPendingSync();
     }
   }, 2000);
   
-  console.log('[LLM Collector] Started periodic sync check (every 2s)');
+  console.log('[Sync Check] Started periodic check every 2s');
 }
 
 async function checkForPendingSync() {
   if (!extensionReady) {
-    console.log('[LLM Collector] Extension not ready yet, skipping check');
+    console.log('[Sync Check] Extension not ready');
     return;
   }
   
@@ -228,7 +330,7 @@ async function checkForPendingSync() {
     const { apiUrl } = await browser.storage.local.get(['apiUrl']);
     const url = apiUrl || DEFAULT_API_URL;
     
-    const response = await fetch(`${url}/sync/config`, {
+    const response = await fetch(`${url}/llm/sync/config`, {
       method: 'GET',
       headers: {
         'Content-Type': 'application/json'
@@ -242,7 +344,7 @@ async function checkForPendingSync() {
     const syncConfig = await response.json();
     
     if (syncConfig.status !== 'no_config' && syncConfig.status === 'pending') {
-      console.log('[LLM Collector] 🚀 Found pending sync!', syncConfig);
+      console.log('[Sync] 🚀 Found pending sync!', syncConfig);
       
       // Show notification
       await browser.notifications.create({
@@ -258,35 +360,35 @@ async function checkForPendingSync() {
         syncCheckInterval = null;
       }
       
-      // Start sync process
+      // Start sync
       await startSyncProcess(syncConfig);
       
-      // Resume periodic check after sync
+      // Resume periodic check
       startPeriodicCheck();
     }
     
   } catch (error) {
-    console.error('[LLM Collector] Error checking for sync:', error);
+    console.error('[Sync Check] Error:', error);
   }
 }
 
 async function startSyncProcess(syncConfig) {
   if (isSyncing) {
-    console.log('[LLM Collector] Sync already in progress');
+    console.log('[Sync] Already in progress');
     return;
   }
   
   isSyncing = true;
   currentSyncId = syncConfig.id;
-  const autoClose = syncConfig.auto_close !== false; // 기본값 true
+  const autoClose = syncConfig.auto_close !== false;
   
-  console.log('[LLM Collector] Starting sync process...', syncConfig);
+  console.log('[Sync] Starting process...', syncConfig);
   
   try {
     const { apiUrl } = await browser.storage.local.get(['apiUrl']);
     const url = apiUrl || DEFAULT_API_URL;
     
-    // Update status to syncing
+    // Update status
     await updateSyncProgress(url, syncConfig.id, {
       status: 'syncing',
       progress: 0,
@@ -299,11 +401,15 @@ async function startSyncProcess(syncConfig) {
       .filter(p => p.enabled || p.platform)
       .map(p => p.platform || p);
     
-    console.log('[LLM Collector] Enabled platforms:', enabledPlatforms);
+    console.log('[Sync] Enabled platforms:', enabledPlatforms);
     
     if (enabledPlatforms.length === 0) {
-      throw new Error('No platforms enabled for sync');
+      throw new Error('No platforms enabled');
     }
+    
+    // Final cookie check before sync
+    console.log('[Sync] Final session check before sync...');
+    await updateAllSessionsFromCookies();
     
     let totalCollected = 0;
     let currentProgress = 0;
@@ -314,11 +420,11 @@ async function startSyncProcess(syncConfig) {
       const platform = enabledPlatforms[i];
       
       if (!PLATFORMS[platform]) {
-        console.warn(`[LLM Collector] Unknown platform: ${platform}`);
+        console.warn(`[Sync] Unknown platform: ${platform}`);
         continue;
       }
       
-      console.log(`[LLM Collector] Syncing ${platform} (${i + 1}/${enabledPlatforms.length})...`);
+      console.log(`[Sync] Processing ${platform} (${i + 1}/${enabledPlatforms.length})...`);
       
       // Update progress
       await updateSyncProgress(url, syncConfig.id, {
@@ -330,24 +436,31 @@ async function startSyncProcess(syncConfig) {
       });
       
       try {
-        // Perform platform sync with session check
-        const result = await performPlatformSyncWithSessionCheck(platform, syncConfig.settings || {});
+        // Check cookies one more time for this platform
+        const cookieStatus = await checkPlatformCookies(platform);
+        
+        if (!cookieStatus.valid) {
+          console.warn(`[Sync] ${platform} session invalid, skipping...`);
+          continue;
+        }
+        
+        // Perform sync
+        const result = await performPlatformSync(platform, syncConfig.settings || {});
         if (result && result.collected) {
           totalCollected += result.collected;
-          console.log(`[LLM Collector] Collected ${result.collected} from ${platform}`);
+          console.log(`[Sync] Collected ${result.collected} from ${platform}`);
         }
       } catch (error) {
-        console.error(`[LLM Collector] Error syncing ${platform}:`, error);
-        // Continue with next platform even if one fails
+        console.error(`[Sync] Error with ${platform}:`, error);
       }
       
       currentProgress += progressStep;
       
-      // Random delay between platforms
+      // Delay between platforms
       if (i < enabledPlatforms.length - 1) {
         const delay = (syncConfig.settings?.randomDelay || 5) * 1000;
         const randomDelay = delay + Math.random() * 3000;
-        console.log(`[LLM Collector] Waiting ${Math.round(randomDelay/1000)}s before next platform...`);
+        console.log(`[Sync] Waiting ${Math.round(randomDelay/1000)}s...`);
         await new Promise(resolve => setTimeout(resolve, randomDelay));
       }
     }
@@ -360,21 +473,20 @@ async function startSyncProcess(syncConfig) {
       message: 'Sync completed successfully'
     });
     
-    console.log(`[LLM Collector] ✅ Sync completed! Collected ${totalCollected} conversations`);
+    console.log(`[Sync] ✅ Completed! Collected ${totalCollected} conversations`);
     
-    // Show completion notification
+    // Show notification
     await browser.notifications.create({
       type: 'basic',
       iconUrl: browser.extension.getURL('icon.png'),
-      title: 'LLM Collector',
-      message: `Sync completed! Collected ${totalCollected} conversations.`
+      title: 'Sync Complete',
+      message: `Collected ${totalCollected} conversations.`
     });
     
-    // Auto close Firefox if configured
+    // Auto close if configured
     if (autoClose) {
-      console.log('[LLM Collector] Auto-closing Firefox in 5 seconds...');
+      console.log('[Sync] Auto-closing in 5 seconds...');
       setTimeout(() => {
-        // Close all tabs to trigger Firefox close
         browser.tabs.query({}).then(tabs => {
           tabs.forEach(tab => browser.tabs.remove(tab.id));
         });
@@ -382,7 +494,7 @@ async function startSyncProcess(syncConfig) {
     }
     
   } catch (error) {
-    console.error('[LLM Collector] Sync error:', error);
+    console.error('[Sync] Error:', error);
     
     const { apiUrl } = await browser.storage.local.get(['apiUrl']);
     const url = apiUrl || DEFAULT_API_URL;
@@ -390,16 +502,15 @@ async function startSyncProcess(syncConfig) {
     await updateSyncProgress(url, currentSyncId, {
       status: 'error',
       progress: 0,
-      message: error.message || 'Unknown error occurred',
+      message: error.message || 'Unknown error',
       error: error.message
     });
     
-    // Show error notification
     await browser.notifications.create({
       type: 'basic',
       iconUrl: browser.extension.getURL('icon.png'),
-      title: 'LLM Collector - Error',
-      message: `Sync failed: ${error.message}`
+      title: 'Sync Failed',
+      message: error.message
     });
     
   } finally {
@@ -408,251 +519,39 @@ async function startSyncProcess(syncConfig) {
   }
 }
 
-// ======================== Session Management ========================
-
-async function checkPlatformSession(platform, tab) {
-  console.log(`[LLM Collector] Checking session for ${platform}...`);
-  
-  const platformConfig = PLATFORMS[platform];
-  if (!platformConfig) return false;
-  
-  try {
-    // Create comprehensive check code
-    const checkCode = `
-      (async function() {
-        const platform = '${platform}';
-        const config = ${JSON.stringify({
-          loginSelectors: platformConfig.loginSelectors,
-          loginIndicators: platformConfig.loginIndicators.map(fn => fn.toString())
-        })};
-        
-        console.log('[Session Check] Starting check for', platform);
-        console.log('[Session Check] Current URL:', window.location.href);
-        
-        // Method 1: Check selectors
-        let selectorFound = false;
-        for (const selector of config.loginSelectors) {
-          try {
-            const element = document.querySelector(selector);
-            if (element) {
-              console.log('[Session Check] Found selector:', selector);
-              selectorFound = true;
-              break;
-            }
-          } catch (e) {
-            console.error('[Session Check] Selector error:', e);
-          }
-        }
-        
-        // Method 2: Execute indicator functions
-        let indicatorPassed = false;
-        for (let i = 0; i < config.loginIndicators.length; i++) {
-          try {
-            const fnStr = config.loginIndicators[i];
-            const fn = new Function('return ' + fnStr)();
-            const result = fn();
-            console.log('[Session Check] Indicator', i, 'result:', result);
-            if (result) {
-              indicatorPassed = true;
-              break;
-            }
-          } catch (e) {
-            console.error('[Session Check] Indicator error:', e);
-          }
-        }
-        
-        // Method 3: Platform-specific checks
-        let platformSpecificCheck = false;
-        if (platform === 'chatgpt') {
-          // Check for ChatGPT specific elements
-          platformSpecificCheck = (
-            window.location.pathname === '/chat' ||
-            window.location.pathname.startsWith('/c/') ||
-            !!document.querySelector('[role="main"]') ||
-            !!document.querySelector('[class*="thread"]') ||
-            !!document.querySelector('[class*="message"]')
-          );
-        }
-        
-        const loggedIn = selectorFound || indicatorPassed || platformSpecificCheck;
-        
-        console.log('[Session Check] Results:', {
-          selectorFound,
-          indicatorPassed,
-          platformSpecificCheck,
-          loggedIn
-        });
-        
-        return { 
-          loggedIn, 
-          platform,
-          url: window.location.href,
-          checks: {
-            selectors: selectorFound,
-            indicators: indicatorPassed,
-            specific: platformSpecificCheck
-          }
-        };
-      })();
-    `;
-    
-    const results = await browser.tabs.executeScript(tab.id, { code: checkCode });
-    const sessionStatus = results[0];
-    
-    console.log(`[LLM Collector] ${platform} detailed session check:`, sessionStatus);
-    
-    // Always update backend with session status
-    const { apiUrl } = await browser.storage.local.get(['apiUrl']);
-    const url = apiUrl || DEFAULT_API_URL;
-    
-    const updateResponse = await fetch(`${url}/sessions/update`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        platform: platform,
-        valid: sessionStatus.loggedIn
-      })
-    });
-    
-    if (updateResponse.ok) {
-      console.log(`[LLM Collector] ✅ Session status updated for ${platform}: ${sessionStatus.loggedIn}`);
-    }
-    
-    return sessionStatus.loggedIn;
-    
-  } catch (error) {
-    console.error(`[LLM Collector] Error checking ${platform} session:`, error);
-    return false;
-  }
-}
-
-async function monitorLoginPage(tabId, platform) {
-  console.log(`[LLM Collector] Monitoring login page for ${platform}...`);
-  
-  // Clear any existing interval
-  if (loginCheckInterval) {
-    clearInterval(loginCheckInterval);
-    loginCheckInterval = null;
-  }
-  
-  let checkCount = 0;
-  const maxChecks = 60; // 5 minutes (5 seconds * 60)
-  
-  loginCheckInterval = setInterval(async () => {
-    checkCount++;
-    
-    try {
-      const tab = await browser.tabs.get(tabId);
-      
-      // Tab closed
-      if (!tab) {
-        clearInterval(loginCheckInterval);
-        loginCheckInterval = null;
-        return;
-      }
-      
-      // Check if logged in
-      const isLoggedIn = await checkPlatformSession(platform, tab);
-      
-      if (isLoggedIn) {
-        console.log(`[LLM Collector] ${platform} login detected!`);
-        
-        // Clear interval
-        clearInterval(loginCheckInterval);
-        loginCheckInterval = null;
-        
-        // Show notification
-        await browser.notifications.create({
-          type: 'basic',
-          iconUrl: browser.extension.getURL('icon.png'),
-          title: 'Login Successful',
-          message: `${PLATFORMS[platform].name} session is now active. You can close this tab.`
-        });
-        
-        // Auto close tab after 3 seconds
-        setTimeout(() => {
-          browser.tabs.remove(tabId).catch(() => {});
-        }, 3000);
-      }
-      
-      // Timeout check
-      if (checkCount >= maxChecks) {
-        console.log(`[LLM Collector] Login monitoring timeout for ${platform}`);
-        clearInterval(loginCheckInterval);
-        loginCheckInterval = null;
-      }
-      
-    } catch (error) {
-      console.error(`[LLM Collector] Error monitoring login:`, error);
-      clearInterval(loginCheckInterval);
-      loginCheckInterval = null;
-    }
-  }, 5000); // Check every 5 seconds
-}
-
-// ======================== Platform Sync ========================
-
-async function performPlatformSyncWithSessionCheck(platform, settings) {
+async function performPlatformSync(platform, settings) {
   const platformConfig = PLATFORMS[platform];
   if (!platformConfig) {
     throw new Error(`Unknown platform: ${platform}`);
   }
   
-  console.log(`[LLM Collector] Opening ${platform} at ${platformConfig.url}...`);
+  console.log(`[Platform Sync] Opening ${platform}...`);
   
-  // Open platform in new tab
   const tab = await browser.tabs.create({ 
     url: platformConfig.url,
     active: settings.debug !== false
   });
   
   try {
-    // Wait for page to load
-    console.log(`[LLM Collector] Waiting for ${platform} to load...`);
+    // Wait for load
     await waitForTabLoad(tab.id);
     await new Promise(resolve => setTimeout(resolve, 5000));
     
-    // Check session
-    const isLoggedIn = await checkPlatformSession(platform, tab);
-    
-    if (!isLoggedIn) {
-      console.log(`[LLM Collector] ${platform} session expired, skipping...`);
-      
-      const { apiUrl } = await browser.storage.local.get(['apiUrl']);
-      const url = apiUrl || DEFAULT_API_URL;
-      
-      await updateSyncProgress(url, currentSyncId, {
-        status: 'error',
-        progress: 0,
-        message: `${platform} session expired. Please log in first.`,
-        error: 'session_expired'
-      });
-      
-      return {
-        platform: platform,
-        collected: 0,
-        error: 'Session expired'
-      };
-    }
-    
-    // Session is valid, proceed with collection
-    console.log(`[LLM Collector] ${platform} session valid, proceeding with collection...`);
-    
-    // Inject content script to collect conversations
+    // Inject collection code
     const collectionCode = getCollectionCode(platform, platformConfig, settings);
     const results = await browser.tabs.executeScript(tab.id, { code: collectionCode });
     
     const result = results[0];
-    console.log(`[LLM Collector] Collection result for ${platform}:`, result);
+    console.log(`[Platform Sync] Result for ${platform}:`, result);
     
-    // Save conversations to backend
+    // Save to backend
     if (result.collected > 0) {
       const { apiUrl } = await browser.storage.local.get(['apiUrl']);
       const url = apiUrl || DEFAULT_API_URL;
       
-      console.log(`[LLM Collector] Saving ${result.collected} conversations to backend...`);
+      console.log(`[Platform Sync] Saving ${result.collected} conversations...`);
       
-      const saveResponse = await fetch(`${url}/conversations/save`, {
+      const saveResponse = await fetch(`${url}/llm/conversations/save`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -663,39 +562,37 @@ async function performPlatformSyncWithSessionCheck(platform, settings) {
       });
       
       if (!saveResponse.ok) {
-        console.error('[LLM Collector] Failed to save conversations:', saveResponse.status);
+        console.error('[Platform Sync] Save failed:', saveResponse.status);
       } else {
-        console.log('[LLM Collector] Conversations saved successfully');
+        console.log('[Platform Sync] Saved successfully');
       }
     }
     
     return result;
     
   } catch (error) {
-    console.error(`[LLM Collector] Error in ${platform} sync:`, error);
+    console.error(`[Platform Sync] Error:`, error);
     throw error;
     
   } finally {
-    // Close tab
-    console.log(`[LLM Collector] Closing ${platform} tab...`);
     await browser.tabs.remove(tab.id);
   }
 }
 
+// ======================== Collection Code Generation ========================
+
 function getCollectionCode(platform, platformConfig, settings) {
   return `
     (async function() {
-      console.log('[LLM Collector Content] Starting collection for ${platform}...');
+      console.log('[Collector] Starting collection for ${platform}...');
       
       try {
         const conversations = [];
         const collectedIds = new Set();
         const limit = ${settings.maxConversations || 20};
         
-        // Platform-specific collection logic
+        // Platform-specific collection
         if ('${platform}' === 'chatgpt') {
-          console.log('[LLM Collector Content] Fetching ChatGPT conversations...');
-          
           try {
             const response = await fetch('${platformConfig.conversationListUrl}', {
               credentials: 'include',
@@ -704,12 +601,9 @@ function getCollectionCode(platform, platformConfig, settings) {
               }
             });
             
-            console.log('[LLM Collector Content] Response status:', response.status);
-            
             if (response.ok) {
               const data = await response.json();
               const items = data.items || [];
-              console.log('[LLM Collector Content] Found', items.length, 'conversations');
               
               for (let i = 0; i < Math.min(items.length, limit); i++) {
                 const conv = items[i];
@@ -726,26 +620,10 @@ function getCollectionCode(platform, platformConfig, settings) {
               }
             }
           } catch (err) {
-            console.error('[LLM Collector Content] ChatGPT fetch error:', err);
-            
-            // Fallback: try to scrape from DOM
-            const convElements = document.querySelectorAll('[data-testid="conversation-list-item"]');
-            convElements.forEach((elem, idx) => {
-              if (idx < limit) {
-                const titleElem = elem.querySelector('[class*="title"]');
-                conversations.push({
-                  id: 'chatgpt_' + Date.now() + '_' + idx,
-                  title: titleElem ? titleElem.textContent : 'Conversation ' + (idx + 1),
-                  created_at: new Date().toISOString(),
-                  platform: 'chatgpt'
-                });
-              }
-            });
+            console.error('[Collector] API error:', err);
           }
         }
         else if ('${platform}' === 'claude') {
-          console.log('[LLM Collector Content] Fetching Claude conversations...');
-          
           try {
             const response = await fetch('${platformConfig.conversationListUrl}', {
               credentials: 'include',
@@ -774,12 +652,12 @@ function getCollectionCode(platform, platformConfig, settings) {
               }
             }
           } catch (err) {
-            console.error('[LLM Collector Content] Claude fetch error:', err);
+            console.error('[Collector] API error:', err);
           }
         }
-        // Add other platforms as needed...
+        // Add other platforms...
         
-        console.log('[LLM Collector Content] Collected', conversations.length, 'conversations');
+        console.log('[Collector] Collected', conversations.length, 'conversations');
         
         return {
           platform: '${platform}',
@@ -788,7 +666,7 @@ function getCollectionCode(platform, platformConfig, settings) {
         };
         
       } catch (error) {
-        console.error('[LLM Collector Content] Collection error:', error);
+        console.error('[Collector] Error:', error);
         return {
           platform: '${platform}',
           collected: 0,
@@ -803,9 +681,7 @@ function getCollectionCode(platform, platformConfig, settings) {
 
 async function updateSyncProgress(apiUrl, syncId, progress) {
   try {
-    console.log('[LLM Collector] Updating progress:', progress);
-    
-    const response = await fetch(`${apiUrl}/sync/progress`, {
+    const response = await fetch(`${apiUrl}/llm/sync/progress`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -816,11 +692,11 @@ async function updateSyncProgress(apiUrl, syncId, progress) {
     });
     
     if (!response.ok) {
-      console.error('[LLM Collector] Failed to update progress:', response.status);
+      console.error('[Progress] Update failed:', response.status);
     }
     
   } catch (error) {
-    console.error('[LLM Collector] Failed to update progress:', error);
+    console.error('[Progress] Error:', error);
   }
 }
 
@@ -843,66 +719,13 @@ async function waitForTabLoad(tabId, timeout = 30000) {
   });
 }
 
-async function getStats() {
-  try {
-    const { apiUrl } = await browser.storage.local.get(['apiUrl']);
-    const url = apiUrl || DEFAULT_API_URL;
-    
-    const response = await fetch(`${url}/conversations/stats`);
-    if (response.ok) {
-      return await response.json();
-    }
-  } catch (error) {
-    console.error('[LLM Collector] Failed to get stats:', error);
-  }
-  return { daily_stats: {} };
-}
+// ======================== Message Handling ========================
 
-async function handleSessionVerifyTrigger(platform) {
-  console.log(`[LLM Collector] Session verify trigger for ${platform}`);
-  
-  const triggerFile = `session-verify-${platform}.trigger`;
-  const resultFile = `session-verify-${platform}.result`;
-  
-  try {
-    // Check current session
-    const tabs = await browser.tabs.query({ active: true, currentWindow: true });
-    if (tabs.length > 0) {
-      const isLoggedIn = await checkPlatformSession(platform, tabs[0]);
-      
-      // Save result for backend
-      const result = {
-        platform: platform,
-        valid: isLoggedIn,
-        timestamp: new Date().toISOString()
-      };
-      
-      // Send result to backend
-      const { apiUrl } = await browser.storage.local.get(['apiUrl']);
-      const url = apiUrl || DEFAULT_API_URL;
-      
-      await fetch(`${url}/sessions/verify-result`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(result)
-      });
-      
-      console.log(`[LLM Collector] Verify result sent for ${platform}: ${isLoggedIn}`);
-    }
-  } catch (error) {
-    console.error(`[LLM Collector] Error in verify trigger:`, error);
-  }
-}
-
-// ======================== Event Listeners ========================
-
-// Listen for messages from popup or content scripts
 browser.runtime.onMessage.addListener(async (message, sender, sendResponse) => {
-  console.log('[LLM Collector] Received message:', message);
+  console.log('[Message] Received:', message);
   
   switch (message.action) {
     case 'startSync':
-      // Manual sync trigger from popup
       if (!isSyncing) {
         await checkForPendingSync();
       }
@@ -917,77 +740,87 @@ browser.runtime.onMessage.addListener(async (message, sender, sendResponse) => {
       });
       break;
       
-    case 'stopSync':
-      // Cancel current sync
-      if (isSyncing && currentSyncId) {
-        const { apiUrl } = await browser.storage.local.get(['apiUrl']);
-        const url = apiUrl || DEFAULT_API_URL;
-        
-        await fetch(`${url}/sync/cancel/${currentSyncId}`, {
-          method: 'POST'
-        });
-        
-        isSyncing = false;
-        currentSyncId = null;
-        sendResponse({ success: true });
-      }
-      break;
-      
     case 'testConnection':
       const result = await testAPIConnection();
       sendResponse({ connected: result });
       break;
-    
+      
+    case 'checkCookies':
+      const cookieStatus = await checkPlatformCookies(message.platform);
+      sendResponse(cookieStatus);
+      break;
+      
+    case 'updateSessions':
+      await updateAllSessionsFromCookies();
+      sendResponse({ success: true });
+      break;
+      
     case 'getStats':
-      // Return stats to popup
-      const stats = await getStats();
-      sendResponse({ stats: stats });
+      try {
+        const { apiUrl } = await browser.storage.local.get(['apiUrl']);
+        const url = apiUrl || DEFAULT_API_URL;
+        
+        const response = await fetch(`${url}/llm/conversations/stats`);
+        if (response.ok) {
+          const stats = await response.json();
+          sendResponse({ stats: stats });
+        } else {
+          sendResponse({ stats: null });
+        }
+      } catch (error) {
+        sendResponse({ stats: null });
+      }
       break;
   }
   
   return true;
 });
 
-// URL trigger detection - 개선된 버전
+// ======================== Tab Monitoring ========================
+
 browser.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
   if (!changeInfo.url) return;
   
   const url = changeInfo.url;
   
-  // Platform detection for automatic session check
+  // Detect platform visits
   for (const [platform, config] of Object.entries(PLATFORMS)) {
     if (url.includes(config.url) && !url.includes('#')) {
-      // Automatically check session when visiting platform
-      console.log(`[LLM Collector] ${platform} page detected, scheduling session check...`);
+      console.log(`[Tab Monitor] ${platform} detected`);
       
-      // Wait for page to fully load
+      // Check cookies after page loads
       setTimeout(async () => {
-        try {
-          const isLoggedIn = await checkPlatformSession(platform, tab);
-          console.log(`[LLM Collector] ${platform} auto-check result: ${isLoggedIn}`);
-        } catch (error) {
-          console.error(`[LLM Collector] Auto session check error:`, error);
-        }
+        const cookieStatus = await checkPlatformCookies(platform);
+        console.log(`[Tab Monitor] ${platform} cookie status:`, cookieStatus);
+        
+        // Update backend
+        const { apiUrl } = await browser.storage.local.get(['apiUrl']);
+        const apiEndpoint = apiUrl || DEFAULT_API_URL;
+        
+        await fetch(`${apiEndpoint}/llm/sessions/update`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            platform: platform,
+            valid: cookieStatus.valid,
+            cookies: cookieStatus.cookies,
+            sessionData: cookieStatus.sessionData
+          })
+        });
       }, 5000);
       
       break;
     }
   }
   
-  // Sync trigger detection
-  if (url.includes('#sync-trigger') || 
-      url.includes('#llm-sync-trigger') ||
-      url === 'about:blank#sync' ||
-      url.includes('about:blank#llm-sync-trigger')) {
+  // Sync trigger
+  if (url.includes('#llm-sync-trigger') || url.includes('about:blank#llm-sync-trigger')) {
+    console.log('[Tab Monitor] 🎯 Sync trigger detected!');
     
-    console.log('[LLM Collector] 🎯 Sync trigger detected!', url);
-    
-    // Close the trigger tab after delay
     setTimeout(() => {
       browser.tabs.remove(tabId).catch(() => {});
     }, 1000);
     
-    // Check for pending sync after a short delay
     setTimeout(async () => {
       if (!isSyncing) {
         await checkForPendingSync();
@@ -995,11 +828,10 @@ browser.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
     }, 2000);
   }
   
-  // Login page detection
+  // Login detection
   else if (url.includes('#llm-collector-login')) {
-    console.log('[LLM Collector] 🔐 Login page detected!', url);
+    console.log('[Tab Monitor] 🔐 Login page detected!');
     
-    // Detect which platform
     let platform = null;
     for (const [key, config] of Object.entries(PLATFORMS)) {
       if (url.includes(config.url)) {
@@ -1009,85 +841,119 @@ browser.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
     }
     
     if (platform) {
-      console.log(`[LLM Collector] Monitoring ${platform} login...`);
+      console.log(`[Tab Monitor] Monitoring ${platform} login...`);
       
-      // Start monitoring for login
-      setTimeout(() => {
-        monitorLoginPage(tabId, platform);
-      }, 5000); // Wait 5 seconds for page to load
-    }
-  }
-  
-  // Session verify trigger
-  else if (url.includes('#verify-session-')) {
-    const match = url.match(/#verify-session-(\w+)/);
-    if (match && match[1]) {
-      const platform = match[1];
-      await handleSessionVerifyTrigger(platform);
+      // Monitor cookies for login
+      let checkCount = 0;
+      const maxChecks = 60;
       
-      // Close tab after verification
-      setTimeout(() => {
-        browser.tabs.remove(tabId).catch(() => {});
-      }, 3000);
-    }
-  }
-  
-  // Session check trigger
-  else if (url.includes('#check-session-')) {
-    console.log('[LLM Collector] 🔍 Session check trigger detected!', url);
-    
-    // Extract platform from URL
-    const match = url.match(/#check-session-(\w+)/);
-    if (match && match[1]) {
-      const platform = match[1];
-      
-      // Wait for page load
-      setTimeout(async () => {
-        try {
-          const tab = await browser.tabs.get(tabId);
-          const isLoggedIn = await checkPlatformSession(platform, tab);
+      const loginInterval = setInterval(async () => {
+        checkCount++;
+        
+        const cookieStatus = await checkPlatformCookies(platform);
+        
+        if (cookieStatus.valid) {
+          console.log(`[Tab Monitor] ✅ ${platform} login detected!`);
           
-          console.log(`[LLM Collector] ${platform} session check result:`, isLoggedIn);
+          clearInterval(loginInterval);
           
-          // Close tab after check
+          // Update backend
+          const { apiUrl } = await browser.storage.local.get(['apiUrl']);
+          const apiEndpoint = apiUrl || DEFAULT_API_URL;
+          
+          await fetch(`${apiEndpoint}/llm/sessions/update`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              platform: platform,
+              valid: true,
+              cookies: cookieStatus.cookies,
+              sessionData: cookieStatus.sessionData
+            })
+          });
+          
+          // Show notification
+          await browser.notifications.create({
+            type: 'basic',
+            iconUrl: browser.extension.getURL('icon.png'),
+            title: 'Login Successful',
+            message: `${PLATFORMS[platform].name} session is now active.`
+          });
+          
+          // Close tab
           setTimeout(() => {
             browser.tabs.remove(tabId).catch(() => {});
-          }, 2000);
-        } catch (error) {
-          console.error('[LLM Collector] Session check error:', error);
+          }, 3000);
+        }
+        
+        if (checkCount >= maxChecks) {
+          clearInterval(loginInterval);
         }
       }, 5000);
     }
   }
 });
 
-// Listen for extension startup/install
+// ======================== Cookie Change Monitoring ========================
+
+browser.cookies.onChanged.addListener(async (changeInfo) => {
+  if (!extensionReady) return;
+  
+  // Check if this cookie belongs to any monitored platform
+  for (const [platform, config] of Object.entries(PLATFORMS)) {
+    if (changeInfo.cookie.domain.includes(config.cookieDomain) ||
+        config.cookieDomain.includes(changeInfo.cookie.domain)) {
+      
+      console.log(`[Cookie Change] ${platform} cookie changed:`, changeInfo.cookie.name);
+      
+      // Debounce cookie updates
+      setTimeout(async () => {
+        const cookieStatus = await checkPlatformCookies(platform);
+        
+        // Update backend
+        const { apiUrl } = await browser.storage.local.get(['apiUrl']);
+        const url = apiUrl || DEFAULT_API_URL;
+        
+        await fetch(`${url}/llm/sessions/update`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            platform: platform,
+            valid: cookieStatus.valid,
+            cookies: cookieStatus.cookies,
+            sessionData: cookieStatus.sessionData,
+            reason: 'cookie_change'
+          })
+        });
+      }, 1000);
+      
+      break;
+    }
+  }
+});
+
+// ======================== Startup & Cleanup ========================
+
 browser.runtime.onStartup.addListener(initialize);
 browser.runtime.onInstalled.addListener(initialize);
 
-// Initialize immediately
+// Initialize
 console.log('[LLM Collector] Starting initialization...');
 initialize();
 
-// Show console message every 30 seconds to confirm extension is running
+// Status log
 setInterval(() => {
-  console.log('[LLM Collector] Extension active -', new Date().toISOString(), {
+  console.log('[LLM Collector] Status:', {
     ready: extensionReady,
     syncing: isSyncing,
-    syncId: currentSyncId
+    syncId: currentSyncId,
+    time: new Date().toISOString()
   });
 }, 30000);
 
-// Cleanup on extension unload
+// Cleanup
 self.addEventListener('unload', () => {
-  console.log('[LLM Collector] Extension unloading...');
-  if (syncCheckInterval) {
-    clearInterval(syncCheckInterval);
-  }
-  if (loginCheckInterval) {
-    clearInterval(loginCheckInterval);
-  }
-  if (sessionMonitorInterval) {
-    clearInterval(sessionMonitorInterval);
-  }
+  console.log('[LLM Collector] Unloading...');
+  if (syncCheckInterval) clearInterval(syncCheckInterval);
+  if (cookieCheckInterval) clearInterval(cookieCheckInterval);
 });
