@@ -164,8 +164,14 @@ class LLMQueryService:
             self._using_shared_cache = True
             logger.info("Using shared cache system")
         else:
-            logger.error("Shared cache_manager not available")
-            raise ImportError("Required shared services not available")
+            # ImportError 대신 경고만
+            logger.warning("Shared cache not available, some features may be limited")
+            self._using_shared_cache = False
+            # 캐시 비활성화
+            class DummyCache:
+                async def get(self, *args): return None
+                async def set(self, *args): return True
+            self.cache = DummyCache()
         
         # 통계 (Shared services 사용 시 metrics로 대체)
         self.query_history = deque(maxlen=1000)

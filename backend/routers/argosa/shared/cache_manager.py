@@ -134,9 +134,17 @@ class CacheManager:
     
     async def cleanup(self):
         """리소스 정리"""
+        # cleanup task 취소 추가
+        if hasattr(self, '_cleanup_task'):
+            self._cleanup_task.cancel()
+            try:
+                await self._cleanup_task
+            except asyncio.CancelledError:
+                pass
+        
         if self.redis:
             await self.redis.close()
-
+            
 # 싱글톤 인스턴스
 cache_manager = CacheManager()
 

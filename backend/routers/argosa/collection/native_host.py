@@ -5,7 +5,7 @@ import json
 import struct
 import asyncio
 import logging
-from typing import Dict, Any, Optional, Callable
+from typing import Dict, Any, Optional, Callable, List
 from enum import Enum
 from datetime import datetime
 import aiohttp
@@ -299,8 +299,14 @@ if __name__ == "__main__":
         msvcrt.setmode(sys.stdout.fileno(), os.O_BINARY)
     
     # 로깅 설정
-    log_path = 'C:\\ProgramData\\Argosa\\native_host.log' if sys.platform == "win32" else '/var/log/argosa/native_host.log'
-    os.makedirs(os.path.dirname(log_path), exist_ok=True)
+    log_path = 'C:\\ProgramData\\Argosa\\native_host.log' 
+    if sys.platform == "win32":
+        log_dir = 'C:\\ProgramData\\Argosa'
+    else:
+        log_dir = os.path.expanduser('~/.argosa')  # 홈 디렉토리 사용
+    
+    os.makedirs(log_dir, exist_ok=True)
+    log_path = os.path.join(log_dir, 'native_host.log')
     
     logging.basicConfig(
         filename=log_path,

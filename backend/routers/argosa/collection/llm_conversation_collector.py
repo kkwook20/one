@@ -72,11 +72,21 @@ class LLMConversationCollector:
         return conversation_id in self.llm_conversation_ids
     
     async def save_conversations(self, platform: str, conversations: List[Dict[str, Any]], 
-                               timestamp: str = None, metadata: Dict[str, Any] = {}) -> Dict[str, Any]:
-        """플랫폼별 대화 저장 (LLM 대화 필터링 포함)"""
+                            timestamp: str = None, metadata: Dict[str, Any] = {}) -> Dict[str, Any]:
         
         if platform not in self.platforms:
             raise ValueError(f"Unsupported platform: {platform}")
+        
+        # LLM tracker 사용 (여기에 추가)
+        try:
+            from ..shared.llm_tracker import llm_tracker
+            filtered_result = await llm_tracker.filter_conversations(conversations, platform)
+            conversations = filtered_result['conversations']
+            excluded_count = filtered_result['excluded_count']
+        except ImportError:
+            # llm_tracker 없으면 기존 로직 사용
+            filtered_conversations = []
+            excluded_count = 0
         
         # LLM 대화 필터링
         filtered_conversations = []

@@ -21,18 +21,13 @@ import uuid
 logger = logging.getLogger(__name__)
 
 # Native Command Manager는 초기화 시점에 import
-native_command_manager = None
-
-def set_native_command_manager(ncm):
-    """Native Command Manager 설정"""
-    global native_command_manager
-    native_command_manager = ncm
-
 async def get_native_command_manager():
     """Native Command Manager 가져오기"""
-    if native_command_manager is None:
+    try:
+        from ..data_collection import native_command_manager
+        return native_command_manager
+    except ImportError:
         raise RuntimeError("Native Command Manager not initialized")
-    return native_command_manager
 
 # ======================== Configuration ========================
 
@@ -407,13 +402,21 @@ class WebCrawlerEngine:
         
         # 동시 실행을 위한 태스크
         tasks = []
+
+        # Semaphore 추가 (여기만 추가)
+        semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
+        
+        async def limited_task(coro):
+            async with semaphore:
+                return await coro
         
         # API 검색
         if "apis" in sources:
             for api_name in options.get("apis", ["google", "newsapi"]):
                 if api_name in self.api_clients:
-                    tasks.append(self._search_with_api(api_name, query, options))
-        
+                    # limited_task로 감싸기
+                    tasks.append(limited_task(self._search_with_api(api_name, query, options)))
+
         # 웹사이트 크롤링
         if "websites" in sources and options.get("sites"):
             tasks.append(self._crawl_websites(query, options.get("sites", [])))
@@ -1742,6 +1745,12 @@ crawler_router = APIRouter(prefix="/api/crawler", tags=["web_crawler"])
 
 # 전역 인스턴스
 web_crawler_system = WebCrawlerAgentSystem()
+
+# 설정 검증 (여기 추가)
+if not GOOGLE_API_KEY:
+    logger.warning("GOOGLE_API_KEY not set - Google search will not work")
+if not NEWS_API_KEY:
+    logger.warning("NEWS_API_KEY not set - News search will not work")
 
 # 요청/응답 모델
 class WebSearchRequest(BaseModel):
