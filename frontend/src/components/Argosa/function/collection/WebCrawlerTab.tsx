@@ -21,7 +21,7 @@ import {
   AlertCircle
 } from "lucide-react";
 
-import type { SystemState } from "./DataCollection";
+import type { SystemState } from "../DataCollection";
 
 // ======================== Type Definitions ========================
 

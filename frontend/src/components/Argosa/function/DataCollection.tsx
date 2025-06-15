@@ -28,9 +28,9 @@ import {
 } from "lucide-react";
 
 // 하위 탭 컴포넌트들
-import WebCrawlerTab from "./WebCrawlerTab";
-import LLMQueryTab from "./LLMQueryTab";
-import LLMConversationTab from "./LLMConversationTab";
+import WebCrawlerTab from "./collection/WebCrawlerTab";
+import LLMQueryTab from "./collection/LLMQueryTab";
+import LLMConversationTab from "./collection/LLMConversationTab";
 
 // ======================== Constants ========================
 const API_BASE_URL = 'http://localhost:8000/api/argosa';

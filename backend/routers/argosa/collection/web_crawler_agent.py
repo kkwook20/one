@@ -21,7 +21,7 @@ import aiofiles
 import uuid
 
 # Native Command Manager import
-from ..data_collection import native_command_manager
+from backend.routers.argosa.data_collection import native_command_manager
 
 logger = logging.getLogger(__name__)
 

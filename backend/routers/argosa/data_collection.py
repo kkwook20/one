@@ -1,10 +1,10 @@
-# backend/routers/argosa/data_collection.py - Argosa 핵심 데이터 수집 시스템
+# backend/routers/argosa/data_collection.py - Argosa 핵심 데이터 수집 시스템 (개선된 버전)
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, HTTPException
 from typing import Dict, List, Optional, Any, Set
 import asyncio
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pydantic import BaseModel
 from pathlib import Path
 import os
@@ -18,6 +18,7 @@ import time
 import psutil
 import threading
 from enum import Enum
+from functools import wraps
 
 # 설정
 logger = logging.getLogger(__name__)
@@ -34,6 +35,83 @@ STATE_FILE_PATH = DATA_PATH / "system_state.json"
 COMMAND_QUEUE_PATH = DATA_PATH / "command_queue.json"
 SESSION_CACHE_PATH = DATA_PATH / "session_cache.json"
 EXTENSION_HEARTBEAT_PATH = DATA_PATH / "extension_heartbeat.json"
+
+# ======================== Enhanced Error Handling ========================
+
+def with_retry(max_retries: int = 3, delay: float = 1.0):
+    """재시도 데코레이터"""
+    def decorator(func):
+        @wraps(func)
+        async def wrapper(*args, **kwargs):
+            last_error = None
+            for attempt in range(max_retries):
+                try:
+                    return await func(*args, **kwargs)
+                except Exception as e:
+                    last_error = e
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(delay * (attempt + 1))
+                    logger.warning(f"Retry {attempt + 1}/{max_retries} for {func.__name__}: {e}")
+            raise last_error
+        return wrapper
+    return decorator
+
+def with_fallback(fallback_value=None):
+    """폴백 데코레이터"""
+    def decorator(func):
+        @wraps(func)
+        async def wrapper(*args, **kwargs):
+            try:
+                return await func(*args, **kwargs)
+            except Exception as e:
+                logger.error(f"Fallback for {func.__name__}: {e}")
+                return fallback_value
+        return wrapper
+    return decorator
+
+# ======================== Metrics System ========================
+
+class MetricsCollector:
+    """간단한 메트릭 수집기"""
+    def __init__(self):
+        self.counters: Dict[str, int] = {}
+        self.gauges: Dict[str, float] = {}
+        self.events: List[Dict[str, Any]] = []
+        self._lock = asyncio.Lock()
+        
+    async def increment_counter(self, name: str, value: int = 1):
+        """카운터 증가"""
+        async with self._lock:
+            self.counters[name] = self.counters.get(name, 0) + value
+            
+    async def set_gauge(self, name: str, value: float):
+        """게이지 설정"""
+        async with self._lock:
+            self.gauges[name] = value
+            
+    async def record_event(self, event_type: str, tags: Dict[str, Any] = None):
+        """이벤트 기록"""
+        async with self._lock:
+            self.events.append({
+                "type": event_type,
+                "timestamp": datetime.now().isoformat(),
+                "tags": tags or {}
+            })
+            # 최근 1000개만 유지
+            if len(self.events) > 1000:
+                self.events = self.events[-1000:]
+                
+    async def get_summary(self) -> Dict[str, Any]:
+        """메트릭 요약"""
+        async with self._lock:
+            return {
+                "counters": self.counters.copy(),
+                "gauges": self.gauges.copy(),
+                "recent_events": self.events[-10:]
+            }
+
+# Global metrics collector
+metrics = MetricsCollector()
 
 # ======================== Data Models ========================
 
@@ -59,6 +137,9 @@ class SystemState(BaseModel):
     firefox_status: str = "closed"  # closed, opening, ready, error
     extension_status: str = "disconnected"  # connected, disconnected
     extension_last_seen: Optional[str] = None
+    schedule_enabled: bool = False
+    data_sources_active: int = 0
+    total_conversations: int = 0
 
 class Command(BaseModel):
     id: str
@@ -81,9 +162,57 @@ class SessionCache(BaseModel):
     valid: bool
     last_checked: str
     expires_at: Optional[str] = None
-    source: str = "cache"  # cache, native
+    source: str = "cache"  # cache, extension, firefox, timeout
     cookies: Optional[List[Dict[str, Any]]] = None
     status: str = "unknown"  # active, expired, checking, unknown
+
+# ======================== LLM Tracker ========================
+
+class LLMTracker:
+    """LLM 대화 추적기"""
+    def __init__(self):
+        self.tracked_ids: Dict[str, Set[str]] = {}
+        self._lock = asyncio.Lock()
+        
+    async def track(self, conversation_id: str, platform: str, metadata: Dict[str, Any]):
+        """대화 추적"""
+        async with self._lock:
+            if platform not in self.tracked_ids:
+                self.tracked_ids[platform] = set()
+            self.tracked_ids[platform].add(conversation_id)
+            
+        await metrics.increment_counter(f"llm_tracked.{platform}")
+        logger.info(f"Tracking LLM conversation: {conversation_id} on {platform}")
+        
+    async def get_tracked_ids(self, platform: str) -> List[str]:
+        """추적 중인 ID 목록"""
+        async with self._lock:
+            return list(self.tracked_ids.get(platform, set()))
+            
+    async def filter_conversations(self, conversations: List[Dict], platform: str) -> Dict[str, Any]:
+        """LLM 대화 필터링"""
+        tracked = await self.get_tracked_ids(platform)
+        filtered = []
+        excluded = 0
+        
+        for conv in conversations:
+            if conv.get('id') not in tracked:
+                filtered.append(conv)
+            else:
+                excluded += 1
+                
+        return {
+            "conversations": filtered,
+            "excluded_count": excluded,
+            "filter_stats": {
+                "total": len(conversations),
+                "filtered": len(filtered),
+                "excluded": excluded
+            }
+        }
+
+# Global LLM tracker
+llm_tracker = LLMTracker()
 
 # ======================== Enhanced Firefox Session Management ========================
 
@@ -112,7 +241,7 @@ class EnhancedFirefoxSessionManager:
             logger.error(f"Error checking Firefox extension: {e}")
             self.extension_available = False
 
-# ======================== State Management ========================
+# ======================== Improved State Management ========================
 
 class SystemStateManager:
     def __init__(self):
@@ -130,8 +259,9 @@ class SystemStateManager:
         except Exception as e:
             logger.error(f"Failed to load state: {e}")
             
+    @with_retry(max_retries=3, delay=0.5)
     async def save_state(self):
-        """Save state to file"""
+        """Save state to file with retry"""
         async with self.state_lock:
             try:
                 STATE_FILE_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -139,15 +269,21 @@ class SystemStateManager:
                     json.dump(self.state.dict(), f, indent=2)
             except Exception as e:
                 logger.error(f"Failed to save state: {e}")
+                raise
                 
     async def update_state(self, key: str, value: Any):
         """Update state and broadcast"""
         async with self.state_lock:
             if hasattr(self.state, key):
                 setattr(self.state, key, value)
-            await self.save_state()
-            await self.broadcast_state()
+                
+        await self.save_state()
+        await self.broadcast_state()
+        
+        # 메트릭 기록
+        await metrics.record_event("state_update", {"field": key})
             
+    @with_fallback(fallback_value=None)
     async def broadcast_state(self):
         """Broadcast state to all connected WebSocket clients"""
         if active_websockets:
@@ -176,6 +312,7 @@ class UnifiedCommandQueue:
     def __init__(self):
         self.queue: List[Command] = []
         self.queue_lock = asyncio.Lock()
+        self.handlers: Dict[str, Any] = {}
         self.load_queue()
         
     def load_queue(self):
@@ -188,8 +325,9 @@ class UnifiedCommandQueue:
         except Exception as e:
             logger.error(f"Failed to load command queue: {e}")
             
+    @with_retry(max_retries=3, delay=0.5)
     async def save_queue(self):
-        """Save queue to file"""
+        """Save queue to file with retry"""
         async with self.queue_lock:
             try:
                 COMMAND_QUEUE_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -197,6 +335,7 @@ class UnifiedCommandQueue:
                     json.dump([cmd.dict() for cmd in self.queue], f, indent=2)
             except Exception as e:
                 logger.error(f"Failed to save command queue: {e}")
+                raise
                 
     async def add_command(self, command_type: str, data: Dict[str, Any], priority: int = CommandPriority.NORMAL) -> str:
         """Add command to queue"""
@@ -210,8 +349,10 @@ class UnifiedCommandQueue:
                 status="pending"
             )
             self.queue.append(command)
-            await self.save_queue()
-            return command.id
+            
+        await self.save_queue()
+        await metrics.increment_counter(f"command_added.{command_type}")
+        return command.id
             
     async def get_next_command(self) -> Optional[Command]:
         """Get next command by priority"""
@@ -234,7 +375,9 @@ class UnifiedCommandQueue:
                     cmd.status = "completed"
                     cmd.result = result
                     break
-            await self.save_queue()
+                    
+        await self.save_queue()
+        await metrics.increment_counter("command_completed")
             
     async def fail_command(self, command_id: str, error: str):
         """Mark command as failed"""
@@ -244,7 +387,24 @@ class UnifiedCommandQueue:
                     cmd.status = "failed"
                     cmd.result = {"error": error}
                     break
-            await self.save_queue()
+                    
+        await self.save_queue()
+        await metrics.increment_counter("command_failed")
+        
+    def register_handler(self, command_type: str, handler):
+        """핸들러 등록"""
+        self.handlers[command_type] = handler
+        
+    async def get_stats(self) -> Dict[str, Any]:
+        """큐 통계"""
+        async with self.queue_lock:
+            return {
+                "total": len(self.queue),
+                "pending": sum(1 for cmd in self.queue if cmd.status == "pending"),
+                "processing": sum(1 for cmd in self.queue if cmd.status == "processing"),
+                "completed": sum(1 for cmd in self.queue if cmd.status == "completed"),
+                "failed": sum(1 for cmd in self.queue if cmd.status == "failed")
+            }
 
 # Global command queue
 command_queue = UnifiedCommandQueue()
@@ -256,7 +416,6 @@ class NativeCommandManager:
     
     def __init__(self):
         self.pending_commands: Dict[str, asyncio.Future] = {}
-        self.llm_conversation_ids: Set[str] = set()
         self._lock = asyncio.Lock()
         
     async def send_command(self, command_type: str, data: Dict[str, Any]) -> str:
@@ -268,7 +427,11 @@ class NativeCommandManager:
         
         # LLM 대화 제외 목록 추가
         if command_type == "collect_conversations":
-            data['exclude_ids'] = list(self.llm_conversation_ids)
+            exclude_ids = []
+            for platform in data.get('platforms', []):
+                platform_ids = await llm_tracker.get_tracked_ids(platform)
+                exclude_ids.extend(platform_ids)
+            data['exclude_ids'] = exclude_ids
         
         # 명령 큐에 추가
         await command_queue.add_command(
@@ -299,11 +462,6 @@ class NativeCommandManager:
             future = self.pending_commands.pop(command_id, None)
             if future and not future.done():
                 future.set_result(result)
-    
-    def track_llm_conversation(self, conversation_id: str, metadata: Dict[str, Any]):
-        """LLM 대화 추적"""
-        self.llm_conversation_ids.add(conversation_id)
-        logger.info(f"Tracking LLM conversation: {conversation_id}")
 
 # 전역 Native 명령 관리자
 native_command_manager = NativeCommandManager()
@@ -328,8 +486,9 @@ class UnifiedSessionManager:
         except Exception as e:
             logger.error(f"Failed to load session cache: {e}")
             
+    @with_retry(max_retries=3, delay=0.5)
     async def save_cache(self):
-        """Save session cache to file"""
+        """Save session cache to file with retry"""
         try:
             SESSION_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
             cache_data = {k: v.dict() for k, v in self.cache.items()}
@@ -337,6 +496,7 @@ class UnifiedSessionManager:
                 json.dump(cache_data, f, indent=2)
         except Exception as e:
             logger.error(f"Failed to save session cache: {e}")
+            raise
             
     async def update_session(self, platform: str, valid: bool, cookies: Optional[List[Dict]] = None, 
                            session_data: Optional[Dict] = None, reason: str = "manual", source: str = "native"):
@@ -373,8 +533,43 @@ class UnifiedSessionManager:
             platform: session_info.dict()
         })
         
+        # 메트릭 업데이트
+        await metrics.increment_counter(f"session_update.{platform}")
+        await metrics.set_gauge(f"session_valid.{platform}", 1.0 if valid else 0.0)
+        
         logger.info(f"Updated {platform}: valid={valid}, expires={expires_at}, reason={reason}")
         return valid
+        
+    async def check_session_health(self) -> Dict[str, Any]:
+        """세션 상태 점검"""
+        health = {
+            "total": len(self.cache),
+            "valid": sum(1 for s in self.cache.values() if s.valid),
+            "expired": sum(1 for s in self.cache.values() if not s.valid),
+            "platforms": {}
+        }
+        
+        for platform, session in self.cache.items():
+            health["platforms"][platform] = {
+                "valid": session.valid,
+                "last_checked": session.last_checked,
+                "age_minutes": self._calculate_age_minutes(session.last_checked)
+            }
+        
+        return health
+    
+    def _calculate_age_minutes(self, timestamp_str: Optional[str]) -> Optional[float]:
+        """타임스탬프로부터 경과 시간 계산"""
+        if not timestamp_str:
+            return None
+        
+        try:
+            timestamp = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
+            now = datetime.now(timezone.utc) if timestamp.tzinfo else datetime.now()
+            age = now - timestamp
+            return age.total_seconds() / 60
+        except:
+            return None
 
 # Global session manager
 session_manager = UnifiedSessionManager()
@@ -578,7 +773,7 @@ class ExtensionMonitor:
 # Global Extension monitor
 extension_monitor = ExtensionMonitor()
 
-# ======================== API Endpoints ========================
+# ======================== API Endpoints (기존 경로 유지) ========================
 
 @router.get("/status")
 async def get_system_status():
@@ -588,11 +783,18 @@ async def get_system_status():
         "port": session_manager.firefox_session_manager.extension_port
     }
     
+    session_health = await session_manager.check_session_health()
+    queue_stats = await command_queue.get_stats()
+    metrics_summary = await metrics.get_summary()
+    
     return {
         "status": "operational",
         "system": "argosa",
         "state": state_manager.state.dict(),
         "firefox_extension": firefox_status,
+        "sessions": session_health,
+        "command_queue": queue_stats,
+        "metrics": metrics_summary,
         "timestamp": datetime.now().isoformat()
     }
 
@@ -609,11 +811,18 @@ async def state_websocket(websocket: WebSocket):
             "data": state_manager.state.dict()
         })
         
-        # Keep connection alive
+        # Keep connection alive with ping/pong
         while True:
-            await asyncio.sleep(1)
+            try:
+                await websocket.send_json({"type": "ping"})
+                await asyncio.sleep(30)
+            except:
+                break
             
     except WebSocketDisconnect:
+        active_websockets.discard(websocket)
+    except Exception as e:
+        logger.error(f"WebSocket error: {e}")
         active_websockets.discard(websocket)
 
 # ======================== Command Queue Endpoints ========================
@@ -648,7 +857,7 @@ async def complete_command_endpoint(command_id: str, result: Dict[str, Any]):
 
 # ======================== Native Message Handler ========================
 
-@router.post("/native/handle")
+@router.post("/api/argosa/native/handle")
 async def handle_native_message(message: Dict[str, Any]):
     """Native Messaging Bridge로부터 메시지 처리"""
     
@@ -657,6 +866,9 @@ async def handle_native_message(message: Dict[str, Any]):
     data = message.get('data', {})
     
     logger.info(f"Native message received: {msg_type}")
+    
+    # 메트릭 기록
+    await metrics.increment_counter(f"native_message.{msg_type}")
     
     try:
         if msg_type == MessageType.INIT.value:
@@ -695,28 +907,31 @@ async def handle_native_message(message: Dict[str, Any]):
             excluded_ids = data.get('excluded_llm_ids', [])
             command_id = data.get('command_id')
             
+            # LLM 필터링
+            filtered = await llm_tracker.filter_conversations(conversations, platform)
+            
             # 저장
-            if conversations:
+            if filtered["conversations"]:
                 save_response = await save_conversations_internal({
                     "platform": platform,
-                    "conversations": conversations,
+                    "conversations": filtered["conversations"],
                     "metadata": {
                         "source": "native_collection",
-                        "excluded_llm_count": len(excluded_ids)
+                        **filtered["filter_stats"]
                     }
                 })
                 
-                logger.info(f"Saved {len(conversations)} conversations from {platform}")
+                logger.info(f"Saved {len(filtered['conversations'])} conversations from {platform}")
             
             # 명령 완료
             if command_id:
                 await native_command_manager.complete_command(command_id, {
                     "success": True,
-                    "collected": len(conversations),
-                    "excluded": len(excluded_ids)
+                    "collected": len(filtered["conversations"]),
+                    "excluded": filtered["excluded_count"]
                 })
             
-            return {"status": "saved", "count": len(conversations)}
+            return {"status": "saved", "count": len(filtered["conversations"])}
             
         elif msg_type == MessageType.LLM_QUERY_RESULT.value:
             # LLM 질문 결과
@@ -727,8 +942,7 @@ async def handle_native_message(message: Dict[str, Any]):
             command_id = data.get('command_id')
             
             # LLM 대화로 추적
-            native_command_manager.track_llm_conversation(conversation_id, {
-                'platform': platform,
+            await llm_tracker.track(conversation_id, platform, {
                 'query': query,
                 'source': 'llm_query',
                 'created_at': datetime.now().isoformat()
@@ -773,6 +987,7 @@ async def handle_native_message(message: Dict[str, Any]):
             
     except Exception as e:
         logger.error(f"Native message handling error: {e}")
+        await metrics.increment_counter("native_message.error")
         return {"status": "error", "message": str(e)}
 
 # ======================== Native Collection Endpoints ========================
@@ -891,11 +1106,18 @@ async def crawl_web_native(request: Dict[str, Any]):
             "error": "Crawl timeout"
         }
 
+# ======================== Metrics Endpoints ========================
+
+@router.get("/metrics/summary")
+async def get_metrics_summary():
+    """메트릭 요약"""
+    return await metrics.get_summary()
+
 # ======================== Initialization and Shutdown ========================
 
 async def initialize():
     """Initialize Argosa core system"""
-    logger.info("Initializing Argosa core system...")
+    logger.info("Initializing Argosa core system with improvements...")
     
     # Create directories
     DATA_PATH.mkdir(parents=True, exist_ok=True)

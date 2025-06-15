@@ -35,8 +35,8 @@ import {
   Activity
 } from "lucide-react";
 
-import type { SystemState, SessionInfo } from "./DataCollection";
-import { formatDate } from "./DataCollection";
+import type { SystemState, SessionInfo } from "../DataCollection";
+import { formatDate } from "../DataCollection";
 
 // ======================== Type Definitions ========================
 
