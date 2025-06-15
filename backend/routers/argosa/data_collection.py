@@ -1,38 +1,84 @@
-# backend/routers/argosa/data_collection.py - 통합된 Argosa 데이터 수집 시스템 (세션 관리 개선)
+# backend/routers/argosa/data_collection.py - Argosa 핵심 데이터 수집 시스템
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect, HTTPException, BackgroundTasks, UploadFile, File
-from typing import Dict, List, Optional, Any, Tuple
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, HTTPException, BackgroundTasks
+from typing import Dict, List, Optional, Any, Set, Tuple
 import asyncio
 import json
 from datetime import datetime, timedelta
 from pydantic import BaseModel
 from pathlib import Path
-import hashlib
 import os
 import subprocess
 import platform
 import uuid
-import sys
 import shutil
-import aiohttp
-import traceback
+import logging
+import socket
+import time
+import psutil
+import threading
+from collections import defaultdict
+
+# 설정
+logger = logging.getLogger(__name__)
 
 # Create router
 router = APIRouter()
 
-# WebSocket connections for Argosa
-active_connections: Dict[str, WebSocket] = {}
+# WebSocket connections
+active_websockets: Set[WebSocket] = set()
 
-# Configuration
-LLM_DATA_PATH = Path("./data/argosa/llm-conversations")
-SYNC_CONFIG_PATH = Path("./data/argosa/llm-conversations/sync-config.json")
-SYNC_STATUS_PATH = Path("./data/argosa/llm-conversations")
-SESSION_DATA_PATH = Path("./data/argosa/llm-conversations/sessions.json")
-SCHEDULE_FAILURE_PATH = Path("./data/argosa/llm-conversations/schedule-failure.json")
+# Configuration paths
+DATA_PATH = Path("./data/argosa")
+STATE_FILE_PATH = DATA_PATH / "system_state.json"
+COMMAND_QUEUE_PATH = DATA_PATH / "command_queue.json"
+SESSION_CACHE_PATH = DATA_PATH / "session_cache.json"
+EXTENSION_HEARTBEAT_PATH = DATA_PATH / "extension_heartbeat.json"
+SCHEDULE_CONFIG_PATH = DATA_PATH / "schedule_config.json"
+SCHEDULE_FAILURE_PATH = DATA_PATH / "schedule_failure.json"
+SYNC_CONFIG_PATH = DATA_PATH / "sync_config.json"
 
 # ======================== Data Models ========================
 
-# Firefox 제어 관련 모델
+class CommandPriority:
+    NORMAL = 0
+    HIGH = 1
+    URGENT = 2
+
+class SystemState(BaseModel):
+    system_status: str = "idle"  # idle, preparing, collecting, error
+    sessions: Dict[str, Dict[str, Any]] = {}
+    sync_status: Optional[Dict[str, Any]] = None
+    firefox_status: str = "closed"  # closed, opening, ready, error
+    extension_status: str = "disconnected"  # connected, disconnected
+    extension_last_seen: Optional[str] = None
+    schedule_enabled: bool = False
+
+class Command(BaseModel):
+    id: str
+    type: str  # sync_now, check_session, update_settings, etc.
+    priority: int = CommandPriority.NORMAL
+    data: Dict[str, Any]
+    timestamp: str
+    status: str = "pending"  # pending, processing, completed, failed
+    result: Optional[Dict[str, Any]] = None
+
+class ExtensionHeartbeat(BaseModel):
+    timestamp: str
+    status: str
+    firefox_pid: Optional[int] = None
+    sessions: Optional[Dict[str, bool]] = None
+    version: str = "2.0"
+
+class SessionCache(BaseModel):
+    platform: str
+    valid: bool
+    last_checked: str
+    expires_at: Optional[str] = None
+    source: str = "cache"  # cache, extension, firefox
+    cookies: Optional[List[Dict[str, Any]]] = None
+    status: str = "unknown"  # active, expired, checking, unknown
+
 class SyncRequest(BaseModel):
     platforms: List[Dict[str, Any]]
     settings: Dict[str, Any]
@@ -52,7 +98,6 @@ class ScheduleConfig(BaseModel):
     platforms: List[str]
     settings: Dict[str, Any]
 
-# 세션 관련 모델
 class SessionStatus(BaseModel):
     platform: str
     valid: bool
@@ -71,1034 +116,612 @@ class OpenLoginRequest(BaseModel):
     url: str
     profileName: str = "llm-collector"
 
-# SessionUpdate 모델 추가
 class SessionUpdate(BaseModel):
     platform: str
     valid: bool = True
     cookies: Optional[Dict[str, Any]] = None
     headers: Optional[Dict[str, str]] = None
 
-# 데이터 수집 관련 모델
-class DataSource(BaseModel):
-    id: str
-    name: str
-    type: str  # chat, web, youtube, file, api, llm
-    status: str  # active, inactive, error
-    lastSync: Optional[str] = None
-    config: Dict[str, Any] = {}
+# ======================== Enhanced Firefox Session Management ========================
 
-class CollectionTask(BaseModel):
-    id: str
-    source: str
-    query: str
-    status: str  # pending, collecting, completed, failed
-    createdAt: str
-    completedAt: Optional[str] = None
-    results: List[Dict[str, Any]] = []
-    error: Optional[str] = None
-
-class ChatMessage(BaseModel):
-    role: str
-    content: str
-    timestamp: Optional[str] = None
-
-class SearchRequest(BaseModel):
-    query: str
-    sources: List[str] = ["web"]
-    limit: int = 10
-
-# In-memory storage for data collection
-data_sources: Dict[str, DataSource] = {}
-collection_tasks: Dict[str, CollectionTask] = {}
-collected_data: List[Dict[str, Any]] = []
-
-# ======================== Helper Functions ========================
-
-async def check_firefox_running():
-    """Firefox 실행 여부 확인"""
-    system = platform.system()
+class EnhancedFirefoxSessionManager:
+    """Firefox Extension과 통신하는 세션 관리자"""
     
-    if system == "Windows":
-        result = subprocess.run(
-            ["tasklist", "/FI", "IMAGENAME eq firefox.exe"],
-            capture_output=True,
-            text=True
-        )
-        return "firefox.exe" in result.stdout
-    else:
-        result = subprocess.run(
-            ["pgrep", "-x", "firefox"],
-            capture_output=True
-        )
-        return result.returncode == 0
-
-def get_firefox_command(profile_name: str = "llm-collector", headless: bool = False):
-    """Get Firefox launch command based on OS"""
-    system = platform.system()
-    
-    base_args = ["--no-remote", "-P", profile_name]
-    
-    # headless 모드 추가 (Linux/macOS에서만)
-    if headless and system in ["Linux", "Darwin"]:
-        base_args.append("--headless")
-    
-    if system == "Windows":
-        # 여러 Firefox 경로 시도
-        firefox_paths = [
-            r"C:\Program Files\Firefox Developer Edition\firefox.exe",
-            r"C:\Program Files\Mozilla Firefox\firefox.exe",
-            r"C:\Program Files (x86)\Mozilla Firefox\firefox.exe",
-            os.path.expandvars(r"%LOCALAPPDATA%\Mozilla Firefox\firefox.exe"),
-            os.path.expandvars(r"%ProgramFiles%\Mozilla Firefox\firefox.exe"),
-            os.path.expandvars(r"%ProgramFiles(x86)%\Mozilla Firefox\firefox.exe")
-        ]
+    def __init__(self):
+        self.extension_port = int(os.getenv("FIREFOX_EXTENSION_PORT", "9292"))
+        self.profile_path = os.getenv("FIREFOX_PROFILE_PATH", "")
+        self.extension_available = False
+        self._check_extension_availability()
         
-        for path in firefox_paths:
-            if os.path.exists(path):
-                print(f"[Firefox] Found Firefox at: {path}")
-                return [path] + base_args
-        
-        # PATH에서 firefox 찾기
-        firefox_in_path = shutil.which("firefox")
-        if firefox_in_path:
-            print(f"[Firefox] Found Firefox in PATH: {firefox_in_path}")
-            return [firefox_in_path] + base_args
+    def _check_extension_availability(self):
+        """Extension 사용 가능 여부 확인"""
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            result = sock.connect_ex(('localhost', self.extension_port))
+            sock.close()
+            self.extension_available = (result == 0)
             
-        # 상세한 에러 메시지
-        error_msg = "Firefox not found in any of these locations:\n"
-        for path in firefox_paths:
-            error_msg += f"  - {path}\n"
-        error_msg += "\nPlease install Firefox or add it to your PATH"
-        raise Exception(error_msg)
-        
-    elif system == "Darwin":  # macOS
-        firefox_paths = [
-            "/Applications/Firefox.app/Contents/MacOS/firefox",
-            "/Applications/Firefox Developer Edition.app/Contents/MacOS/firefox",
-            os.path.expanduser("~/Applications/Firefox.app/Contents/MacOS/firefox")
-        ]
-        
-        for path in firefox_paths:
-            if os.path.exists(path):
-                return [path] + base_args
+            if self.extension_available:
+                logger.info(f"Firefox extension available on port {self.extension_port}")
+            else:
+                logger.warning(f"Firefox extension not available on port {self.extension_port}")
                 
-        raise Exception("Firefox not found on macOS. Please install Firefox.")
-        
-    else:  # Linux
-        firefox_in_path = shutil.which("firefox")
-        if firefox_in_path:
-            return [firefox_in_path] + base_args
-            
-        # Try common Linux paths
-        firefox_paths = [
-            "/usr/bin/firefox",
-            "/usr/local/bin/firefox",
-            "/snap/bin/firefox"
-        ]
-        
-        for path in firefox_paths:
-            if os.path.exists(path):
-                return [path] + base_args
-                
-        raise Exception("Firefox not found. Please install Firefox: sudo apt install firefox")
+        except Exception as e:
+            logger.error(f"Error checking Firefox extension: {e}")
+            self.extension_available = False
 
-async def monitor_firefox_process(process, sync_id):
-    """Firefox 프로세스 모니터링"""
-    try:
-        await asyncio.sleep(10)
-        
-        while True:
-            if process.poll() is not None:
-                print(f"[Firefox] Process terminated with code: {process.returncode}")
-                
-                status_file = SYNC_STATUS_PATH / f"sync-status-{sync_id}.json"
-                if status_file.exists():
-                    with open(status_file, 'r') as f:
-                        current_status = json.load(f)
-                    
-                    if current_status.get("status") in ["pending", "syncing"]:
-                        with open(status_file, 'w') as f:
-                            json.dump({
-                                "status": "error",
-                                "progress": current_status.get("progress", 0),
-                                "message": "Firefox was closed unexpectedly",
-                                "updated_at": datetime.now().isoformat()
-                            }, f)
-                break
-            
-            await asyncio.sleep(2)
-            
-    except Exception as e:
-        print(f"[Firefox] Error monitoring process: {e}")
+# ======================== State Management ========================
 
-async def should_sync_today(platform: str) -> bool:
-    """오늘 sync를 해야 하는지 판단 - 개선된 로직"""
-    try:
-        platform_path = LLM_DATA_PATH / platform
-        if not platform_path.exists():
-            return True
+class SystemStateManager:
+    def __init__(self):
+        self.state = SystemState()
+        self.state_lock = asyncio.Lock()
+        self.load_state()
         
-        today = datetime.now().date()
-        yesterday = today - timedelta(days=1)
-        
-        # 최근 2일간의 파일 확인
-        recent_files = []
-        for file in platform_path.glob("*.json"):
-            file_date_str = file.stem.split('_')[0]
+    def load_state(self):
+        """Load state from file"""
+        try:
+            if STATE_FILE_PATH.exists():
+                with open(STATE_FILE_PATH, 'r') as f:
+                    data = json.load(f)
+                    self.state = SystemState(**data)
+        except Exception as e:
+            logger.error(f"Failed to load state: {e}")
+            
+    async def save_state(self):
+        """Save state to file"""
+        async with self.state_lock:
             try:
-                file_date = datetime.strptime(file_date_str, "%Y-%m-%d").date()
-                if file_date >= yesterday:
-                    recent_files.append((file_date, file))
-            except:
-                continue
-        
-        # 오늘 데이터가 있는지 확인
-        today_files = [f for d, f in recent_files if d == today]
-        yesterday_files = [f for d, f in recent_files if d == yesterday]
-        
-        # 오늘 데이터가 이미 있고, 충분한 대화가 수집되었다면 skip
-        if today_files:
-            with open(today_files[0], 'r') as f:
-                data = json.load(f)
-                conv_count = len(data.get("conversations", []))
-                if conv_count >= 10:  # 최소 10개 이상의 대화가 있으면 충분
-                    print(f"[Smart Schedule] {platform}: Today's data already exists with {conv_count} conversations")
-                    return False
-        
-        # 어제 데이터가 없으면 sync 필요
-        if not yesterday_files:
-            print(f"[Smart Schedule] {platform}: Yesterday's data missing, sync needed")
-            return True
-        
-        # 어제 데이터가 있지만 오늘 데이터가 없으면 sync 필요
-        if yesterday_files and not today_files:
-            print(f"[Smart Schedule] {platform}: Today's data missing, sync needed")
-            return True
-        
-        return False
-        
-    except Exception as e:
-        print(f"Error checking sync necessity: {e}")
-        return True
-
-# ======================== 개선된 세션 관리 함수 ========================
-
-async def verify_session_with_firefox(platform: str) -> bool:
-    """Firefox를 통해 실제 세션 상태를 확인"""
-    print(f"[Session] Verifying {platform} session with Firefox...")
-    
-    try:
-        # Platform URLs
-        platform_urls = {
-            'chatgpt': 'https://chat.openai.com',
-            'claude': 'https://claude.ai',
-            'gemini': 'https://gemini.google.com',
-            'deepseek': 'https://chat.deepseek.com',
-            'grok': 'https://grok.x.ai',
-            'perplexity': 'https://www.perplexity.ai'
-        }
-        
-        if platform not in platform_urls:
-            return False
-        
-        # 세션 체크 트리거 파일 생성
-        trigger_file = SYNC_STATUS_PATH / f"session-verify-{platform}.trigger"
-        trigger_file.write_text(json.dumps({
-            "platform": platform,
-            "action": "verify_session",
-            "timestamp": datetime.now().isoformat()
-        }))
-        
-        # Firefox 실행
-        firefox_cmd = get_firefox_command("llm-collector")
-        check_url = f"{platform_urls[platform]}#verify-session-{platform}"
-        
-        process = subprocess.Popen(firefox_cmd + [check_url])
-        
-        # 결과 파일 경로
-        result_file = SYNC_STATUS_PATH / f"session-verify-{platform}.result"
-        
-        # 최대 15초 대기
-        max_wait = 15
-        for i in range(max_wait):
-            await asyncio.sleep(1)
+                STATE_FILE_PATH.parent.mkdir(parents=True, exist_ok=True)
+                with open(STATE_FILE_PATH, 'w') as f:
+                    json.dump(self.state.dict(), f, indent=2)
+            except Exception as e:
+                logger.error(f"Failed to save state: {e}")
+                
+    async def update_state(self, key: str, value: Any):
+        """Update state and broadcast"""
+        async with self.state_lock:
+            if hasattr(self.state, key):
+                setattr(self.state, key, value)
+            await self.save_state()
+            await self.broadcast_state()
             
-            # Extension이 결과를 저장했는지 확인
-            if result_file.exists():
+    async def broadcast_state(self):
+        """Broadcast state to all connected WebSocket clients"""
+        if active_websockets:
+            state_data = self.state.dict()
+            disconnected = set()
+            
+            for websocket in active_websockets:
                 try:
-                    with open(result_file, 'r') as f:
-                        result = json.load(f)
-                    
-                    # 정리
-                    trigger_file.unlink()
-                    result_file.unlink()
-                    
-                    # Firefox 종료
-                    try:
-                        if platform.system() == "Windows":
-                            subprocess.run(["taskkill", "/F", "/PID", str(process.pid)], capture_output=True)
-                        else:
-                            process.terminate()
-                    except:
-                        pass
-                    
-                    return result.get("valid", False)
+                    await websocket.send_json({
+                        "type": "state_update",
+                        "data": state_data
+                    })
                 except:
-                    pass
+                    disconnected.add(websocket)
+                    
+            # Remove disconnected websockets
+            for ws in disconnected:
+                active_websockets.discard(ws)
+
+# Global state manager
+state_manager = SystemStateManager()
+
+# ======================== Command Queue ========================
+
+class UnifiedCommandQueue:
+    def __init__(self):
+        self.queue: List[Command] = []
+        self.queue_lock = asyncio.Lock()
+        self.load_queue()
         
-        # 시간 초과
-        print(f"[Session] Verification timeout for {platform}")
-        
-        # 정리
+    def load_queue(self):
+        """Load queue from file"""
         try:
-            trigger_file.unlink()
-            if result_file.exists():
-                result_file.unlink()
-            process.terminate()
-        except:
-            pass
-        
-        return False
-        
-    except Exception as e:
-        print(f"[Session] Error verifying {platform}: {e}")
-        return False
-
-async def update_session_status(platform: str, valid: bool, cookies: Optional[List[Dict]] = None, 
-                              session_data: Optional[Dict] = None, reason: str = "manual"):
-    """세션 상태 업데이트 - 쿠키 기반 검증"""
-    print(f"[Session] Updating {platform}: valid={valid}, reason={reason}")
-    
-    # 세션 데이터 로드
-    sessions = {}
-    if SESSION_DATA_PATH.exists():
-        with open(SESSION_DATA_PATH, 'r') as f:
-            sessions = json.load(f)
-    
-    # 기존 상태가 "checking"이고 valid가 False인 경우 처리
-    current_session = sessions.get(platform, {})
-    if current_session.get("status") == "checking" and not valid:
-        print(f"[Session] {platform} is in checking status, keeping as checking")
-        return True
-    
-    # 세션 정보 업데이트
-    sessions[platform] = {
-        "valid": valid,
-        "lastChecked": datetime.now().isoformat(),
-        "expiresAt": None,
-        "status": "active" if valid else "expired",
-        "cookies": cookies or [],
-        "sessionData": session_data or {},
-        "updateReason": reason,
-        "updateTime": datetime.now().isoformat()
-    }
-    
-    # 쿠키에서 만료 시간 추출
-    if valid and cookies:
-        max_expiry = None
-        for cookie in cookies:
-            if cookie.get("expires"):
-                expiry_time = datetime.fromtimestamp(cookie["expires"])
-                if max_expiry is None or expiry_time > max_expiry:
-                    max_expiry = expiry_time
-        
-        if max_expiry:
-            sessions[platform]["expiresAt"] = max_expiry.isoformat()
-        else:
-            # 쿠키에 만료 시간이 없으면 7일로 설정
-            sessions[platform]["expiresAt"] = (datetime.now() + timedelta(days=7)).isoformat()
-    elif valid and not cookies:
-        # 쿠키 정보 없이 valid인 경우 7일로 설정
-        sessions[platform]["expiresAt"] = (datetime.now() + timedelta(days=7)).isoformat()
-    
-    # 저장
-    SESSION_DATA_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with open(SESSION_DATA_PATH, 'w') as f:
-        json.dump(sessions, f, indent=2)
-    
-    print(f"[Session] Updated {platform}: valid={valid}, expires={sessions[platform].get('expiresAt')}")
-    return valid
-
-async def check_session_validity(platform: str) -> Tuple[bool, Optional[str]]:
-    """세션 유효성 확인 - 만료 시간 체크 포함"""
-    print(f"[Session] Checking validity for {platform}")
-    
-    if not SESSION_DATA_PATH.exists():
-        return False, None
-    
-    with open(SESSION_DATA_PATH, 'r') as f:
-        sessions = json.load(f)
-    
-    session = sessions.get(platform, {})
-    
-    # checking 상태는 valid로 간주
-    if session.get("status") == "checking":
-        print(f"[Session] {platform} is in checking status, treating as valid")
-        # checking 상태를 active로 자동 변경
-        session["status"] = "active"
-        session["valid"] = True
-        session["lastChecked"] = datetime.now().isoformat()
-        sessions[platform] = session
-        with open(SESSION_DATA_PATH, 'w') as f:
-            json.dump(sessions, f, indent=2)
-        return True, None
-    
-    # valid 필드 확인
-    if not session.get("valid", False):
-        return False, session.get("expiresAt")
-    
-    # 만료 시간 확인
-    expires_at = session.get("expiresAt")
-    if expires_at:
-        expire_time = datetime.fromisoformat(expires_at)
-        if expire_time < datetime.now():
-            print(f"[Session] {platform} session expired at {expires_at}")
-            # 만료된 세션 업데이트
-            await update_session_status(platform, False, reason="expired")
-            return False, None
-    
-    # 마지막 체크가 24시간 이상 지났으면 재확인 필요
-    last_checked = session.get("lastChecked")
-    if last_checked:
-        last_time = datetime.fromisoformat(last_checked)
-        if (datetime.now() - last_time).total_seconds() > 86400:
-            print(f"[Session] {platform} session needs refresh (>24h)")
-            return False, expires_at
-    
-    return True, expires_at
-
-# ======================== Data Collection Helper Functions ========================
-
-async def analyze_chat_messages(messages: List[ChatMessage]) -> List[Dict[str, Any]]:
-    """Analyze chat messages for insights"""
-    insights = []
-    
-    # Extract questions
-    questions = [msg for msg in messages if msg.role == "user" and "?" in msg.content]
-    if questions:
-        insights.append({
-            "type": "questions",
-            "content": [q.content for q in questions],
-            "count": len(questions)
-        })
-    
-    # Extract topics (simple keyword extraction)
-    all_text = " ".join([msg.content for msg in messages])
-    keywords = extract_keywords(all_text)
-    
-    insights.append({
-        "type": "topics",
-        "content": keywords,
-        "relevance": "high"
-    })
-    
-    # Extract action items
-    action_keywords = ["todo", "need to", "should", "must", "will"]
-    actions = []
-    for msg in messages:
-        for keyword in action_keywords:
-            if keyword in msg.content.lower():
-                actions.append(msg.content)
-                break
-    
-    if actions:
-        insights.append({
-            "type": "action_items",
-            "content": actions,
-            "priority": "medium"
-        })
-    
-    return insights
-
-async def search_web(query: str, limit: int) -> List[Dict[str, Any]]:
-    """Search web for information"""
-    # Simulate web search
-    await asyncio.sleep(1)
-    
-    results = []
-    for i in range(min(limit, 3)):
-        results.append({
-            "type": "web",
-            "title": f"Result {i+1} for: {query}",
-            "url": f"https://example.com/result{i+1}",
-            "snippet": f"This is a relevant snippet about {query}...",
-            "relevance": 0.9 - (i * 0.1)
-        })
-    
-    return results
-
-async def search_youtube(query: str, limit: int) -> List[Dict[str, Any]]:
-    """Search YouTube for videos"""
-    # Simulate YouTube search
-    await asyncio.sleep(0.5)
-    
-    results = []
-    for i in range(min(limit, 2)):
-        results.append({
-            "type": "youtube",
-            "title": f"Video: {query} Tutorial Part {i+1}",
-            "url": f"https://youtube.com/watch?v=example{i+1}",
-            "duration": "10:25",
-            "views": 150000 - (i * 50000),
-            "channel": "Tech Channel"
-        })
-    
-    return results
-
-def extract_keywords(text: str) -> List[str]:
-    """Simple keyword extraction"""
-    # In production, use NLP libraries
-    common_words = {"the", "is", "at", "which", "on", "a", "an", "and", "or", "but"}
-    words = text.lower().split()
-    word_freq = {}
-    
-    for word in words:
-        if word not in common_words and len(word) > 3:
-            word_freq[word] = word_freq.get(word, 0) + 1
-    
-    # Get top keywords
-    sorted_words = sorted(word_freq.items(), key=lambda x: x[1], reverse=True)
-    return [word for word, freq in sorted_words[:10]]
-
-async def cleanup_expired_sessions():
-    """만료된 세션 자동 정리"""
-    try:
-        if not SESSION_DATA_PATH.exists():
-            return
-        
-        with open(SESSION_DATA_PATH, 'r') as f:
-            session_data = json.load(f)
-        
-        updated = False
-        now = datetime.now()
-        
-        for platform, session_info in list(session_data.items()):
-            expires_at = session_info.get("expiresAt")
-            if expires_at:
-                expire_date = datetime.fromisoformat(expires_at)
-                if expire_date < now:
-                    print(f"[Session] Cleaning expired session for {platform}")
-                    session_data[platform]["valid"] = False
-                    session_data[platform]["status"] = "expired"
-                    updated = True
-        
-        if updated:
-            with open(SESSION_DATA_PATH, 'w') as f:
-                json.dump(session_data, f, indent=2)
-            print("[Session] Expired sessions cleaned")
+            if COMMAND_QUEUE_PATH.exists():
+                with open(COMMAND_QUEUE_PATH, 'r') as f:
+                    data = json.load(f)
+                    self.queue = [Command(**cmd) for cmd in data]
+        except Exception as e:
+            logger.error(f"Failed to load command queue: {e}")
             
-    except Exception as e:
-        print(f"[Session] Error cleaning sessions: {e}")
-
-# ======================== Initialization ========================
-
-async def initialize():
-    """Initialize Argosa system"""
-    print("[Argosa] Initializing AI analysis and data collection system...")
-    
-    LLM_DATA_PATH.mkdir(parents=True, exist_ok=True)
-    SYNC_STATUS_PATH.mkdir(parents=True, exist_ok=True)
-    
-    # 세션 정리 실행
-    await cleanup_expired_sessions()
-    
-    for platform in ["chatgpt", "claude", "gemini", "deepseek", "grok", "perplexity", "custom"]:
-        platform_path = LLM_DATA_PATH / platform
-        platform_path.mkdir(exist_ok=True)
-    
-    schedule_path = LLM_DATA_PATH / "schedule.json"
-    if not schedule_path.exists():
-        default_schedule = {
-            "enabled": False,
-            "time": "09:00",
-            "interval": "daily",
-            "platforms": [],
-            "settings": {},
-            "updated_at": datetime.now().isoformat()
-        }
-        with open(schedule_path, 'w') as f:
-            json.dump(default_schedule, f, indent=2)
-    
-    # Initialize default data sources
-    default_sources = [
-        DataSource(
-            id="llm_collector",
-            name="LLM Conversations",
-            type="llm",
-            status="active",
-            config={"platforms": ["chatgpt", "claude", "gemini", "deepseek", "grok", "perplexity"]}
-        ),
-        DataSource(
-            id="web_default",
-            name="Web Search",
-            type="web",
-            status="active",
-            config={"engine": "default", "safe_search": True}
-        ),
-        DataSource(
-            id="youtube_default",
-            name="YouTube",
-            type="youtube",
-            status="active",
-            config={"region": "US", "language": "en"}
-        ),
-        DataSource(
-            id="chat_default",
-            name="Chat Conversations",
-            type="chat",
-            status="active",
-            config={"models": ["gpt", "claude", "llama"]}
-        )
-    ]
-    
-    for source in default_sources:
-        data_sources[source.id] = source
-    
-    print("[Argosa] Initialized successfully")
-
-async def shutdown():
-    """Shutdown Argosa system"""
-    print("[Argosa] Shutting down...")
-    
-    for client_id in list(active_connections.keys()):
-        try:
-            await active_connections[client_id].close()
-        except:
-            pass
-        active_connections.pop(client_id, None)
-    
-    # Clear data
-    data_sources.clear()
-    collection_tasks.clear()
-    collected_data.clear()
-    
-    print("[Argosa] Shutdown complete")
-
-# ======================== System Status ========================
-
-@router.get("/status")
-async def get_argosa_status():
-    """Get Argosa system status for extension connection check"""
-    print("[DEBUG] Argosa status endpoint called!")
-    try:
-        # Check if directories exist
-        llm_data_exists = LLM_DATA_PATH.exists()
-        sync_status_exists = SYNC_STATUS_PATH.exists()
-        
-        # Count total conversations
-        total_conversations = 0
-        platform_stats = {}
-        
-        if llm_data_exists:
-            for platform_dir in LLM_DATA_PATH.iterdir():
-                if platform_dir.is_dir() and platform_dir.name in ["chatgpt", "claude", "gemini", "deepseek", "grok", "perplexity"]:
-                    conv_count = 0
-                    for json_file in platform_dir.glob("*.json"):
-                        try:
-                            with open(json_file, 'r') as f:
-                                data = json.load(f)
-                                conv_count += len(data.get("conversations", []))
-                        except:
-                            conv_count += 1
-                    platform_stats[platform_dir.name] = conv_count
-                    total_conversations += conv_count
-        
-        return {
-            "status": "operational",
-            "system": "argosa",
-            "features": {
-                "llm_collector": True,
-                "data_collection": True,
-                "data_analysis": False,
-                "prediction": False,
-            },
-            "storage": {
-                "llm_data_path": str(LLM_DATA_PATH),
-                "exists": llm_data_exists,
-                "total_conversations": total_conversations,
-                "platform_stats": platform_stats
-            },
-            "data_sources": len(data_sources),
-            "active_tasks": len([t for t in collection_tasks.values() if t.status == "collecting"]),
-            "timestamp": datetime.now().isoformat()
-        }
-        
-    except Exception as e:
-        return {
-            "status": "error",
-            "error": str(e),
-            "timestamp": datetime.now().isoformat()
-        }
-
-# ======================== Data Collection Endpoints ========================
-
-@router.get("/sources")
-async def get_data_sources():
-    """Get all configured data sources"""
-    return list(data_sources.values())
-
-@router.post("/sources")
-async def add_data_source(source: DataSource):
-    """Add a new data source"""
-    source.id = f"source_{uuid.uuid4().hex[:8]}"
-    data_sources[source.id] = source
-    return source
-
-@router.delete("/sources/{source_id}")
-async def remove_data_source(source_id: str):
-    """Remove a data source"""
-    if source_id not in data_sources:
-        raise HTTPException(status_code=404, detail="Source not found")
-    
-    del data_sources[source_id]
-    return {"message": "Source removed successfully"}
-
-@router.post("/chat/process")
-async def process_chat_conversation(messages: List[ChatMessage]):
-    """Process chat conversation for insights"""
-    task_id = f"task_{uuid.uuid4().hex[:8]}"
-    
-    task = CollectionTask(
-        id=task_id,
-        source="chat",
-        query="Chat conversation analysis",
-        status="collecting",
-        createdAt=datetime.now().isoformat()
-    )
-    
-    collection_tasks[task_id] = task
-    
-    # Process messages
-    insights = await analyze_chat_messages(messages)
-    
-    task.results = insights
-    task.status = "completed"
-    task.completedAt = datetime.now().isoformat()
-    
-    # Store in collected data
-    for insight in insights:
-        collected_data.append({
-            "id": f"data_{uuid.uuid4().hex[:8]}",
-            "source": "chat",
-            "type": insight["type"],
-            "content": insight["content"],
-            "timestamp": datetime.now().isoformat()
-        })
-    
-    return task
-
-@router.post("/search")
-async def search_data(request: SearchRequest):
-    """Search for data across multiple sources"""
-    task_id = f"task_{uuid.uuid4().hex[:8]}"
-    
-    task = CollectionTask(
-        id=task_id,
-        source="multi",
-        query=request.query,
-        status="collecting",
-        createdAt=datetime.now().isoformat()
-    )
-    
-    collection_tasks[task_id] = task
-    
-    results = []
-    
-    # Search different sources
-    if "web" in request.sources:
-        web_results = await search_web(request.query, request.limit)
-        results.extend(web_results)
-    
-    if "youtube" in request.sources:
-        youtube_results = await search_youtube(request.query, request.limit)
-        results.extend(youtube_results)
-    
-    task.results = results
-    task.status = "completed"
-    task.completedAt = datetime.now().isoformat()
-    
-    return task
-
-@router.post("/collect/schedule")
-async def schedule_collection(source_id: str, interval: int = 3600):
-    """Schedule periodic data collection"""
-    if source_id not in data_sources:
-        raise HTTPException(status_code=404, detail="Source not found")
-    
-    # In production, this would create a scheduled task
-    return {
-        "source_id": source_id,
-        "interval": interval,
-        "status": "scheduled",
-        "next_run": datetime.now().isoformat()
-    }
-
-@router.get("/tasks")
-async def get_collection_tasks(status: Optional[str] = None):
-    """Get collection tasks"""
-    tasks = list(collection_tasks.values())
-    
-    if status:
-        tasks = [t for t in tasks if t.status == status]
-    
-    return tasks
-
-@router.get("/tasks/{task_id}")
-async def get_task_details(task_id: str):
-    """Get details of a specific collection task"""
-    if task_id not in collection_tasks:
-        raise HTTPException(status_code=404, detail="Task not found")
-    
-    return collection_tasks[task_id]
-
-@router.post("/upload")
-async def upload_file(file: UploadFile = File(...)):
-    """Upload a file for data extraction"""
-    task_id = f"task_{uuid.uuid4().hex[:8]}"
-    
-    task = CollectionTask(
-        id=task_id,
-        source="file",
-        query=f"File: {file.filename}",
-        status="collecting",
-        createdAt=datetime.now().isoformat()
-    )
-    
-    collection_tasks[task_id] = task
-    
-    # Process file
-    content = await file.read()
-    
-    # Extract data based on file type
-    if file.filename.endswith('.json'):
-        data = json.loads(content)
-        task.results = [{"type": "json", "data": data}]
-    elif file.filename.endswith('.txt'):
-        text = content.decode('utf-8')
-        task.results = [{"type": "text", "content": text}]
-    else:
-        task.results = [{"type": "file", "filename": file.filename, "size": len(content)}]
-    
-    task.status = "completed"
-    task.completedAt = datetime.now().isoformat()
-    
-    return task
-
-@router.get("/collected")
-async def get_collected_data(source: Optional[str] = None, limit: int = 100):
-    """Get collected data"""
-    data = collected_data
-    
-    if source:
-        data = [d for d in data if d.get("source") == source]
-    
-    return data[-limit:]
-
-@router.post("/analyze/{data_id}")
-async def analyze_data(data_id: str):
-    """Trigger analysis on collected data"""
-    # Find data
-    data = next((d for d in collected_data if d["id"] == data_id), None)
-    
-    if not data:
-        raise HTTPException(status_code=404, detail="Data not found")
-    
-    # Send to analysis module
-    analysis_request = {
-        "data": data,
-        "requested_analysis": ["intent", "entities", "sentiment"]
-    }
-    
-    # In production, this would call the analysis module
-    return {
-        "data_id": data_id,
-        "analysis_status": "queued",
-        "message": "Data sent for analysis"
-    }
-
-# ======================== LLM Conversation Endpoints ========================
-
-@router.get("/llm/conversations/stats")
-async def get_conversation_stats():
-    """대화 수집 통계 반환"""
-    try:
-        stats = {
-            "daily_stats": {},
-            "latest_sync": {},
-            "total_conversations": 0
-        }
-        
-        for platform in ["chatgpt", "claude", "gemini", "deepseek", "grok", "perplexity"]:
-            platform_path = LLM_DATA_PATH / platform
-            if platform_path.exists():
-                platform_stats = {}
-                latest_file_time = None
+    async def save_queue(self):
+        """Save queue to file"""
+        async with self.queue_lock:
+            try:
+                COMMAND_QUEUE_PATH.parent.mkdir(parents=True, exist_ok=True)
+                with open(COMMAND_QUEUE_PATH, 'w') as f:
+                    json.dump([cmd.dict() for cmd in self.queue], f, indent=2)
+            except Exception as e:
+                logger.error(f"Failed to save command queue: {e}")
                 
-                for file in platform_path.glob("*.json"):
-                    date_str = file.stem.split('_')[0]
-                    if date_str not in platform_stats:
-                        platform_stats[date_str] = 0
-                    
-                    # 파일 내용을 읽어서 실제 대화 수 계산
-                    try:
-                        with open(file, 'r') as f:
-                            data = json.load(f)
-                            conversation_count = len(data.get("conversations", []))
-                            platform_stats[date_str] += conversation_count
-                    except:
-                        platform_stats[date_str] += 1
-                    
-                    file_time = datetime.fromtimestamp(file.stat().st_mtime)
-                    if latest_file_time is None or file_time > latest_file_time:
-                        latest_file_time = file_time
-                
-                stats["daily_stats"][platform] = platform_stats
-                if latest_file_time:
-                    stats["latest_sync"][platform] = latest_file_time.isoformat()
-        
-        for platform_stats in stats["daily_stats"].values():
-            stats["total_conversations"] += sum(platform_stats.values())
-        
-        return stats
-        
-    except Exception as e:
-        print(f"Error getting stats: {e}")
-        return {
-            "daily_stats": {},
-            "latest_sync": {},
-            "total_conversations": 0
-        }
+    async def add_command(self, command_type: str, data: Dict[str, Any], priority: int = CommandPriority.NORMAL) -> str:
+        """Add command to queue"""
+        async with self.queue_lock:
+            command = Command(
+                id=str(uuid.uuid4()),
+                type=command_type,
+                priority=priority,
+                data=data,
+                timestamp=datetime.now().isoformat(),
+                status="pending"
+            )
+            self.queue.append(command)
+            await self.save_queue()
+            return command.id
+            
+    async def get_next_command(self) -> Optional[Command]:
+        """Get next command by priority"""
+        async with self.queue_lock:
+            # Sort by priority (descending) and timestamp (ascending)
+            self.queue.sort(key=lambda x: (-x.priority, x.timestamp))
+            
+            for cmd in self.queue:
+                if cmd.status == "pending":
+                    cmd.status = "processing"
+                    await self.save_queue()
+                    return cmd
+            return None
+            
+    async def complete_command(self, command_id: str, result: Dict[str, Any] = None):
+        """Mark command as completed"""
+        async with self.queue_lock:
+            for cmd in self.queue:
+                if cmd.id == command_id:
+                    cmd.status = "completed"
+                    cmd.result = result
+                    break
+            await self.save_queue()
+            
+    async def fail_command(self, command_id: str, error: str):
+        """Mark command as failed"""
+        async with self.queue_lock:
+            for cmd in self.queue:
+                if cmd.id == command_id:
+                    cmd.status = "failed"
+                    cmd.result = {"error": error}
+                    break
+            await self.save_queue()
 
-@router.get("/llm/conversations/files")
-async def get_conversation_files():
-    """수집된 대화 파일 목록 반환"""
-    try:
-        files_list = []
-        
-        for platform in ["chatgpt", "claude", "gemini", "deepseek", "grok", "perplexity"]:
-            platform_path = LLM_DATA_PATH / platform
-            if platform_path.exists():
-                files = [f.name for f in platform_path.glob("*.json")]
-                files_list.append({
-                    "platform": platform,
-                    "files": sorted(files, reverse=True)[:10]
-                })
-        
-        return {"files": files_list}
-        
-    except Exception as e:
-        print(f"Error getting files: {e}")
-        return {"files": []}
-
-@router.delete("/llm/conversations/clean")
-async def clean_conversations(days: int = 0):
-    """오래된 대화 데이터 삭제"""
-    try:
-        deleted_count = 0
-        
-        if days == 0:
-            for platform in ["chatgpt", "claude", "gemini", "deepseek", "grok", "perplexity"]:
-                platform_path = LLM_DATA_PATH / platform
-                if platform_path.exists():
-                    for file in platform_path.glob("*.json"):
-                        file.unlink()
-                        deleted_count += 1
-        else:
-            cutoff_date = datetime.now() - timedelta(days=days)
-            for platform in ["chatgpt", "claude", "gemini", "deepseek", "grok", "perplexity"]:
-                platform_path = LLM_DATA_PATH / platform
-                if platform_path.exists():
-                    for file in platform_path.glob("*.json"):
-                        if datetime.fromtimestamp(file.stat().st_mtime) < cutoff_date:
-                            file.unlink()
-                            deleted_count += 1
-        
-        return {"success": True, "deleted": deleted_count}
-        
-    except Exception as e:
-        print(f"Error cleaning data: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+# Global command queue
+command_queue = UnifiedCommandQueue()
 
 # ======================== Session Management ========================
 
-@router.post("/llm/sessions/check")
+class UnifiedSessionManager:
+    def __init__(self):
+        self.cache: Dict[str, SessionCache] = {}
+        self.cache_ttl = 300  # 5 minutes
+        self.firefox_session_manager = EnhancedFirefoxSessionManager()
+        self.load_cache()
+        
+    def load_cache(self):
+        """Load session cache from file"""
+        try:
+            if SESSION_CACHE_PATH.exists():
+                with open(SESSION_CACHE_PATH, 'r') as f:
+                    data = json.load(f)
+                    for platform, info in data.items():
+                        self.cache[platform] = SessionCache(**info)
+        except Exception as e:
+            logger.error(f"Failed to load session cache: {e}")
+            
+    async def save_cache(self):
+        """Save session cache to file"""
+        try:
+            SESSION_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+            cache_data = {k: v.dict() for k, v in self.cache.items()}
+            with open(SESSION_CACHE_PATH, 'w') as f:
+                json.dump(cache_data, f, indent=2)
+        except Exception as e:
+            logger.error(f"Failed to save session cache: {e}")
+            
+    async def check_session(self, platform: str, force_fresh: bool = False) -> SessionCache:
+        """Check session with caching"""
+        # Check cache first
+        if not force_fresh and platform in self.cache:
+            cached = self.cache[platform]
+            cache_time = datetime.fromisoformat(cached.last_checked)
+            if (datetime.now() - cache_time).seconds < self.cache_ttl:
+                logger.info(f"Session cache hit for {platform}")
+                return cached
+                
+        # Request fresh check from Extension
+        logger.info(f"Requesting fresh session check for {platform}")
+        cmd_id = await command_queue.add_command(
+            "check_session_now",
+            {"platform": platform},
+            priority=CommandPriority.URGENT
+        )
+        
+        # Wait for response (max 2 seconds)
+        start_time = time.time()
+        while time.time() - start_time < 2.0:
+            await asyncio.sleep(0.1)
+            
+            # Check if command completed
+            async with command_queue.queue_lock:
+                for cmd in command_queue.queue:
+                    if cmd.id == cmd_id and cmd.status == "completed":
+                        if cmd.result:
+                            session_info = SessionCache(
+                                platform=platform,
+                                valid=cmd.result.get("valid", False),
+                                last_checked=datetime.now().isoformat(),
+                                expires_at=cmd.result.get("expires_at"),
+                                source="extension",
+                                cookies=cmd.result.get("cookies"),
+                                status=cmd.result.get("status", "unknown")
+                            )
+                            self.cache[platform] = session_info
+                            await self.save_cache()
+                            return session_info
+                            
+        # Timeout - return invalid session
+        logger.warning(f"Session check timeout for {platform}")
+        return SessionCache(
+            platform=platform,
+            valid=False,
+            last_checked=datetime.now().isoformat(),
+            source="timeout",
+            status="error"
+        )
+        
+    async def update_session(self, platform: str, valid: bool, cookies: Optional[List[Dict]] = None, 
+                           session_data: Optional[Dict] = None, reason: str = "manual", source: str = "extension"):
+        """Update session cache"""
+        expires_at = None
+        if valid:
+            if cookies:
+                max_expiry = None
+                for cookie in cookies:
+                    if cookie.get("expires"):
+                        expiry_time = datetime.fromtimestamp(cookie["expires"])
+                        if max_expiry is None or expiry_time > max_expiry:
+                            max_expiry = expiry_time
+                expires_at = max_expiry.isoformat() if max_expiry else (datetime.now() + timedelta(days=7)).isoformat()
+            else:
+                expires_at = (datetime.now() + timedelta(days=7)).isoformat()
+        
+        session_info = SessionCache(
+            platform=platform,
+            valid=valid,
+            last_checked=datetime.now().isoformat(),
+            expires_at=expires_at,
+            source=source,
+            cookies=cookies,
+            status="active" if valid else "expired"
+        )
+        
+        self.cache[platform] = session_info
+        await self.save_cache()
+        
+        # Update system state
+        await state_manager.update_state("sessions", {
+            **state_manager.state.sessions,
+            platform: session_info.dict()
+        })
+        
+        logger.info(f"Updated {platform}: valid={valid}, expires={expires_at}, reason={reason}")
+        return valid
+
+# Global session manager
+session_manager = UnifiedSessionManager()
+
+# ======================== Schedule Management ========================
+
+class ScheduleManager:
+    def __init__(self):
+        self.config: Optional[ScheduleConfig] = None
+        self.load_config()
+        
+    def load_config(self):
+        """Load schedule configuration"""
+        try:
+            if SCHEDULE_CONFIG_PATH.exists():
+                with open(SCHEDULE_CONFIG_PATH, 'r') as f:
+                    data = json.load(f)
+                    self.config = ScheduleConfig(**data)
+        except Exception as e:
+            logger.error(f"Failed to load schedule config: {e}")
+            
+    async def save_config(self):
+        """Save schedule configuration"""
+        try:
+            if self.config:
+                SCHEDULE_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+                with open(SCHEDULE_CONFIG_PATH, 'w') as f:
+                    json.dump(self.config.dict(), f, indent=2)
+                    
+                # Update system state
+                await state_manager.update_state("schedule_enabled", self.config.enabled)
+                
+        except Exception as e:
+            logger.error(f"Failed to save schedule config: {e}")
+
+# Global schedule manager
+schedule_manager = ScheduleManager()
+
+# ======================== Firefox Management ========================
+
+class ImprovedFirefoxManager:
+    def __init__(self):
+        self.process: Optional[subprocess.Popen] = None
+        self.monitor_thread: Optional[threading.Thread] = None
+        
+    def get_firefox_command(self, profile_name: str = "llm-collector", headless: bool = False) -> List[str]:
+        """Get Firefox launch command based on OS"""
+        system = platform.system()
+        base_args = ["--no-remote", "-P", profile_name]
+        
+        if headless and system in ["Linux", "Darwin"]:
+            base_args.append("--headless")
+        
+        if system == "Windows":
+            firefox_paths = [
+                r"C:\Program Files\Firefox Developer Edition\firefox.exe",
+                r"C:\Program Files\Mozilla Firefox\firefox.exe",
+                r"C:\Program Files (x86)\Mozilla Firefox\firefox.exe",
+            ]
+            
+            for path in firefox_paths:
+                if os.path.exists(path):
+                    logger.info(f"Found Firefox at: {path}")
+                    return [path] + base_args
+                    
+            firefox_in_path = shutil.which("firefox")
+            if firefox_in_path:
+                return [firefox_in_path] + base_args
+                
+            raise Exception("Firefox not found. Please install Firefox.")
+            
+        elif system == "Darwin":  # macOS
+            firefox_paths = [
+                "/Applications/Firefox.app/Contents/MacOS/firefox",
+                "/Applications/Firefox Developer Edition.app/Contents/MacOS/firefox",
+            ]
+            
+            for path in firefox_paths:
+                if os.path.exists(path):
+                    return [path] + base_args
+                    
+            raise Exception("Firefox not found on macOS. Please install Firefox.")
+            
+        else:  # Linux
+            firefox_in_path = shutil.which("firefox")
+            if firefox_in_path:
+                return [firefox_in_path] + base_args
+                
+            raise Exception("Firefox not found. Please install Firefox: sudo apt install firefox")
+            
+    async def check_firefox_running(self) -> bool:
+        """Check if Firefox is running"""
+        for proc in psutil.process_iter(['pid', 'name']):
+            try:
+                if 'firefox' in proc.info['name'].lower():
+                    return True
+            except:
+                pass
+        return False
+            
+    async def kill_existing_firefox(self):
+        """Kill any existing Firefox processes"""
+        for proc in psutil.process_iter(['pid', 'name']):
+            try:
+                if 'firefox' in proc.info['name'].lower():
+                    logger.info(f"Killing existing Firefox process: {proc.info['pid']}")
+                    proc.terminate()
+                    proc.wait(timeout=5)
+            except:
+                pass
+                
+    def monitor_firefox_process(self):
+        """Monitor Firefox process in background thread"""
+        while self.process and self.process.poll() is None:
+            time.sleep(2)
+            
+        # Firefox exited
+        logger.warning("Firefox process exited")
+        asyncio.create_task(state_manager.update_state("firefox_status", "closed"))
+        
+    async def launch_firefox_with_command(self, command: Dict[str, Any], visible: bool = True) -> bool:
+        """Launch Firefox with URL command"""
+        try:
+            # Kill existing Firefox
+            await self.kill_existing_firefox()
+            await asyncio.sleep(1)
+            
+            # Get Firefox command
+            profile_name = command.get("settings", {}).get("profileName", "llm-collector")
+            use_headless = not visible and platform.system() in ["Linux", "Darwin"]
+            firefox_cmd = self.get_firefox_command(profile_name, headless=use_headless)
+            
+            # Launch Firefox
+            logger.info(f"Launching Firefox with command: {command['action']}")
+            
+            if platform.system() == "Windows" and not visible:
+                startupinfo = subprocess.STARTUPINFO()
+                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                startupinfo.wShowWindow = subprocess.SW_MINIMIZE
+                
+                self.process = subprocess.Popen(
+                    firefox_cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    startupinfo=startupinfo
+                )
+            else:
+                self.process = subprocess.Popen(
+                    firefox_cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE
+                )
+            
+            # Start monitoring thread
+            self.monitor_thread = threading.Thread(target=self.monitor_firefox_process)
+            self.monitor_thread.start()
+            
+            # Update state
+            await state_manager.update_state("firefox_status", "opening")
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to launch Firefox: {e}")
+            await state_manager.update_state("firefox_status", "error")
+            return False
+            
+    async def close_firefox(self):
+        """Close Firefox gracefully"""
+        if self.process:
+            try:
+                self.process.terminate()
+                self.process.wait(timeout=5)
+            except:
+                self.process.kill()
+            self.process = None
+
+# Global Firefox manager
+firefox_manager = ImprovedFirefoxManager()
+
+# ======================== Extension Communication ========================
+
+class ExtensionMonitor:
+    def __init__(self):
+        self.last_heartbeat: Optional[datetime] = None
+        self.check_interval = 10  # seconds
+        asyncio.create_task(self.start_monitoring())
+        
+    async def start_monitoring(self):
+        """Start monitoring Extension heartbeat"""
+        while True:
+            await asyncio.sleep(self.check_interval)
+            await self.check_heartbeat()
+            
+    async def check_heartbeat(self):
+        """Check Extension heartbeat status"""
+        try:
+            if EXTENSION_HEARTBEAT_PATH.exists():
+                with open(EXTENSION_HEARTBEAT_PATH, 'r') as f:
+                    data = json.load(f)
+                    heartbeat = ExtensionHeartbeat(**data)
+                    
+                last_seen = datetime.fromisoformat(heartbeat.timestamp)
+                
+                # Update state
+                if (datetime.now() - last_seen).seconds < 30:
+                    await state_manager.update_state("extension_status", "connected")
+                    await state_manager.update_state("extension_last_seen", heartbeat.timestamp)
+                else:
+                    await state_manager.update_state("extension_status", "disconnected")
+                    
+        except Exception as e:
+            logger.error(f"Error checking heartbeat: {e}")
+            await state_manager.update_state("extension_status", "disconnected")
+            
+    async def update_heartbeat(self, heartbeat: ExtensionHeartbeat):
+        """Update heartbeat from Extension"""
+        try:
+            EXTENSION_HEARTBEAT_PATH.parent.mkdir(parents=True, exist_ok=True)
+            with open(EXTENSION_HEARTBEAT_PATH, 'w') as f:
+                json.dump(heartbeat.dict(), f)
+                
+            self.last_heartbeat = datetime.now()
+            await state_manager.update_state("extension_status", "connected")
+            await state_manager.update_state("extension_last_seen", heartbeat.timestamp)
+            
+            # Update session info if provided
+            if heartbeat.sessions:
+                for platform, valid in heartbeat.sessions.items():
+                    await session_manager.update_session(platform, valid, source="heartbeat")
+                    
+        except Exception as e:
+            logger.error(f"Error updating heartbeat: {e}")
+
+# Global Extension monitor
+extension_monitor = ExtensionMonitor()
+
+# ======================== API Endpoints ========================
+
+@router.get("/status")
+async def get_system_status():
+    """Get system status"""
+    firefox_status = {
+        "available": session_manager.firefox_session_manager.extension_available,
+        "port": session_manager.firefox_session_manager.extension_port
+    }
+    
+    return {
+        "status": "operational",
+        "system": "argosa",
+        "state": state_manager.state.dict(),
+        "firefox_extension": firefox_status,
+        "timestamp": datetime.now().isoformat()
+    }
+
+@router.websocket("/ws/state")
+async def state_websocket(websocket: WebSocket):
+    """WebSocket for real-time state updates"""
+    await websocket.accept()
+    active_websockets.add(websocket)
+    
+    try:
+        # Send current state
+        await websocket.send_json({
+            "type": "state_update",
+            "data": state_manager.state.dict()
+        })
+        
+        # Keep connection alive
+        while True:
+            await asyncio.sleep(1)
+            
+    except WebSocketDisconnect:
+        active_websockets.discard(websocket)
+
+# ======================== Session Management Endpoints ========================
+
+@router.post("/sessions/check")
 async def check_sessions(request: SessionCheckRequest):
-    """각 플랫폼의 세션 상태 확인"""
+    """Check multiple platform sessions"""
     try:
         sessions = []
         
         for platform in request.platforms:
-            is_valid, expires_at = await check_session_validity(platform)
-            
-            # 세션 정보 가져오기
-            session_data = {}
-            if SESSION_DATA_PATH.exists():
-                with open(SESSION_DATA_PATH, 'r') as f:
-                    session_data = json.load(f)
-            
-            session_info = session_data.get(platform, {})
-            
+            session_info = await session_manager.check_session(platform)
             sessions.append(SessionStatus(
                 platform=platform,
-                valid=is_valid,
-                lastChecked=session_info.get("lastChecked", datetime.now().isoformat()),
-                expiresAt=expires_at
+                valid=session_info.valid,
+                lastChecked=session_info.last_checked,
+                expiresAt=session_info.expires_at
             ))
         
         return {"sessions": sessions}
         
     except Exception as e:
-        print(f"Error checking sessions: {e}")
+        logger.error(f"Error checking sessions: {e}")
         return {"sessions": []}
 
-@router.post("/llm/sessions/check-single")
+@router.post("/sessions/check-single")
 async def check_single_session(request: SingleSessionCheckRequest):
-    """단일 플랫폼의 세션 상태 확인 - 개선된 버전"""
-    print(f"\n[Session Check] Platform: {request.platform}, Enabled: {request.enabled}", flush=True)
+    """Check single platform session"""
+    logger.info(f"Session Check: Platform: {request.platform}, Enabled: {request.enabled}")
     
     try:
-        is_valid, expires_at = await check_session_validity(request.platform)
+        session_info = await session_manager.check_session(request.platform)
         
-        # 세션 정보 가져오기
-        session_data = {}
-        if SESSION_DATA_PATH.exists():
-            with open(SESSION_DATA_PATH, 'r') as f:
-                session_data = json.load(f)
-        
-        session_info = session_data.get(request.platform, {})
-        
-        # 세션이 invalid이고 enabled인 경우 Firefox로 실제 검증
-        if not is_valid and request.enabled:
-            print(f"[Session Check] Session invalid and enabled, attempting Firefox verification...", flush=True)
-            actual_valid = await verify_session_with_firefox(request.platform)
-            if actual_valid:
-                print(f"[Session Check] Firefox verification showed {request.platform} is actually logged in!")
-                is_valid = await update_session_status(request.platform, True, reason="firefox_verified")
-                # 업데이트된 정보 다시 로드
-                with open(SESSION_DATA_PATH, 'r') as f:
-                    session_data = json.load(f)
-                session_info = session_data.get(request.platform, {})
-                expires_at = session_info.get("expiresAt")
-        
-        # 쿠키 정보 포함
-        has_cookies = len(session_info.get("cookies", [])) > 0
-        
-        response = {
+        return {
             "platform": request.platform,
-            "valid": is_valid,
-            "lastChecked": session_info.get("lastChecked", datetime.now().isoformat()),
-            "expiresAt": expires_at,
-            "cookies": has_cookies,
-            "sessionData": session_info.get("sessionData"),
-            "status": session_info.get("status", "unknown")
+            "valid": session_info.valid,
+            "lastChecked": session_info.last_checked,
+            "expiresAt": session_info.expires_at,
+            "cookies": bool(session_info.cookies),
+            "status": session_info.status
         }
         
-        print(f"[Session Check] Returning: {json.dumps(response, indent=2)}", flush=True)
-        return response
-        
     except Exception as e:
-        print(f"[Session Check] ❌ Error: {e}", flush=True)
-        print(f"[Session Check] Traceback: {traceback.format_exc()}", flush=True)
+        logger.error(f"Error checking session: {e}")
         return {
             "platform": request.platform,
             "valid": False,
@@ -1108,171 +731,84 @@ async def check_single_session(request: SingleSessionCheckRequest):
             "status": "error"
         }
 
-@router.post("/llm/sessions/open-login")
+@router.post("/sessions/open-login")
 async def open_login_page(request: OpenLoginRequest):
-    """플랫폼 로그인 페이지 열기"""
+    """Open platform login page"""
     try:
-        # Firefox 명령어 가져오기
-        try:
-            firefox_cmd = get_firefox_command(request.profileName)
-        except Exception as e:
-            print(f"[Firefox] Error getting command: {e}")
-            return {
-                "success": False, 
-                "error": str(e),
-                "details": "Firefox not found. Please check installation."
-            }
+        # Launch Firefox with login command
+        command = {
+            "action": "open_login",
+            "platform": request.platform,
+            "url": request.url,
+            "settings": {"profileName": request.profileName}
+        }
         
-        # Firefox 실행
-        try:
-            print(f"[Firefox] Opening {request.platform} at {request.url}")
-            
-            # 특별한 URL 파라미터 추가 (Extension이 감지할 수 있도록)
-            login_url = f"{request.url}#llm-collector-login"
-            subprocess.Popen(firefox_cmd + [login_url])
-            
-            # 세션 파일 업데이트 (checking 상태로)
-            await update_session_status(request.platform, False, reason="login_opened")
-            
-            # checking 상태로 변경
-            session_data = {}
-            if SESSION_DATA_PATH.exists():
-                with open(SESSION_DATA_PATH, 'r') as f:
-                    session_data = json.load(f)
-            
-            session_data[request.platform] = {
-                **session_data.get(request.platform, {}),
-                "status": "checking",
-                "lastChecked": datetime.now().isoformat()
-            }
-            
-            with open(SESSION_DATA_PATH, 'w') as f:
-                json.dump(session_data, f, indent=2)
-            
+        success = await firefox_manager.launch_firefox_with_command(command)
+        
+        if success:
             return {
-                "success": True, 
+                "success": True,
                 "message": f"Opening {request.platform} login page",
                 "details": "Please log in and the session will be automatically detected"
             }
-            
-        except Exception as e:
-            print(f"[Firefox] Error launching: {e}")
+        else:
             return {
-                "success": False, 
-                "error": f"Failed to launch Firefox: {str(e)}",
-                "details": "Check if Firefox profile exists"
+                "success": False,
+                "error": "Failed to launch Firefox",
+                "details": "Check Firefox installation and profile"
             }
-        
+            
     except Exception as e:
-        print(f"[Firefox] Unexpected error: {e}")
+        logger.error(f"Error opening login page: {e}")
         return {
-            "success": False, 
+            "success": False,
             "error": str(e),
             "details": "Unexpected error occurred"
         }
 
-@router.post("/llm/sessions/update")
-async def update_session_status_endpoint(update: SessionUpdate):
-    """Extension에서 세션 상태 업데이트 (개선된 버전)"""
-    print(f"\n[Session Update] ===== RECEIVED UPDATE =====", flush=True)
-    print(f"[Session Update] Platform: {update.platform}, Valid: {update.valid}", flush=True)
-    print(f"[Session Update] Request from Extension detected!", flush=True)
+@router.post("/sessions/update")
+async def update_session_endpoint(update: SessionUpdate):
+    """Update session status from Extension"""
+    logger.info(f"Session Update: Platform: {update.platform}, Valid: {update.valid}")
     
     try:
-        # 쿠키 정보 파싱
+        # Parse cookies
         cookies_list = []
         if update.cookies:
             for cookie_data in update.cookies.values():
                 if isinstance(cookie_data, dict):
                     cookies_list.append(cookie_data)
         
-        # 세션 상태 업데이트 (쿠키 정보 포함)
-        await update_session_status(
-            update.platform, 
-            update.valid, 
+        # Update session
+        await session_manager.update_session(
+            update.platform,
+            update.valid,
             cookies=cookies_list,
             session_data=update.cookies,
             reason="extension_update"
         )
         
-        print(f"[Session Update] ✅ Successfully updated {update.platform} session", flush=True)
-        print(f"[Session Update] Cookies count: {len(cookies_list)}", flush=True)
-        print(f"[Session Update] ===== UPDATE COMPLETE =====\n", flush=True)
+        logger.info(f"Successfully updated {update.platform} session")
         
-        # 만료 시간 계산
-        expires_at = None
-        if update.valid and cookies_list:
-            max_expiry = None
-            for cookie in cookies_list:
-                if cookie.get("expires"):
-                    expiry_time = datetime.fromtimestamp(cookie["expires"])
-                    if max_expiry is None or expiry_time > max_expiry:
-                        max_expiry = expiry_time
-            
-            if max_expiry:
-                expires_at = max_expiry.isoformat()
-            else:
-                expires_at = (datetime.now() + timedelta(days=7)).isoformat()
-        elif update.valid:
-            expires_at = (datetime.now() + timedelta(days=7)).isoformat()
-        
-        return {
-            "success": True, 
-            "expiresAt": expires_at,
-            "cookiesReceived": len(cookies_list)
-        }
+        return {"success": True}
         
     except Exception as e:
-        print(f"[Session Update] ❌ Error: {e}", flush=True)
+        logger.error(f"Error updating session: {e}")
         return {"success": False, "error": str(e)}
 
-# ======================== Schedule Management ========================
+# ======================== Firefox Control Endpoints ========================
 
-@router.get("/llm/schedule/last-failure")
-async def get_last_schedule_failure():
-    """마지막 스케줄 실패 정보 반환"""
-    try:
-        if SCHEDULE_FAILURE_PATH.exists():
-            with open(SCHEDULE_FAILURE_PATH, 'r') as f:
-                failure_data = json.load(f)
-                
-            if failure_data.get("timestamp"):
-                failure_time = datetime.fromisoformat(failure_data["timestamp"])
-                # 24시간 이내의 실패만 반환
-                if (datetime.now() - failure_time).total_seconds() < 86400:
-                    return {
-                        "failure": True,
-                        "reason": failure_data.get("reason", "unknown"),
-                        "timestamp": failure_data["timestamp"],
-                        "details": failure_data.get("details", {})
-                    }
-        
-        return {"failure": False}
-        
-    except Exception as e:
-        print(f"Error getting schedule failure: {e}")
-        return {"failure": False}
-
-# ======================== Firefox Control ========================
-
-@router.post("/llm/firefox/launch")
+@router.post("/firefox/launch")
 async def launch_firefox_sync(request: SyncRequest, background_tasks: BackgroundTasks):
-    """Firefox를 실행하고 Extension sync를 트리거 - 개선된 세션 검증"""
-    print(f"\n[Firefox] ===== Launch Request Received =====", flush=True)
-    print(f"[Firefox] Request data: {json.dumps(request.dict(), indent=2)}", flush=True)
+    """Launch Firefox and trigger Extension sync"""
+    logger.info("Firefox launch request received")
     
     try:
-        # Skip session check 옵션 확인
-        skip_session_check = request.settings.get("skipSessionCheck", False)
-        print(f"[Firefox] Skip session check: {skip_session_check}", flush=True)
-        
-        # 1. 세션 체크 (enabled 플랫폼만)
+        # Get enabled platforms
         enabled_platforms = [
-            p["platform"] for p in request.platforms 
+            p["platform"] for p in request.platforms
             if p.get("enabled", True)
         ]
-        
-        print(f"[Firefox] Enabled platforms: {enabled_platforms}", flush=True)
         
         if not enabled_platforms:
             return {
@@ -1281,515 +817,151 @@ async def launch_firefox_sync(request: SyncRequest, background_tasks: Background
                 "details": "Please enable at least one platform"
             }
         
-        # 세션 검증을 skip하지 않는 경우
-        if not skip_session_check:
-            invalid_sessions = []
-            
-            for platform in enabled_platforms:
-                is_valid, _ = await check_session_validity(platform)
-                
-                if not is_valid:
-                    print(f"[Firefox] {platform} appears invalid, verifying with Firefox...", flush=True)
-                    actual_valid = await verify_session_with_firefox(platform)
-                    if actual_valid:
-                        print(f"[Firefox] {platform} is actually logged in!", flush=True)
-                        await update_session_status(platform, True, reason="firefox_verified")
-                    else:
-                        invalid_sessions.append(platform)
-            
-            print(f"[Firefox] Invalid sessions after verification: {invalid_sessions}", flush=True)
-            
-            if invalid_sessions:
-                print(f"[Firefox] ❌ Session validation failed", flush=True)
-                
-                failure_data = {
-                    "reason": "session_expired",
-                    "timestamp": datetime.now().isoformat(),
-                    "details": {
-                        "invalid_sessions": invalid_sessions,
-                        "message": f"Invalid sessions for: {', '.join(invalid_sessions)}"
-                    }
-                }
-                
-                SCHEDULE_FAILURE_PATH.parent.mkdir(parents=True, exist_ok=True)
-                with open(SCHEDULE_FAILURE_PATH, 'w') as f:
-                    json.dump(failure_data, f, indent=2)
-                
-                return {
-                    "success": False,
-                    "error": f"Invalid sessions for: {', '.join(invalid_sessions)}",
-                    "invalidSessions": invalid_sessions
-                }
+        # Update system state
+        await state_manager.update_state("system_status", "preparing")
         
-        print(f"[Firefox] ✅ All sessions valid or skip session check enabled", flush=True)
-        
-        # 2. 스마트 스케줄링 체크 (enabled 플랫폼만)
-        print(f"[Firefox] Checking smart scheduling...", flush=True)
-        platforms_to_sync = []
-        for platform in enabled_platforms:
-            should_sync = await should_sync_today(platform)
-            print(f"[Firefox] {platform} should sync today: {should_sync}", flush=True)
-            if should_sync:
-                platforms_to_sync.append(platform)
-        
-        if not platforms_to_sync:
-            print(f"[Firefox] No platforms need syncing today", flush=True)
-            failure_data = {
-                "reason": "smart_scheduling",
-                "timestamp": datetime.now().isoformat(),
-                "details": {
-                    "message": "No platforms need syncing today (data already up to date)",
-                    "skipped_platforms": enabled_platforms
-                }
-            }
-            
-            SCHEDULE_FAILURE_PATH.parent.mkdir(parents=True, exist_ok=True)
-            with open(SCHEDULE_FAILURE_PATH, 'w') as f:
-                json.dump(failure_data, f, indent=2)
-            
-            return {
-                "success": False,
-                "error": "No platforms need syncing today (data already up to date)",
-                "reason": "smart_scheduling"
-            }
-        
-        # 3. 필터링된 플랫폼으로 sync 진행 (enabled만)
-        filtered_platforms = [
-            p for p in request.platforms 
-            if p["platform"] in platforms_to_sync and p.get("enabled", True)
-        ]
-        
+        # Create sync command
         sync_id = str(uuid.uuid4())
+        
+        command = {
+            "action": "sync",
+            "sync_id": sync_id,
+            "platforms": request.platforms,
+            "settings": request.settings,
+            "timestamp": datetime.now().isoformat(),
+            "auto_close": True
+        }
+        
+        # Save sync config for Extension
         sync_config = {
             "id": sync_id,
-            "platforms": filtered_platforms,
+            "platforms": request.platforms,
             "settings": request.settings,
             "status": "pending",
             "created_at": datetime.now().isoformat(),
-            "auto_close": True  # sync 완료 후 Firefox 자동 종료
+            "auto_close": True
         }
-        
-        print(f"[Firefox] Creating sync config with ID: {sync_id}", flush=True)
-        print(f"[Firefox] Platforms to sync: {platforms_to_sync}", flush=True)
-        print(f"[Firefox] Sync config: {json.dumps(sync_config, indent=2)}", flush=True)
         
         SYNC_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
         with open(SYNC_CONFIG_PATH, 'w') as f:
             json.dump(sync_config, f, indent=2)
         
-        # 4. Firefox 실행
-        profile_name = request.settings.get("profileName", "llm-collector")
-        
-        # firefoxVisible 설정 확인 (false면 headless 모드)
+        # Launch Firefox
         firefox_visible = request.settings.get("firefoxVisible", True)
-        debug_mode = request.settings.get("debug", firefox_visible)  # debug를 firefoxVisible와 연동
+        success = await firefox_manager.launch_firefox_with_command(command, visible=firefox_visible)
         
-        print(f"[Firefox] Profile name: {profile_name}", flush=True)
-        print(f"[Firefox] Firefox visible: {firefox_visible}", flush=True)
-        print(f"[Firefox] Debug mode: {debug_mode}", flush=True)
-        
-        # 실제로는 headless 모드가 Extension과 호환되지 않을 수 있으므로
-        # 대신 창을 최소화하거나 다른 방법을 사용해야 할 수 있음
-        use_headless = not firefox_visible and platform.system() in ["Linux", "Darwin"]
-        
-        try:
-            firefox_cmd = get_firefox_command(profile_name, headless=use_headless)
-            print(f"[Firefox] Command to execute: {' '.join(firefox_cmd)}", flush=True)
-        except Exception as e:
-            print(f"[Firefox] Failed to get Firefox command: {e}", flush=True)
+        if success:
+            await state_manager.update_state("sync_status", {
+                "sync_id": sync_id,
+                "status": "started",
+                "progress": 0,
+                "message": "Firefox launched, waiting for Extension..."
+            })
+            
+            return {
+                "success": True,
+                "sync_id": sync_id,
+                "message": "Firefox launched and sync triggered",
+                "debug_mode": request.settings.get("debug", firefox_visible),
+                "firefox_visible": firefox_visible
+            }
+        else:
+            await state_manager.update_state("system_status", "idle")
             return {
                 "success": False,
-                "error": str(e),
-                "details": "Please check Firefox installation"
+                "error": "Failed to launch Firefox",
+                "details": "Check Firefox installation"
             }
-        
-        print("[Firefox] Checking if Firefox is already running...", flush=True)
-        is_running = await check_firefox_running()
-        print(f"[Firefox] Is running: {is_running}", flush=True)
-        
-        if not is_running:
-            print(f"[Firefox] Starting Firefox...", flush=True)
-            try:
-                # sync trigger URL로 시작
-                start_url = "about:blank#llm-sync-trigger"
-                
-                # Windows에서는 창 최소화 옵션 사용
-                if platform.system() == "Windows" and not firefox_visible:
-                    # Windows에서 최소화 실행
-                    startupinfo = subprocess.STARTUPINFO()
-                    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-                    startupinfo.wShowWindow = subprocess.SW_MINIMIZE
-                    
-                    process = subprocess.Popen(
-                        firefox_cmd + [start_url],
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE,
-                        startupinfo=startupinfo
-                    )
-                else:
-                    process = subprocess.Popen(
-                        firefox_cmd + [start_url],
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE
-                    )
-                
-                print(f"[Firefox] Process started with PID: {process.pid}", flush=True)
-                
-                # 프로세스 모니터링 시작
-                background_tasks.add_task(monitor_firefox_process, process, sync_id)
-                
-                # Firefox 시작 대기
-                await asyncio.sleep(5)
-                print("[Firefox] Firefox startup wait completed", flush=True)
-                
-            except Exception as e:
-                print(f"[Firefox] Failed to start Firefox: {e}", flush=True)
-                print(f"[Firefox] Traceback: {traceback.format_exc()}", flush=True)
-                return {
-                    "success": False,
-                    "error": f"Failed to start Firefox: {str(e)}",
-                    "details": "Check Firefox installation and profile"
-                }
-        else:
-            print("[Firefox] Opening new tab in existing instance", flush=True)
-            subprocess.Popen(firefox_cmd + ["about:blank#llm-sync-trigger"])
-        
-        # 초기 상태 파일 생성
-        status_file = SYNC_STATUS_PATH / f"sync-status-{sync_id}.json"
-        initial_status = {
-            "status": "pending",
-            "progress": 0,
-            "message": "Waiting for extension to start...",
-            "created_at": datetime.now().isoformat(),
-            "updated_at": datetime.now().isoformat()
-        }
-        with open(status_file, 'w') as f:
-            json.dump(initial_status, f)
-        
-        print(f"[Firefox] Created initial status file: {status_file}", flush=True)
-        print(f"[Firefox] ✅ Sync initiated successfully with ID: {sync_id}", flush=True)
-        
-        # 스케줄 실패 기록 삭제
-        if SCHEDULE_FAILURE_PATH.exists():
-            SCHEDULE_FAILURE_PATH.unlink()
-        
-        result = {
-            "success": True,
-            "sync_id": sync_id,
-            "message": "Firefox launched and sync triggered",
-            "debug_mode": debug_mode,
-            "firefox_visible": firefox_visible,
-            "platforms_to_sync": platforms_to_sync
-        }
-        
-        print(f"[Firefox] Returning result: {json.dumps(result, indent=2)}", flush=True)
-        print(f"[Firefox] ===== Launch Request Completed =====\n", flush=True)
-        
-        return result
-        
+            
     except Exception as e:
-        print(f"[Firefox] ❌ Unexpected error: {str(e)}", flush=True)
-        print(f"[Firefox] Traceback: {traceback.format_exc()}", flush=True)
+        logger.error(f"Error launching Firefox: {e}")
+        await state_manager.update_state("system_status", "error")
         return {
             "success": False,
             "error": str(e),
             "details": "Unexpected error occurred"
         }
 
-# ======================== Debug Endpoints ========================
-
-@router.get("/llm/debug/firefox-profile")
-async def debug_firefox_profile():
-    """Firefox 프로파일 정보 디버깅"""
-    print("\n[Debug] Firefox profile check requested", flush=True)
-    
-    try:
-        result = {
-            "profile_exists": False,
-            "profile_path": None,
-            "sessions_path": str(SESSION_DATA_PATH),
-            "sessions_exists": SESSION_DATA_PATH.exists(),
-            "firefox_installed": False,
-            "firefox_locations": []
-        }
-        
-        # Firefox 설치 확인
-        try:
-            firefox_cmd = get_firefox_command("llm-collector")
-            result["firefox_installed"] = True
-            result["firefox_command"] = ' '.join(firefox_cmd)
-        except Exception as e:
-            result["firefox_error"] = str(e)
-        
-        # Firefox 프로파일 경로 확인
-        system = platform.system()
-        if system == "Windows":
-            profile_base = Path(os.environ.get('APPDATA', '')) / 'Mozilla' / 'Firefox' / 'Profiles'
-        elif system == "Darwin":
-            profile_base = Path.home() / 'Library' / 'Application Support' / 'Firefox' / 'Profiles'
-        else:
-            profile_base = Path.home() / '.mozilla' / 'firefox'
-        
-        result["profile_base"] = str(profile_base)
-        
-        # llm-collector 프로파일 찾기
-        if profile_base.exists():
-            for profile_dir in profile_base.glob("*.llm-collector"):
-                result["profile_exists"] = True
-                result["profile_path"] = str(profile_dir)
-                
-                # 프로파일 내 쿠키 파일 확인
-                cookies_db = profile_dir / "cookies.sqlite"
-                result["cookies_db_exists"] = cookies_db.exists()
-                if cookies_db.exists():
-                    result["cookies_db_size"] = cookies_db.stat().st_size
-                break
-        
-        # sessions.json 내용
-        if SESSION_DATA_PATH.exists():
-            with open(SESSION_DATA_PATH, 'r') as f:
-                result["sessions_content"] = json.load(f)
-        
-        print(f"[Debug] Profile info: {json.dumps(result, indent=2)}", flush=True)
-        return result
-        
-    except Exception as e:
-        print(f"[Debug] Error: {e}", flush=True)
-        return {"error": str(e)}
-
-@router.get("/llm/debug/cookies/{platform}")
-async def debug_platform_cookies(platform: str):
-    """특정 플랫폼의 쿠키 정보 디버깅"""
-    print(f"\n[Debug] Cookie check for {platform}", flush=True)
-    
-    try:
-        result = {
-            "platform": platform,
-            "session_valid": False,
-            "cookies_found": False,
-            "error": None
-        }
-        
-        # sessions.json에서 플랫폼 정보 확인
-        if SESSION_DATA_PATH.exists():
-            with open(SESSION_DATA_PATH, 'r') as f:
-                session_data = json.load(f)
-                
-            platform_session = session_data.get(platform, {})
-            result["session_info"] = platform_session
-            result["session_valid"] = platform_session.get("valid", False)
-            result["cookies_count"] = len(platform_session.get("cookies", []))
-            result["cookies_found"] = result["cookies_count"] > 0
-        
-        print(f"[Debug] Cookie info for {platform}: {json.dumps(result, indent=2)}", flush=True)
-        return result
-        
-    except Exception as e:
-        print(f"[Debug] Error: {e}", flush=True)
-        return {"error": str(e), "platform": platform}
-
-@router.post("/llm/firefox/toggle-visibility")
-async def toggle_firefox_visibility():
-    """Firefox 창 가시성 토글 (Windows에서만 작동)"""
-    try:
-        if platform.system() == "Windows":
-            # Windows API를 사용하여 Firefox 창 찾기 및 토글
-            import ctypes
-            from ctypes import wintypes
-            
-            user32 = ctypes.windll.user32
-            
-            # Firefox 창 찾기
-            def enum_windows_callback(hwnd, lParam):
-                if user32.IsWindowVisible(hwnd):
-                    length = user32.GetWindowTextLengthW(hwnd)
-                    if length > 0:
-                        title = ctypes.create_unicode_buffer(length + 1)
-                        user32.GetWindowTextW(hwnd, title, length + 1)
-                        if "Firefox" in title.value:
-                            # 창이 보이면 숨기고, 숨겨져 있으면 보이게
-                            if user32.IsWindowVisible(hwnd):
-                                user32.ShowWindow(hwnd, 0)  # SW_HIDE
-                            else:
-                                user32.ShowWindow(hwnd, 9)  # SW_RESTORE
-                            return False
-                return True
-            
-            # EnumWindows 콜백 타입 정의
-            EnumWindowsProc = ctypes.WINFUNCTYPE(
-                ctypes.c_bool, 
-                ctypes.POINTER(ctypes.c_int), 
-                ctypes.POINTER(ctypes.c_int)
-            )
-            
-            # 콜백 실행
-            user32.EnumWindows(EnumWindowsProc(enum_windows_callback), 0)
-            
-            return {"success": True, "message": "Firefox visibility toggled"}
-            
-        else:
-            # Linux/macOS에서는 wmctrl 등을 사용할 수 있음
-            return {
-                "success": False, 
-                "error": "Toggle visibility only supported on Windows currently"
-            }
-            
-    except Exception as e:
-        print(f"[Firefox] Error toggling visibility: {e}")
-        return {"success": False, "error": str(e)}
-
-@router.get("/llm/sync/status/{sync_id}")
+@router.get("/sync/status/{sync_id}")
 async def get_sync_status(sync_id: str):
-    """Sync 진행 상태 확인"""
+    """Get sync progress status"""
     try:
-        status_file = SYNC_STATUS_PATH / f"sync-status-{sync_id}.json"
+        if state_manager.state.sync_status and state_manager.state.sync_status.get("sync_id") == sync_id:
+            return state_manager.state.sync_status
         
-        if status_file.exists():
-            with open(status_file, 'r') as f:
-                status = json.load(f)
-                
-            # timeout 체크 (5분)
-            if status.get("updated_at"):
-                last_update = datetime.fromisoformat(status["updated_at"])
-                if (datetime.now() - last_update).total_seconds() > 300:
-                    status["status"] = "timeout"
-                    status["message"] = "Sync timeout - no response from extension"
-                    
-            return status
-        else:
-            return {
-                "status": "pending",
-                "progress": 0,
-                "message": "Waiting for extension to start...",
-                "updated_at": datetime.now().isoformat()
-            }
-    except Exception as e:
-        return {"status": "error", "error": str(e)}
-
-@router.post("/llm/sync/cancel/{sync_id}")
-async def cancel_sync(sync_id: str):
-    """진행 중인 sync 취소"""
-    try:
-        status_file = SYNC_STATUS_PATH / f"sync-status-{sync_id}.json"
-        
-        if status_file.exists():
-            with open(status_file, 'w') as f:
-                json.dump({
-                    "status": "cancelled",
-                    "progress": 0,
-                    "message": "Sync cancelled by user",
-                    "updated_at": datetime.now().isoformat()
-                }, f)
-        
-        # Firefox 종료
-        if platform.system() == "Windows":
-            subprocess.run(["taskkill", "/F", "/IM", "firefox.exe"], capture_output=True)
-        else:
-            subprocess.run(["pkill", "firefox"], capture_output=True)
-        
-        return {"success": True, "message": "Sync cancelled"}
-        
-    except Exception as e:
-        return {"success": False, "error": str(e)}
-
-@router.post("/llm/sync/schedule")
-async def schedule_sync(config: ScheduleConfig):
-    """자동 sync 스케줄 설정"""
-    try:
-        # platforms가 비어있으면 에러
-        if not config.platforms:
-            print(f"[Schedule] No platforms enabled for schedule")
-            return {"success": False, "error": "No platforms enabled for schedule"}
-        
-        schedule_config = {
-            "enabled": config.enabled,
-            "time": config.startTime,
-            "interval": config.interval,
-            "platforms": config.platforms,  # Frontend에서 이미 enabled만 보냄
-            "settings": config.settings,
+        return {
+            "status": "pending",
+            "progress": 0,
+            "message": "Waiting for extension to start...",
             "updated_at": datetime.now().isoformat()
         }
         
-        schedule_path = LLM_DATA_PATH / "schedule.json"
-        with open(schedule_path, 'w') as f:
-            json.dump(schedule_config, f, indent=2)
-        
-        print(f"[Schedule] Saved schedule for platforms: {config.platforms}")
-        
-        # Cron job 설정 (Linux/Mac)
-        if platform.system() != "Windows":
-            try:
-                import subprocess
-                
-                # 현재 디렉토리의 run_sync.py 스크립트 경로
-                script_path = Path(__file__).parent.parent / "scripts" / "run_sync.py"
-                if not script_path.exists():
-                    # 스크립트 생성
-                    script_path.parent.mkdir(exist_ok=True)
-                    with open(script_path, 'w') as f:
-                        f.write("""#!/usr/bin/env python3
-import requests
-import sys
-
-try:
-    response = requests.post('http://localhost:8000/api/argosa/data/llm/sync/trigger-scheduled')
-    if response.ok:
-        print("Scheduled sync triggered successfully")
-    else:
-        print(f"Failed to trigger sync: {response.status_code}")
-except Exception as e:
-    print(f"Error: {e}")
-    sys.exit(1)
-""")
-                    script_path.chmod(0o755)
-                
-                # Crontab 업데이트
-                result = subprocess.run(['crontab', '-l'], capture_output=True, text=True)
-                if result.returncode == 0:
-                    current_cron = result.stdout
-                    new_cron = '\n'.join([line for line in current_cron.split('\n') 
-                                        if 'llm-collector-sync' not in line and line.strip()])
-                else:
-                    new_cron = ""
-                
-                if config.enabled and config.interval != 'manual':
-                    hour, minute = config.startTime.split(":")
-                    if config.interval == 'daily':
-                        cron_schedule = f"{minute} {hour} * * *"
-                    elif config.interval == '12h':
-                        cron_schedule = f"{minute} {hour},{(int(hour)+12)%24} * * *"
-                    elif config.interval == '6h':
-                        hours = ','.join([str((int(hour)+i*6)%24) for i in range(4)])
-                        cron_schedule = f"{minute} {hours} * * *"
-                    else:
-                        cron_schedule = f"{minute} {hour} * * *"
-                    
-                    new_job = f"{cron_schedule} {sys.executable} {script_path} # llm-collector-sync"
-                    new_cron = new_cron.strip() + '\n' + new_job + '\n'
-                
-                process = subprocess.Popen(['crontab', '-'], stdin=subprocess.PIPE, text=True)
-                process.communicate(input=new_cron)
-                
-            except Exception as e:
-                print(f"Failed to update crontab: {e}")
-        else:
-            # Windows Task Scheduler
-            print("Windows Task Scheduler integration not implemented yet")
-            # TODO: Windows Task Scheduler 구현
-        
-        return {"success": True, "message": "Schedule updated"}
-        
     except Exception as e:
-        return {"success": False, "error": str(e)}
+        return {"status": "error", "error": str(e)}
 
-@router.get("/llm/sync/config")
+@router.post("/sync/cancel/{sync_id}")
+async def cancel_sync(sync_id: str):
+    """Cancel ongoing sync"""
+    if state_manager.state.sync_status and state_manager.state.sync_status.get("sync_id") == sync_id:
+        # Add cancel command
+        await command_queue.add_command(
+            "cancel_sync",
+            {"sync_id": sync_id},
+            priority=CommandPriority.URGENT
+        )
+        
+        # Update state
+        await state_manager.update_state("system_status", "idle")
+        await state_manager.update_state("sync_status", None)
+        
+        # Kill Firefox
+        await firefox_manager.close_firefox()
+        
+        return {"success": True, "message": "Sync cancelled"}
+    else:
+        raise HTTPException(status_code=404, detail="Sync not found")
+
+@router.post("/sync/progress")
+async def update_sync_progress(progress: SyncProgress):
+    """Update sync progress"""
+    sync_status = {
+        "sync_id": progress.sync_id,
+        "status": progress.status,
+        "progress": progress.progress,
+        "current_platform": progress.current_platform,
+        "collected": progress.collected,
+        "message": progress.message
+    }
+    
+    await state_manager.update_state("sync_status", sync_status)
+    
+    # Auto-close Firefox on completion
+    if progress.status == "completed":
+        await state_manager.update_state("system_status", "idle")
+        
+        # Check if auto-close is enabled
+        if SYNC_CONFIG_PATH.exists():
+            with open(SYNC_CONFIG_PATH, 'r') as f:
+                sync_config = json.load(f)
+                
+            if sync_config.get("auto_close", True):
+                # Close Firefox after 3 seconds
+                async def close_firefox_delayed():
+                    await asyncio.sleep(3)
+                    await firefox_manager.close_firefox()
+                
+                asyncio.create_task(close_firefox_delayed())
+    
+    return {"success": True}
+
+@router.get("/sync/config")
 async def get_sync_config():
-    """Extension이 읽을 sync 설정 반환"""
+    """Get sync config for Extension"""
     if SYNC_CONFIG_PATH.exists():
         with open(SYNC_CONFIG_PATH, 'r') as f:
             config = json.load(f)
             
-        # 설정이 1시간 이상 오래되었으면 무시
+        # Check if config is recent (within 1 hour)
         if config.get("created_at"):
             created = datetime.fromisoformat(config["created_at"])
             if (datetime.now() - created).total_seconds() > 3600:
@@ -1799,189 +971,117 @@ async def get_sync_config():
     else:
         return {"status": "no_config"}
 
-@router.post("/llm/sync/progress")
-async def update_sync_progress(progress: SyncProgress):
-    """Extension이 진행상황 업데이트"""
+# ======================== Schedule Management Endpoints ========================
+
+@router.post("/sync/schedule")
+async def schedule_sync(config: ScheduleConfig):
+    """Configure automatic sync schedule"""
     try:
-        status_file = SYNC_STATUS_PATH / f"sync-status-{progress.sync_id}.json"
+        if not config.platforms:
+            return {"success": False, "error": "No platforms enabled for schedule"}
         
-        status = {
-            "status": progress.status,
-            "progress": progress.progress,
-            "current_platform": progress.current_platform,
-            "collected": progress.collected,
-            "message": progress.message,
-            "updated_at": datetime.now().isoformat()
-        }
+        # Save schedule config
+        schedule_manager.config = config
+        await schedule_manager.save_config()
         
-        with open(status_file, 'w') as f:
-            json.dump(status, f, indent=2)
+        logger.info(f"Saved schedule for platforms: {config.platforms}")
         
-        # WebSocket으로 실시간 업데이트 전송
-        for client_id, websocket in active_connections.items():
-            try:
-                await websocket.send_json({
-                    "type": "sync_progress",
-                    "data": status
-                })
-            except:
-                pass
+        return {"success": True, "message": "Schedule updated"}
         
-        # sync 완료 시 Firefox 자동 종료
-        if progress.status == "completed":
-            # sync config 확인
-            if SYNC_CONFIG_PATH.exists():
-                with open(SYNC_CONFIG_PATH, 'r') as f:
-                    sync_config = json.load(f)
-                    
-                if sync_config.get("auto_close", True):
-                    # 3초 후 Firefox 종료
-                    async def close_firefox():
-                        await asyncio.sleep(3)
-                        if platform.system() == "Windows":
-                            subprocess.run(["taskkill", "/F", "/IM", "firefox.exe"], capture_output=True)
-                        else:
-                            subprocess.run(["pkill", "firefox"], capture_output=True)
-                    
-                    asyncio.create_task(close_firefox())
-        
-        return {"success": True}
     except Exception as e:
+        logger.error(f"Error updating schedule: {e}")
         return {"success": False, "error": str(e)}
 
-@router.post("/llm/sync/trigger-scheduled")
+@router.post("/sync/trigger-scheduled")
 async def trigger_scheduled_sync(background_tasks: BackgroundTasks):
-    """스케줄된 sync 실행"""
+    """Trigger scheduled sync"""
     try:
-        schedule_path = LLM_DATA_PATH / "schedule.json"
-        
-        if not schedule_path.exists():
-            return {"success": False, "error": "No schedule configuration found"}
-        
-        with open(schedule_path, 'r') as f:
-            schedule = json.load(f)
-        
-        if not schedule.get('enabled'):
+        if not schedule_manager.config or not schedule_manager.config.enabled:
             return {"success": False, "error": "Scheduled sync is disabled"}
         
-        # schedule에 저장된 platforms는 이미 enabled만 포함
-        enabled_platforms = schedule.get("platforms", [])
+        enabled_platforms = schedule_manager.config.platforms
         
         if not enabled_platforms:
-            print(f"[Schedule] No enabled platforms in schedule")
             return {"success": False, "error": "No enabled platforms in schedule"}
         
         request = SyncRequest(
             platforms=[
-                {"platform": p, "enabled": True} 
+                {"platform": p, "enabled": True}
                 for p in enabled_platforms
             ],
-            settings=schedule.get("settings", {})
+            settings=schedule_manager.config.settings
         )
         
         result = await launch_firefox_sync(request, background_tasks)
         return result
         
     except Exception as e:
-        failure_data = {
-            "reason": "exception",
-            "timestamp": datetime.now().isoformat(),
-            "details": {
-                "error": str(e),
-                "message": "Unexpected error during scheduled sync"
-            }
-        }
-        
-        SCHEDULE_FAILURE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with open(SCHEDULE_FAILURE_PATH, 'w') as f:
-            json.dump(failure_data, f, indent=2)
-        
         return {"success": False, "error": str(e)}
 
-@router.post("/llm/conversations/save")
-async def save_conversations(data: Dict[str, Any]):
-    """Extension에서 수집한 대화 데이터 저장"""
-    try:
-        platform = data.get("platform")
-        conversations = data.get("conversations", [])
-        timestamp = data.get("timestamp", datetime.now().isoformat())
-        
-        if not platform:
-            return {"success": False, "error": "Platform not specified"}
-        
-        platform_path = LLM_DATA_PATH / platform
-        platform_path.mkdir(exist_ok=True)
-        
-        # 오늘 날짜로 파일명 생성
-        date_str = datetime.now().strftime("%Y-%m-%d")
-        file_count = len(list(platform_path.glob(f"{date_str}_*.json")))
-        filename = f"{date_str}_conversation_{file_count + 1}.json"
-        
-        file_path = platform_path / filename
-        with open(file_path, 'w', encoding='utf-8') as f:
-            json.dump({
-                "platform": platform,
-                "timestamp": timestamp,
-                "conversations": conversations,
-                "metadata": {
-                    "count": len(conversations),
-                    "collected_at": datetime.now().isoformat()
-                }
-            }, f, ensure_ascii=False, indent=2)
-        
-        print(f"[LLM Collector] Saved {len(conversations)} conversations to {filename}")
-        
-        # Add to collected data for unified view
-        for conv in conversations:
-            collected_data.append({
-                "id": f"data_{uuid.uuid4().hex[:8]}",
-                "source": "llm",
-                "platform": platform,
-                "type": "conversation",
-                "content": conv,
-                "timestamp": timestamp
-            })
-        
-        return {
-            "success": True,
-            "filename": filename,
-            "count": len(conversations)
-        }
-        
-    except Exception as e:
-        print(f"Error saving conversations: {e}")
-        return {"success": False, "error": str(e)}
+# ======================== Extension Communication Endpoints ========================
 
-# ======================== WebSocket Endpoint ========================
+@router.post("/extension/heartbeat")
+async def extension_heartbeat(heartbeat: ExtensionHeartbeat):
+    """Receive heartbeat from Extension"""
+    await extension_monitor.update_heartbeat(heartbeat)
+    return {"status": "received"}
 
-@router.websocket("/ws/{client_id}")
-async def websocket_endpoint(websocket: WebSocket, client_id: str):
-    """Argosa WebSocket connection"""
-    await websocket.accept()
-    active_connections[client_id] = websocket
+@router.get("/commands/next")
+async def get_next_command():
+    """Get next command for Extension"""
+    command = await command_queue.get_next_command()
+    if command:
+        return command.dict()
+    return {"type": "none"}
+
+@router.post("/commands/response/{command_id}")
+async def command_response(command_id: str, response: Dict[str, Any]):
+    """Receive command response from Extension"""
+    await command_queue.complete_command(command_id, response)
+    return {"status": "received"}
+
+@router.get("/settings/current")
+async def get_current_settings():
+    """Get current settings for Extension"""
+    return {
+        "maxConversations": 20,
+        "randomDelay": 5,
+        "minCheckGap": 30000,
+        "heartbeatInterval": 10000
+    }
+
+# ======================== Initialization and Shutdown ========================
+
+async def initialize():
+    """Initialize Argosa core system"""
+    logger.info("Initializing Argosa core system...")
     
-    try:
-        await websocket.send_json({
-            "type": "connection",
-            "status": "connected",
-            "client_id": client_id
-        })
-        
-        while True:
-            data = await websocket.receive_json()
-            
-            # Handle different message types
-            if data.get("type") == "ping":
-                await websocket.send_json({"type": "pong"})
-            
-            # Broadcast to other clients if needed
-            for other_id, other_ws in active_connections.items():
-                if other_id != client_id:
-                    try:
-                        await other_ws.send_json(data)
-                    except:
-                        pass
-                        
-    except WebSocketDisconnect:
-        active_connections.pop(client_id, None)
-        print(f"[Argosa] Client {client_id} disconnected")
+    # Create directories
+    DATA_PATH.mkdir(parents=True, exist_ok=True)
+    
+    # Initialize state
+    await state_manager.update_state("system_status", "idle")
+    await state_manager.update_state("firefox_status", "closed")
+    await state_manager.update_state("extension_status", "disconnected")
+    
+    logger.info("Argosa core system initialized")
+
+async def shutdown():
+    """Shutdown Argosa core system"""
+    logger.info("Shutting down Argosa core system...")
+    
+    # Close WebSocket connections
+    for websocket in list(active_websockets):
+        try:
+            await websocket.close()
+        except:
+            pass
+    active_websockets.clear()
+    
+    # Kill Firefox if running
+    await firefox_manager.close_firefox()
+    
+    logger.info("Argosa core system shutdown complete")
+
+# Run initialization on import
+asyncio.create_task(initialize())

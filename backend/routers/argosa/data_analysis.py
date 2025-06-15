@@ -1,9 +1,8 @@
-# backend/routers/argosa/data_analysis.py - 통합 및 개선된 전체 버전
+"""데이터 분석 및 AI 에이전트 시스템 라우터"""
 
 from fastapi import APIRouter, HTTPException, WebSocket, BackgroundTasks
 from pydantic import BaseModel, Field
 from typing import Dict, Any, List, Optional, AsyncGenerator, TypedDict
-from enum import Enum
 import asyncio
 from datetime import datetime
 import json
@@ -23,7 +22,34 @@ from langgraph.checkpoint import MemorySaver
 
 # 프로젝트 내부 imports
 from ...services.rag_service import rag_service, module_integration, Document, RAGQuery
-from .data_collection import comprehensive_data_collector
+from ...services.data_collection import comprehensive_data_collector
+
+# 분리된 모듈 imports
+from .analysis import (
+    # Prompts
+    AGENT_PROMPTS,
+    # Configs
+    AGENT_CONFIGS,
+    WORKFLOW_PHASES,
+    DEFAULT_AI_MODELS,
+    WEB_SEARCH_PATTERNS,
+    SYSTEM_CONFIG,
+    ERROR_MESSAGES,
+    EnhancedAgentType,
+    # Helpers
+    format_timestamp,
+    format_duration,
+    needs_web_search,
+    calculate_workflow_progress,
+    generate_mock_agent_performance,
+    generate_mock_workflow_data,
+    extract_json_from_text,
+    sanitize_code,
+    validate_workflow_state,
+    calculate_agent_efficiency,
+    should_retry_operation,
+    determine_next_workflow
+)
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -39,22 +65,22 @@ class CodeWorkflowState(TypedDict):
     current_phase: str
     
     # 프로젝트 이해
-    project_structure: Dict[str, Any]  # 전체 프로젝트 구조
-    file_dependencies: Dict[str, List[str]]  # 파일 간 의존성
-    code_patterns: List[Dict[str, Any]]  # 발견된 코드 패턴
-    entity_map: Dict[str, Any]  # code_analysis의 엔티티 맵
+    project_structure: Dict[str, Any]
+    file_dependencies: Dict[str, List[str]]
+    code_patterns: List[Dict[str, Any]]
+    entity_map: Dict[str, Any]
     
     # 작업 분해
-    subtasks: List[Dict[str, Any]]  # 세분화된 작업들
+    subtasks: List[Dict[str, Any]]
     current_subtask: Optional[Dict[str, Any]]
     completed_subtasks: List[str]
     
     # 코드 조각들
-    code_fragments: Dict[str, str]  # 작은 단위로 생성된 코드
-    integration_points: List[Dict[str, Any]]  # 통합 지점
+    code_fragments: Dict[str, str]
+    integration_points: List[Dict[str, Any]]
     
     # AI 간 통신
-    messages: List[Dict[str, Any]]  # AI 간 메시지
+    messages: List[Dict[str, Any]]
     pending_questions: List[Dict[str, Any]]
     decisions: List[Dict[str, Any]]
     
@@ -64,46 +90,64 @@ class CodeWorkflowState(TypedDict):
     test_coverage: float
     
     # RAG 컨텍스트
-    rag_documents: List[str]  # 사용된 RAG 문서 ID
-    learned_patterns: List[Dict[str, Any]]  # 학습된 패턴
+    rag_documents: List[str]
+    learned_patterns: List[Dict[str, Any]]
     
     # 실시간 협업
     websocket_clients: List[str]
     collaboration_session_id: Optional[str]
+    
+    # 추가 필드
+    objective: str
+    constraints: List[str]
+    project_root: str
+    
+    # 아키텍처 설계
+    architecture_design: Optional[Dict[str, Any]]
+    requirements: Optional[Dict[str, Any]]
+    integrated_code: Optional[str]
+    test_code: Optional[Dict[str, Any]]
+    coding_standards: Optional[Dict[str, Any]]
 
-# ===== 향상된 AI 에이전트 타입 =====
-
-class EnhancedAgentType(str, Enum):
-    """통합 AI 에이전트 타입"""
-    # 데이터 분석 에이전트
-    ANALYST = "analyst"
-    PREDICTOR = "predictor"
-    OPTIMIZER = "optimizer"
-    ANOMALY_DETECTOR = "anomaly_detector"
+class DataAnalysisWorkflowState(TypedDict):
+    """데이터 분석 워크플로우 상태"""
     
-    # 코드 작업 에이전트
-    ARCHITECT = "architect"
-    CODE_ANALYZER = "code_analyzer"
-    CODE_GENERATOR = "code_generator"
-    CODE_REVIEWER = "code_reviewer"
-    IMPLEMENTER = "implementer"
-    TESTER = "test_designer"
-    REFACTORER = "refactorer"
-    INTEGRATOR = "integrator"
+    # 기본 정보
+    workflow_id: str
+    analysis_type: str
+    current_phase: str
     
-    # 의사결정 에이전트
-    STRATEGIST = "strategist"
-    RISK_ASSESSOR = "risk_assessor"
-    PLANNER = "planner"
-    REASONER = "reasoner"
-    DECISION_MAKER = "decision_maker"
+    # 데이터 수집
+    data_sources: List[str]
+    search_query: Optional[str]
+    collected_data: Dict[str, Any]
     
-    # 검색 및 정보 수집
-    WEB_SEARCHER = "web_searcher"
-    DOC_SEARCHER = "doc_searcher"
+    # 분석 정보
+    analysis_objective: str
+    analysis_results: Dict[str, Any]
+    insights: Dict[str, Any]
+    visualizations: List[Dict[str, Any]]
+    final_report: Dict[str, Any]
     
-    # 협업 조정자
-    COORDINATOR = "coordinator"
+    # 웹 검색 관련
+    needs_web_search: bool
+    search_reasons: List[str]
+    web_search_context: Dict[str, Any]
+    
+    # 기타
+    constraints: List[str]
+    business_goals: List[str]
+    priority: str
+    
+    # 웹 검색 설정
+    enable_web_search: bool
+    search_sources: List[str]
+    search_depth: str
+    
+    # 컨텍스트
+    context: Optional[Dict[str, Any]]
+    requires_login: Optional[bool]
+    target_domains: Optional[List[str]]
 
 # ===== 데이터 모델 =====
 
@@ -124,10 +168,15 @@ class AnalysisRequest(BaseModel):
     analysis_type: str
     data_source: Optional[str] = None
     parameters: Dict[str, Any] = {}
-    priority: str = "normal"  # low, normal, high, critical
+    priority: str = "normal"
     objective: str = ""
     constraints: List[str] = []
     
+    # 웹 검색 관련 필드
+    enable_web_search: bool = False
+    search_sources: List[str] = []
+    search_depth: str = "normal"
+
 class AgentTask(BaseModel):
     """에이전트 작업 정의"""
     task_id: str = Field(default_factory=lambda: f"task_{datetime.now().timestamp()}")
@@ -135,8 +184,8 @@ class AgentTask(BaseModel):
     task_type: str
     input_data: Dict[str, Any]
     dependencies: List[str] = []
-    timeout: int = 300  # seconds
-    retry_count: int = 3
+    timeout: int = SYSTEM_CONFIG["agent_timeout_seconds"]
+    retry_count: int = SYSTEM_CONFIG["retry_count"]
 
 class WorkflowDefinition(BaseModel):
     """워크플로우 정의"""
@@ -144,8 +193,8 @@ class WorkflowDefinition(BaseModel):
     name: str
     description: str
     tasks: List[AgentTask]
-    execution_order: List[str]  # task_id 순서
-    parallel_groups: List[List[str]] = []  # 병렬 실행 가능한 task_id 그룹
+    execution_order: List[str]
+    parallel_groups: List[List[str]] = []
     conditions: Dict[str, Any] = {}
 
 # ===== 고급 AI 에이전트 시스템 =====
@@ -172,17 +221,7 @@ class EnhancedAgentSystem:
         self.http_client = httpx.AsyncClient()
         
         # AI 모델 설정
-        self.ai_models = {
-            "default": None,
-            "specialized": {
-                EnhancedAgentType.ARCHITECT: "qwen2.5-72b-instruct",
-                EnhancedAgentType.CODE_GENERATOR: "deepseek-coder-33b-instruct",
-                EnhancedAgentType.CODE_REVIEWER: "deepseek-r1-distill-qwen-32b",
-                EnhancedAgentType.IMPLEMENTER: "wizardcoder-33b-v2",
-                EnhancedAgentType.ANALYST: "llama-3.1-70b-instruct",
-                EnhancedAgentType.STRATEGIST: "gpt-4o",
-            }
-        }
+        self.ai_models = DEFAULT_AI_MODELS
         
         # 에이전트 초기화
         self._initialize_agents()
@@ -191,185 +230,15 @@ class EnhancedAgentSystem:
     def _initialize_agents(self):
         """에이전트 초기화"""
         
-        # 각 에이전트별 설정
-        agent_configs = {
-            EnhancedAgentType.ARCHITECT: {
-                "name": "Software Architect",
-                "capabilities": ["system_design", "pattern_selection", "scalability_planning"],
-                "prompt_template": """You are a software architect. Design the architecture for:
-
-Requirements: {requirements}
-Current System: {current_system}
-Constraints: {constraints}
-
-Provide:
-1. Component breakdown
-2. Integration strategy  
-3. Data flow design
-4. Scalability considerations
-5. Technology recommendations
-
-Response in structured JSON format."""
-            },
-            
-            EnhancedAgentType.CODE_ANALYZER: {
-                "name": "Code Analysis Specialist",
-                "capabilities": ["ast_analysis", "complexity_analysis", "dependency_mapping"],
-                "prompt_template": """You are a code analysis specialist. Analyze:
-
-Project Context: {project_context}
-Target Code: {code}
-Analysis Type: {analysis_type}
-
-Provide detailed analysis including:
-1. Code structure and patterns
-2. Dependencies and relationships
-3. Potential issues and code smells
-4. Performance considerations
-5. Security vulnerabilities
-6. Improvement opportunities
-
-Response in structured JSON format."""
-            },
-            
-            EnhancedAgentType.CODE_GENERATOR: {
-                "name": "Code Generation Specialist",
-                "capabilities": ["code_synthesis", "pattern_application", "api_design"],
-                "prompt_template": """You are a code generation specialist. Generate code based on:
-
-Specification: {specification}
-Context: {context}
-Patterns to follow: {patterns}
-Constraints: {constraints}
-
-Generate production-ready code with:
-1. Proper error handling
-2. Type hints
-3. Comprehensive documentation
-4. Unit tests
-5. Following project conventions
-
-Return code with explanations."""
-            },
-            
-            EnhancedAgentType.IMPLEMENTER: {
-                "name": "Implementation Specialist",
-                "capabilities": ["detailed_implementation", "optimization", "integration"],
-                "prompt_template": """You are an implementation specialist. Implement:
-
-Design: {design}
-Requirements: {requirements}
-Existing Code: {existing_code}
-Integration Points: {integration_points}
-
-Provide:
-1. Complete implementation
-2. Integration code
-3. Configuration changes
-4. Migration scripts if needed
-5. Deployment considerations"""
-            },
-            
-            EnhancedAgentType.CODE_REVIEWER: {
-                "name": "Code Review Specialist",
-                "capabilities": ["quality_check", "security_review", "performance_analysis"],
-                "prompt_template": """You are a code review specialist. Review:
-
-Code: {code}
-Context: {context}
-Standards: {coding_standards}
-Requirements: {requirements}
-
-Check for:
-1. Code quality issues
-2. Security vulnerabilities
-3. Performance problems
-4. Best practice violations
-5. Test coverage
-6. Documentation completeness
-
-Provide actionable feedback with severity levels."""
-            },
-            
-            EnhancedAgentType.TESTER: {
-                "name": "Test Design Specialist",
-                "capabilities": ["test_planning", "test_generation", "coverage_analysis"],
-                "prompt_template": """You are a test design specialist. Create tests for:
-
-Code: {code}
-Requirements: {requirements}
-Test Strategy: {test_strategy}
-
-Generate:
-1. Unit tests
-2. Integration tests
-3. Edge case tests
-4. Performance tests
-5. Test data generators
-
-Aim for comprehensive coverage."""
-            },
-            
-            EnhancedAgentType.ANALYST: {
-                "name": "Data Analysis Expert",
-                "capabilities": ["statistical_analysis", "pattern_recognition", "insight_generation"],
-                "prompt_template": """You are a data analysis expert. Analyze:
-
-Data: {data}
-Objective: {objective}
-Context: {context}
-
-Provide:
-1. Statistical summary
-2. Pattern analysis
-3. Correlations
-4. Anomalies
-5. Actionable insights
-6. Visualization recommendations"""
-            },
-            
-            EnhancedAgentType.STRATEGIST: {
-                "name": "Strategic Planning Expert",
-                "capabilities": ["decision_analysis", "scenario_planning", "risk_assessment"],
-                "prompt_template": """You are a strategic planning expert. Analyze:
-
-Situation: {situation}
-Options: {options}
-Constraints: {constraints}
-Goals: {goals}
-
-Provide:
-1. Strategic recommendations
-2. Risk analysis
-3. Implementation roadmap
-4. Success metrics
-5. Contingency plans"""
-            },
-            
-            EnhancedAgentType.PLANNER: {
-                "name": "Task Planning Specialist",
-                "capabilities": ["task_decomposition", "dependency_analysis", "resource_planning"],
-                "prompt_template": """You are a task planning specialist. Plan:
-
-Objective: {objective}
-Context: {context}
-Resources: {resources}
-Constraints: {constraints}
-
-Create:
-1. Task breakdown
-2. Dependencies
-3. Timeline
-4. Resource allocation
-5. Risk mitigation"""
-            }
-        }
-        
-        # 에이전트 초기화
-        for agent_type, config in agent_configs.items():
+        # 설정에서 에이전트 생성
+        for agent_type in EnhancedAgentType:
+            config = AGENT_CONFIGS.get(agent_type, {})
             self.agents[agent_type] = {
                 "status": "ready",
-                "config": config,
+                "config": {
+                    **config,
+                    "prompt_template": AGENT_PROMPTS.get(agent_type.value, "")
+                },
                 "model": self.ai_models["specialized"].get(agent_type, self.ai_models["default"]),
                 "performance_metrics": {
                     "success_rate": 1.0,
@@ -449,17 +318,34 @@ Create:
     def _create_analysis_workflow(self):
         """데이터 분석 워크플로우 생성"""
         
-        workflow = StateGraph(dict)
+        workflow = StateGraph(DataAnalysisWorkflowState)
         
         # 노드 추가
         workflow.add_node("collect_data", self._collect_data_node)
+        workflow.add_node("check_web_search", self._check_web_search_node)
         workflow.add_node("analyze_data", self._analyze_data_node)
         workflow.add_node("generate_insights", self._generate_insights_node)
         workflow.add_node("create_visualizations", self._create_visualizations_node)
         workflow.add_node("generate_report", self._generate_report_node)
         
         # 엣지 정의
-        workflow.add_edge("collect_data", "analyze_data")
+        workflow.add_edge("collect_data", "check_web_search")
+        
+        # 조건부 라우팅 - 웹 검색 필요 여부
+        def web_search_decision(state):
+            if state.get("needs_web_search", False):
+                return "collect_web_data"
+            return "analyze_data"
+        
+        workflow.add_conditional_edges(
+            "check_web_search",
+            web_search_decision,
+            {
+                "collect_web_data": "collect_data",  # 다시 수집 (웹 포함)
+                "analyze_data": "analyze_data"
+            }
+        )
+        
         workflow.add_edge("analyze_data", "generate_insights")
         workflow.add_edge("generate_insights", "create_visualizations")
         workflow.add_edge("create_visualizations", "generate_report")
@@ -570,7 +456,9 @@ Create:
         
         # 서브태스크 생성
         subtasks = []
-        for i, task_info in enumerate(decomposition.get("tasks", [])):
+        task_list = decomposition.get("tasks", []) if isinstance(decomposition, dict) else []
+        
+        for i, task_info in enumerate(task_list):
             subtasks.append({
                 "id": f"subtask_{i}",
                 "description": task_info.get("description", ""),
@@ -618,7 +506,13 @@ Create:
         
         # 코드 조각 저장
         fragment_id = current_task["id"]
-        state["code_fragments"][fragment_id] = generated.get("code", "")
+        code = ""
+        if isinstance(generated, dict):
+            code = generated.get("code", "")
+        elif isinstance(generated, str):
+            code = generated
+            
+        state["code_fragments"][fragment_id] = sanitize_code(code)
         current_task["generated_code"] = generated
         current_task["status"] = "generated"
         
@@ -658,13 +552,18 @@ Create:
         current_task["review"] = review
         
         # 리뷰 결과 처리
-        if review.get("approved", False):
+        approved = False
+        if isinstance(review, dict):
+            approved = review.get("approved", False)
+        
+        if approved:
             current_task["status"] = "reviewed"
             state["completed_subtasks"].append(current_task["id"])
             state["validation_results"]["review_passed"] = True
         else:
             current_task["status"] = "needs_revision"
-            current_task["revision_notes"] = review.get("issues", [])
+            if isinstance(review, dict):
+                current_task["revision_notes"] = review.get("issues", [])
             state["validation_results"]["review_passed"] = False
         
         return state
@@ -713,7 +612,13 @@ Create:
         )
         
         state["test_code"] = tests
-        state["test_coverage"] = tests.get("estimated_coverage", 0)
+        
+        # 테스트 커버리지 추출
+        coverage = 0
+        if isinstance(tests, dict):
+            coverage = tests.get("estimated_coverage", 0)
+        
+        state["test_coverage"] = coverage
         state["current_phase"] = "tests_generated"
         
         await self._broadcast_progress(state["workflow_id"], {
@@ -756,13 +661,27 @@ Create:
     
     # ===== 데이터 분석 워크플로우 노드 =====
     
-    async def _collect_data_node(self, state: Dict[str, Any]) -> Dict[str, Any]:
-        """데이터 수집"""
+    async def _collect_data_node(self, state: DataAnalysisWorkflowState) -> DataAnalysisWorkflowState:
+        """데이터 수집 노드"""
         print("[분석 워크플로우] 데이터 수집 중...")
         
-        # data_collection 모듈 활용
+        # 수집할 소스 결정
+        sources = state.get("data_sources", [])
+        
+        # 컨텍스트 준비
+        context = {
+            "objective": state.get("analysis_objective", ""),
+            "constraints": state.get("constraints", []),
+            "priority": state.get("priority", "normal"),
+            "requires_login": state.get("requires_login", False),
+            "domains": state.get("target_domains", [])
+        }
+        
+        # comprehensive_data_collector를 통한 통합 수집
         data = await comprehensive_data_collector.collect_data(
-            state.get("data_sources", [])
+            sources=sources,
+            query=state.get("search_query", state.get("analysis_objective", "")),
+            context=context
         )
         
         state["collected_data"] = data
@@ -770,7 +689,56 @@ Create:
         
         return state
     
-    async def _analyze_data_node(self, state: Dict[str, Any]) -> Dict[str, Any]:
+    async def _check_web_search_node(self, state: DataAnalysisWorkflowState) -> DataAnalysisWorkflowState:
+        """웹 검색 필요 여부 판단 노드"""
+        print("[분석 워크플로우] 웹 검색 필요 여부 확인 중...")
+        
+        # 1단계: 패턴 기반 빠른 판단
+        pattern_check = needs_web_search(
+            state.get("analysis_objective", ""),
+            WEB_SEARCH_PATTERNS
+        )
+        
+        if any(pattern_check.values()):
+            state["needs_web_search"] = True
+            state["search_reasons"] = [k for k, v in pattern_check.items() if v]
+            state["data_sources"] = ["web"] + state.get("data_sources", [])
+            return state
+        
+        # 2단계: 명시적 요청 확인
+        if state.get("enable_web_search", False):
+            state["needs_web_search"] = True
+            state["search_reasons"] = ["explicitly_requested"]
+            state["data_sources"] = ["web"] + state.get("data_sources", [])
+            return state
+        
+        # 3단계: RAG에서 충분한 정보가 있는지 확인
+        rag_query = RAGQuery(
+            query=state.get("analysis_objective", ""),
+            top_k=5
+        )
+        rag_results = await rag_service.search(rag_query)
+        
+        if len(rag_results) < 3 or all(r.score < 0.7 for r in rag_results):
+            state["needs_web_search"] = True
+            state["search_reasons"] = ["insufficient_local_data"]
+            state["data_sources"] = ["web"] + state.get("data_sources", [])
+            return state
+        
+        # 4단계: AI 판단 (높은 우선순위인 경우)
+        if state.get("priority") == "high":
+            should_search = await self._check_web_data_needed(state)
+            state["needs_web_search"] = should_search
+            state["search_reasons"] = ["ai_recommendation"] if should_search else []
+            if should_search:
+                state["data_sources"] = ["web"] + state.get("data_sources", [])
+        else:
+            state["needs_web_search"] = False
+            state["search_reasons"] = []
+        
+        return state
+    
+    async def _analyze_data_node(self, state: DataAnalysisWorkflowState) -> DataAnalysisWorkflowState:
         """데이터 분석"""
         print("[분석 워크플로우] 데이터 분석 중...")
         
@@ -787,9 +755,13 @@ Create:
         state["analysis_results"] = analysis
         state["current_phase"] = "data_analyzed"
         
+        # 웹 검색 결과가 있으면 RAG에 저장
+        if "web" in state.get("collected_data", {}):
+            await self._save_web_results_to_rag(state["collected_data"]["web"])
+        
         return state
     
-    async def _generate_insights_node(self, state: Dict[str, Any]) -> Dict[str, Any]:
+    async def _generate_insights_node(self, state: DataAnalysisWorkflowState) -> DataAnalysisWorkflowState:
         """인사이트 생성"""
         print("[분석 워크플로우] 인사이트 생성 중...")
         
@@ -809,7 +781,7 @@ Create:
         
         return state
     
-    async def _create_visualizations_node(self, state: Dict[str, Any]) -> Dict[str, Any]:
+    async def _create_visualizations_node(self, state: DataAnalysisWorkflowState) -> DataAnalysisWorkflowState:
         """시각화 생성"""
         print("[분석 워크플로우] 시각화 생성 중...")
         
@@ -817,7 +789,7 @@ Create:
         visualizations = []
         
         # 예시: Plotly 차트 생성
-        if "time_series_data" in state.get("analysis_results", {}):
+        if isinstance(state.get("analysis_results"), dict) and "time_series_data" in state["analysis_results"]:
             fig = go.Figure()
             # 시각화 로직
             visualizations.append({
@@ -830,16 +802,16 @@ Create:
         
         return state
     
-    async def _generate_report_node(self, state: Dict[str, Any]) -> Dict[str, Any]:
+    async def _generate_report_node(self, state: DataAnalysisWorkflowState) -> DataAnalysisWorkflowState:
         """보고서 생성"""
         print("[분석 워크플로우] 보고서 생성 중...")
         
         report = {
-            "executive_summary": state.get("insights", {}).get("summary", ""),
+            "executive_summary": state.get("insights", {}).get("summary", "") if isinstance(state.get("insights"), dict) else "",
             "detailed_analysis": state.get("analysis_results", {}),
             "visualizations": state.get("visualizations", []),
-            "recommendations": state.get("insights", {}).get("recommendations", []),
-            "next_steps": state.get("insights", {}).get("action_plan", [])
+            "recommendations": state.get("insights", {}).get("recommendations", []) if isinstance(state.get("insights"), dict) else [],
+            "next_steps": state.get("insights", {}).get("action_plan", []) if isinstance(state.get("insights"), dict) else []
         }
         
         state["final_report"] = report
@@ -848,6 +820,60 @@ Create:
         return state
     
     # ===== 헬퍼 메서드 =====
+    
+    async def _check_web_data_needed(self, state: Dict[str, Any]) -> bool:
+        """웹 데이터 필요 여부를 AI가 판단"""
+        
+        decision = await self._execute_agent(
+            EnhancedAgentType.DECISION_MAKER,
+            {
+                "question": "Do I need web search data for this objective?",
+                "context": {
+                    "objective": state.get("analysis_objective", state.get("objective", "")),
+                    "existing_data": list(state.get("collected_data", {}).keys()),
+                    "priority": state.get("priority", "normal")
+                },
+                "criteria": [
+                    "Is real-time information needed?",
+                    "Is external data required?",
+                    "Would web search improve accuracy?",
+                    "Is the information time-sensitive?"
+                ],
+                "options": ["needs_web_search", "no_web_search_needed"]
+            }
+        )
+        
+        if isinstance(decision, dict):
+            return decision.get("decision", "") == "needs_web_search"
+        return False
+    
+    async def _save_web_results_to_rag(self, web_results: Dict[str, Any]):
+        """웹 검색 결과를 RAG에 저장"""
+        
+        try:
+            documents = []
+            
+            for source, data in web_results.items():
+                if isinstance(data, dict) and "results" in data:
+                    for result in data["results"]:
+                        doc = Document(
+                            id=f"web_{source}_{datetime.now().timestamp()}",
+                            content=json.dumps(result),
+                            metadata={
+                                "type": "web_search_result",
+                                "source": source,
+                                "timestamp": datetime.now().isoformat(),
+                                "query": data.get("query", "")
+                            }
+                        )
+                        documents.append(doc)
+            
+            if documents:
+                await rag_service.add_documents(documents)
+                logger.info(f"Saved {len(documents)} web search results to RAG")
+                
+        except Exception as e:
+            logger.error(f"Failed to save web results to RAG: {e}")
     
     async def _execute_agent(self, agent_type: EnhancedAgentType, prompt_data: Dict[str, Any]) -> Dict[str, Any]:
         """에이전트 실행"""
@@ -892,7 +918,13 @@ Create:
             
         except Exception as e:
             logger.error(f"Agent {agent_type} execution failed: {e}")
-            agent["performance_metrics"]["success_rate"] *= 0.95  # 성공률 감소
+            agent["performance_metrics"]["success_rate"] *= 0.95
+            
+            # 재시도 로직
+            if should_retry_operation(e, 0, SYSTEM_CONFIG["retry_count"]):
+                await asyncio.sleep(1)
+                return await self._execute_agent(agent_type, prompt_data)
+            
             raise
     
     async def _call_llm(self, model: str, prompt: str) -> Dict[str, Any]:
@@ -901,7 +933,12 @@ Create:
         # 시뮬레이션
         await asyncio.sleep(1)
         
-        # 모델별 응답 시뮬레이션
+        # 프롬프트에서 JSON 추출 시도
+        json_result = extract_json_from_text(prompt)
+        if json_result:
+            return json_result
+        
+        # 모델별 기본 응답
         if "architect" in prompt.lower():
             return {
                 "components": [
@@ -911,7 +948,7 @@ Create:
                 "integration_strategy": "RESTful API with JWT",
                 "data_flow": "Client -> API Gateway -> Service -> Repository -> Database"
             }
-        elif "generate" in prompt.lower():
+        elif "generate" in prompt.lower() and "code" in prompt.lower():
             return {
                 "code": """class AuthService:
     def __init__(self, user_repository: UserRepository):
@@ -943,8 +980,28 @@ class TestAuthService:
         pass""",
                 "estimated_coverage": 85
             }
+        elif "decision" in prompt.lower() and "web search" in prompt.lower():
+            return {
+                "decision": "needs_web_search",
+                "confidence": 0.8,
+                "reasoning": "Real-time data may be required for accurate analysis"
+            }
+        elif "analyze" in prompt.lower():
+            return {
+                "summary": "Analysis complete",
+                "patterns": ["Pattern 1", "Pattern 2"],
+                "insights": ["Insight 1", "Insight 2"],
+                "recommendations": ["Recommendation 1", "Recommendation 2"]
+            }
+        elif "plan" in prompt.lower():
+            return {
+                "tasks": [
+                    {"description": "Task 1", "priority": "high", "complexity": "medium"},
+                    {"description": "Task 2", "priority": "normal", "complexity": "low"}
+                ]
+            }
         
-        return {"status": "completed"}
+        return {"status": "completed", "result": "Generic response"}
     
     async def _broadcast_progress(self, workflow_id: str, progress_data: Dict[str, Any]):
         """WebSocket으로 진행상황 브로드캐스트"""
@@ -1040,18 +1097,39 @@ class TestAuthService:
                 collaboration_session_id=None,
                 objective=request.objective,
                 constraints=request.constraints,
-                project_root=request.parameters.get("project_root", ".")
+                project_root=request.parameters.get("project_root", "."),
+                architecture_design=None,
+                requirements=None,
+                integrated_code=None,
+                test_code=None,
+                coding_standards=None
             )
         else:
-            initial_state = {
-                "workflow_id": workflow_id,
-                "analysis_type": request.analysis_type,
-                "current_phase": "initialized",
-                "data_sources": request.parameters.get("data_sources", []),
-                "analysis_objective": request.objective,
-                "constraints": request.constraints,
-                "business_goals": request.parameters.get("business_goals", [])
-            }
+            initial_state = DataAnalysisWorkflowState(
+                workflow_id=workflow_id,
+                analysis_type=request.analysis_type,
+                current_phase="initialized",
+                data_sources=request.parameters.get("data_sources", []),
+                search_query=request.parameters.get("search_query"),
+                collected_data={},
+                analysis_objective=request.objective,
+                analysis_results={},
+                insights={},
+                visualizations=[],
+                final_report={},
+                needs_web_search=False,
+                search_reasons=[],
+                web_search_context={},
+                constraints=request.constraints,
+                business_goals=request.parameters.get("business_goals", []),
+                priority=request.priority,
+                enable_web_search=request.enable_web_search,
+                search_sources=request.search_sources,
+                search_depth=request.search_depth,
+                context=None,
+                requires_login=False,
+                target_domains=[]
+            )
         
         self.active_workflows[workflow_id] = initial_state
         
@@ -1067,7 +1145,7 @@ class TestAuthService:
         config = {"configurable": {"thread_id": workflow_id}}
         
         # 워크플로우 타입 결정
-        if initial_state.get("task_type") or initial_state.get("analysis_type") == "code":
+        if isinstance(initial_state, dict) and initial_state.get("task_type"):
             workflow = self.code_workflow
         else:
             workflow = self.analysis_workflow
@@ -1083,7 +1161,8 @@ class TestAuthService:
             
             # RAG에 저장
             if state.get("current_phase") in ["project_analyzed", "requirements_understood", 
-                                               "architecture_designed", "completed"]:
+                                               "architecture_designed", "data_analyzed", 
+                                               "insights_generated", "completed"]:
                 await self._save_to_rag(workflow_id, state)
         
         return final_state
@@ -1120,15 +1199,49 @@ class TestAuthService:
         
         message_type = message.get("type")
         
-        if message_type == "subscribe_workflow":
+        if message_type == "subscribe":
+            # 토픽 구독
+            topics = message.get("topics", [])
+            logger.info(f"Client {ws_id} subscribed to topics: {topics}")
+            
+            # 즉시 현재 상태 전송
+            if "metrics" in topics:
+                metrics_message = {
+                    "type": "metrics_update",
+                    "data": {
+                        "active_workflows": len(self.active_workflows),
+                        "active_tasks": len(self.active_tasks),
+                        "cached_results": len(self.results_cache),
+                        "websocket_connections": len(self.websocket_connections),
+                        "agent_performance": {
+                            agent_type.value: agent["performance_metrics"]
+                            for agent_type, agent in self.agents.items()
+                        }
+                    }
+                }
+                await self.websocket_connections[ws_id].send_json(metrics_message)
+            
+            if "agents" in topics:
+                for agent_type, agent in self.agents.items():
+                    agent_status_message = {
+                        "type": "agent_status",
+                        "data": {
+                            "type": agent_type.value,
+                            "status": agent["status"],
+                            "model": agent["model"],
+                            "performance_metrics": agent["performance_metrics"]
+                        }
+                    }
+                    await self.websocket_connections[ws_id].send_json(agent_status_message)
+        
+        elif message_type == "subscribe_workflow":
             workflow_id = message.get("workflow_id")
             if workflow_id in self.active_workflows:
                 state = self.active_workflows[workflow_id]
-                if "websocket_clients" in state:
+                if isinstance(state, dict) and "websocket_clients" in state:
                     state["websocket_clients"].append(ws_id)
         
         elif message_type == "agent_question":
-            # 에이전트에게 즉시 질문
             agent_type = EnhancedAgentType(message.get("agent", "analyst"))
             response = await self._execute_agent(agent_type, message.get("data", {}))
             
@@ -1137,14 +1250,6 @@ class TestAuthService:
                 "question_id": message.get("question_id"),
                 "response": response
             })
-        
-        elif message_type == "pause_workflow":
-            # 워크플로우 일시정지 (구현 필요)
-            pass
-        
-        elif message_type == "resume_workflow":
-            # 워크플로우 재개 (구현 필요)
-            pass
 
 # ===== 전역 인스턴스 =====
 
@@ -1191,25 +1296,14 @@ async def get_workflow_status(workflow_id: str):
     """워크플로우 상태 조회"""
     
     if workflow_id not in enhanced_agent_system.active_workflows:
-        raise HTTPException(status_code=404, detail="Workflow not found")
+        raise HTTPException(status_code=404, detail=ERROR_MESSAGES["workflow_not_found"])
     
     state = enhanced_agent_system.active_workflows[workflow_id]
     
     # 상태에 따른 진행률 계산
-    progress_map = {
-        "initialized": 0,
-        "project_analyzed": 10,
-        "requirements_understood": 20,
-        "architecture_designed": 30,
-        "tasks_decomposed": 40,
-        "code_generation": 50,
-        "code_integrated": 80,
-        "tests_generated": 90,
-        "completed": 100
-    }
-    
     current_phase = state.get("current_phase", "initialized")
-    progress = progress_map.get(current_phase, 50)
+    workflow_type = "code" if state.get("task_type") else "analysis"
+    progress = calculate_workflow_progress(current_phase, workflow_type, WORKFLOW_PHASES)
     
     response = {
         "workflow_id": workflow_id,
@@ -1219,14 +1313,22 @@ async def get_workflow_status(workflow_id: str):
     }
     
     # 타입별 추가 정보
-    if isinstance(state, dict) and "subtasks" in state:
-        response["details"] = {
-            "total_subtasks": len(state.get("subtasks", [])),
-            "completed_subtasks": len(state.get("completed_subtasks", [])),
-            "code_fragments": len(state.get("code_fragments", {})),
-            "quality_metrics": state.get("quality_metrics", {}),
-            "test_coverage": state.get("test_coverage", 0)
-        }
+    if isinstance(state, dict):
+        if "subtasks" in state:
+            response["details"] = {
+                "total_subtasks": len(state.get("subtasks", [])),
+                "completed_subtasks": len(state.get("completed_subtasks", [])),
+                "code_fragments": len(state.get("code_fragments", {})),
+                "quality_metrics": state.get("quality_metrics", {}),
+                "test_coverage": state.get("test_coverage", 0)
+            }
+        elif "analysis_results" in state:
+            response["details"] = {
+                "data_sources": state.get("data_sources", []),
+                "has_web_search": "web" in state.get("collected_data", {}),
+                "insights_available": bool(state.get("insights")),
+                "visualizations": len(state.get("visualizations", []))
+            }
     
     return response
 
@@ -1317,10 +1419,14 @@ async def list_workflows():
     workflows = []
     
     for workflow_id, state in enhanced_agent_system.active_workflows.items():
+        workflow_type = "code" if state.get("task_type") else "analysis"
+        current_phase = state.get("current_phase", "unknown")
+        
         workflows.append({
             "workflow_id": workflow_id,
             "type": state.get("task_type", state.get("analysis_type", "unknown")),
-            "current_phase": state.get("current_phase", "unknown"),
+            "current_phase": current_phase,
+            "progress": calculate_workflow_progress(current_phase, workflow_type, WORKFLOW_PHASES),
             "created_at": workflow_id.split("_")[1] if "_" in workflow_id else None
         })
     
@@ -1390,8 +1496,8 @@ async def quick_code_generation(request: Dict[str, Any]):
         )
         
         return {
-            "code": result.get("code", ""),
-            "explanation": result.get("explanation", ""),
+            "code": result.get("code", "") if isinstance(result, dict) else str(result),
+            "explanation": result.get("explanation", "") if isinstance(result, dict) else "",
             "timestamp": datetime.now().isoformat()
         }
     except Exception as e:
@@ -1433,7 +1539,10 @@ async def create_analysis_workflow(request: Dict[str, Any]):
             "business_goals": request.get("business_goals", []),
             **request.get("parameters", {})
         },
-        constraints=request.get("constraints", [])
+        constraints=request.get("constraints", []),
+        enable_web_search=request.get("enable_web_search", False),
+        search_sources=request.get("search_sources", []),
+        search_depth=request.get("search_depth", "normal")
     )
     
     workflow_id = await enhanced_agent_system.create_workflow(analysis_request)
@@ -1507,7 +1616,55 @@ async def cleanup_old_workflows():
 # 주기적인 정리 작업 스케줄링 (FastAPI startup event에서 실행)
 async def schedule_cleanup():
     while True:
-        await asyncio.sleep(3600)  # 1시간마다
+        await asyncio.sleep(SYSTEM_CONFIG["cache_ttl_seconds"])  # 1시간마다
         removed = await cleanup_old_workflows()
         if removed > 0:
             logger.info(f"Cleaned up {removed} old workflows")
+
+# 초기화 및 종료 함수
+async def initialize():
+    """Initialize data analysis module"""
+    logger.info("Data analysis module initialized")
+    # 정리 작업 시작
+    asyncio.create_task(schedule_cleanup())
+    # 실시간 메트릭 전송 시작
+    asyncio.create_task(send_realtime_metrics())
+    
+async def shutdown():
+    """Shutdown data analysis module"""
+    logger.info("Data analysis module shutting down")
+    # HTTP 클라이언트 정리
+    if enhanced_agent_system.http_client:
+        await enhanced_agent_system.http_client.aclose()
+
+# 실시간 메트릭 전송
+async def send_realtime_metrics():
+    """주기적으로 실시간 메트릭 전송"""
+    while True:
+        await asyncio.sleep(SYSTEM_CONFIG["metrics_update_interval"])  # 5초마다
+        
+        # 각 에이전트의 현재 상태를 실시간 데이터로 변환
+        realtime_data = {
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        for agent_type, agent in enhanced_agent_system.agents.items():
+            if agent["status"] == "busy":
+                # 실행 중인 에이전트의 효율성
+                efficiency = calculate_agent_efficiency(
+                    agent["performance_metrics"]["success_rate"],
+                    agent["performance_metrics"]["average_time"]
+                )
+                realtime_data[agent_type.value] = efficiency
+        
+        # 모든 WebSocket 클라이언트에 전송
+        message = {
+            "type": "realtime_data",
+            "data": realtime_data
+        }
+        
+        for ws_id, websocket in enhanced_agent_system.websocket_connections.items():
+            try:
+                await websocket.send_json(message)
+            except:
+                pass

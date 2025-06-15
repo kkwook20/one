@@ -2,7 +2,7 @@
   "manifest_version": 2,
   "name": "LLM Conversation Collector",
   "version": "2.0",
-  "description": "Collect and sync your AI conversations from multiple LLM platforms",
+  "description": "Autonomous AI conversation collector with smart session management",
   
   "browser_specific_settings": {
     "gecko": {
@@ -16,7 +16,6 @@
     "alarms",
     "tabs",
     "notifications",
-    "webRequest",
     "cookies",
     "*://chat.openai.com/*",
     "*://claude.ai/*",
@@ -24,8 +23,7 @@
     "*://chat.deepseek.com/*",
     "*://grok.x.ai/*",
     "*://www.perplexity.ai/*",
-    "http://localhost:8000/*",
-    "http://127.0.0.1:8000/*"
+    "http://localhost:8000/*"
   ],
   
   "background": {
@@ -62,11 +60,5 @@
     "16": "icon.png",
     "48": "icon.png",
     "128": "icon.png"
-  },
-  
-  "options_ui": {
-    "page": "options.html",
-    "browser_style": true,
-    "open_in_tab": true
   }
 }

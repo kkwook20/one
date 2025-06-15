@@ -64,6 +64,10 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import {
+  RadioGroup,
+  RadioGroupItem,
+} from "@/components/ui/radio-group";
+import {
   Collapsible,
   CollapsibleContent,
   CollapsibleTrigger,
@@ -110,6 +114,7 @@ import {
   CheckCircle2,
   ChevronDown,
   ChevronRight,
+  ChevronUp,
   Clock,
   Cloud,
   Code,
@@ -131,7 +136,7 @@ import {
   Info,
   Layers,
   LayoutDashboard,
-  LineChart,
+  LineChart as LineChartIcon,
   Link,
   Loader2,
   Lock,
@@ -694,7 +699,7 @@ const DataAnalysis: React.FC = () => {
     if (wsRef.current?.readyState === WebSocket.OPEN) return;
     
     try {
-      const ws = new WebSocket(`ws://localhost:8000/api/argosa/data-analysis/ws/${Date.now()}`);
+      const ws = new WebSocket(`ws://localhost:8000/api/argosa/analysis/ws/${Date.now()}`);
       
       ws.onopen = () => {
         setIsConnected(true);
@@ -779,7 +784,7 @@ const DataAnalysis: React.FC = () => {
   
   const fetchAgents = async () => {
     try {
-      const response = await fetch("/api/argosa/data-analysis/agents");
+      const response = await fetch("/api/argosa/analysis/agents");
       const data = await response.json();
       
       const agentList: Agent[] = data.agents.map((agent: any) => ({
@@ -802,7 +807,7 @@ const DataAnalysis: React.FC = () => {
   
   const fetchWorkflows = async () => {
     try {
-      const response = await fetch("/api/argosa/data-analysis/workflows");
+      const response = await fetch("/api/argosa/analysis/workflows");
       const data = await response.json();
       
       const workflowList: Workflow[] = data.workflows.map((wf: any) => ({
@@ -826,7 +831,7 @@ const DataAnalysis: React.FC = () => {
   
   const fetchMetrics = async () => {
     try {
-      const response = await fetch("/api/argosa/data-analysis/metrics");
+      const response = await fetch("/api/argosa/analysis/metrics");
       const data = await response.json();
       setSystemMetrics(data);
       
@@ -864,7 +869,7 @@ const DataAnalysis: React.FC = () => {
     };
     
     try {
-      const response = await fetch("/api/argosa/data-analysis/workflow/create", {
+      const response = await fetch("/api/argosa/analysis/workflow/create", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(request),
@@ -873,7 +878,7 @@ const DataAnalysis: React.FC = () => {
       const data = await response.json();
       
       // Execute workflow
-      await fetch(`/api/argosa/data-analysis/workflow/${data.workflow_id}/execute`, {
+      await fetch(`/api/argosa/analysis/workflow/${data.workflow_id}/execute`, {
         method: "POST",
       });
       
@@ -910,7 +915,7 @@ const DataAnalysis: React.FC = () => {
   
   const askAgent = async (agentType: EnhancedAgentType, question: string, context: any = {}) => {
     try {
-      const response = await fetch("/api/argosa/data-analysis/agent/ask", {
+      const response = await fetch("/api/argosa/analysis/agent/ask", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -935,7 +940,7 @@ const DataAnalysis: React.FC = () => {
   
   const configureModels = async (config: AIModelConfig) => {
     try {
-      const response = await fetch("/api/argosa/data-analysis/models/configure", {
+      const response = await fetch("/api/argosa/analysis/models/configure", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(config),
@@ -1298,7 +1303,7 @@ const DataAnalysis: React.FC = () => {
                   cx="50%"
                   cy="50%"
                   labelLine={false}
-                  label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
+                  label={({ name, percent }: { name: string; percent: number }) => `${name} ${(percent * 100).toFixed(0)}%`}
                   outerRadius={80}
                   fill="#8884d8"
                   dataKey="value"
@@ -2972,7 +2977,7 @@ const DataAnalysis: React.FC = () => {
                   className="w-full justify-start"
                   onClick={() => setSelectedView("analytics")}
                 >
-                  <LineChart className="mr-2 h-4 w-4" />
+                  <LineChartIcon className="mr-2 h-4 w-4" />
                   Analytics
                 </Button>
                 

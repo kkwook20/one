@@ -11,7 +11,7 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Badge } from "@/components/ui/badge";
+import { Badge, type BadgeProps } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
@@ -1194,19 +1194,30 @@ const CodeAnalysis: React.FC = () => {
     return icons[type] || Code;
   };
   
-  const getComplexityColor = (complexity: number): string => {
-    if (complexity <= CODE_QUALITY_THRESHOLDS.complexity.low) return "text-green-600";
-    if (complexity <= CODE_QUALITY_THRESHOLDS.complexity.medium) return "text-yellow-600";
-    if (complexity <= CODE_QUALITY_THRESHOLDS.complexity.high) return "text-orange-600";
+    const getComplexityColor = (complexity: number): string => {
+    const thresholds = CODE_QUALITY_THRESHOLDS.complexity;
+    if (complexity <= thresholds.low) return "text-green-600";
+    if (complexity <= thresholds.medium) return "text-yellow-600";
+    if (complexity <= thresholds.high) return "text-orange-600";
     return "text-red-600";
-  };
-  
-  const getQualityBadgeVariant = (value: number, metric: keyof typeof CODE_QUALITY_THRESHOLDS): any => {
-    const thresholds = CODE_QUALITY_THRESHOLDS[metric];
-    if (value >= thresholds.good) return "default";
-    if (value >= thresholds.fair) return "secondary";
-    return "destructive";
-  };
+    };
+
+    const getQualityBadgeVariant = (
+    value: number, 
+    metric: keyof typeof CODE_QUALITY_THRESHOLDS
+    ): "default" | "secondary" | "destructive" => {
+    if (metric === "complexity") {
+        const thresholds = CODE_QUALITY_THRESHOLDS.complexity;
+        if (value <= thresholds.low) return "default";
+        if (value <= thresholds.medium) return "secondary";
+        return "destructive";
+    } else {
+        const thresholds = CODE_QUALITY_THRESHOLDS[metric] as { poor: number; fair: number; good: number };
+        if (value >= thresholds.good) return "default";
+        if (value >= thresholds.fair) return "secondary";
+        return "destructive";
+    }
+    };
   
   const formatFileSize = (bytes: number): string => {
     if (bytes < 1024) return `${bytes} B`;
@@ -1438,69 +1449,43 @@ const CodeAnalysis: React.FC = () => {
     }));
   };
   
-  const generateMockGenerationPlan = (): CodeGenerationPlan => ({
-    planId: `plan_${Date.now()}`,
-    objective: generationObjective || "Generate authentication system",
-    scope: generationScope,
-    phases: [
-      {
-        phaseId: "phase_1",
-        name: "Architecture Design",
-        description: "Design system architecture",
-        dependencies: [],
-        tasks: [
-          {
-            taskId: "task_1",
-            type: "design",
-            target: "auth_service",
-            description: "Design authentication service",
-            estimatedLines: 200,
-            complexity: "medium"
-          }
-        ]
-      },
-      {
-        phaseId: "phase_2",
-        name: "Implementation",
-        description: "Implement core components",
-        dependencies: ["phase_1"],
-        tasks: [
-          {
-            taskId: "task_2",
-            type: "implement",
-            target: "auth_service.py",
-            description: "Implement authentication service",
-            estimatedLines: 500,
-            complexity: "high"
-          }
-        ]
-      }
+const generateMockGenerationPlan = (): CodeGenerationPlan => ({
+  planId: `plan_${Date.now()}`,
+  objective: generationObjective || "Generate authentication system",
+  scope: generationScope,
+  phases: [
+    // ... phases 내용
+  ],
+  architectureDecisions: {
+    pattern: "Repository",
+    authentication: "JWT",
+    database: "PostgreSQL"
+  },
+  fileStructure: {
+    newFiles: [
+      { path: "src/auth/service.py", purpose: "Authentication service", template: "" },
+      { path: "src/auth/models.py", purpose: "Auth models", template: "" }
     ],
-    architectureDecisions: {
-      pattern: "Repository",
-      authentication: "JWT",
-      database: "PostgreSQL"
-    },
-    fileStructure: {
-      newFiles: [
-        { path: "src/auth/service.py", purpose: "Authentication service", template: "" },
-        { path: "src/auth/models.py", purpose: "Auth models", template: "" }
-      ],
-      modifiedFiles: [],
-      directoryStructure: {}
-    },
-    implementationDetails: {},
-    qualityTargets,
-    risks: [
-      {
-        type: "security",
-        severity: "high",
-        description: "Authentication vulnerabilities",
-        mitigation: "Implement proper validation and encryption"
-      }
-    ],
-    mitigationStrategies: {}
-  });
+    modifiedFiles: [],
+    directoryStructure: {}
+  },
+  implementationDetails: {},
+  qualityTargets: {
+    testCoverage: 90,
+    maxComplexity: 10,
+    documentationCoverage: 100,
+    performanceTargets: {}  // 이 필드가 누락되었을 수 있음
+  },
+  risks: [
+    {
+      type: "security",
+      severity: "high",
+      description: "Authentication vulnerabilities",
+      mitigation: "Implement proper validation and encryption"
+    }
+  ],
+  mitigationStrategies: {}
+});
   
   const generateMockCodeFragment = (type: string): CodeFragment => ({
     fragmentId: `frag_${Date.now()}_${type}`,

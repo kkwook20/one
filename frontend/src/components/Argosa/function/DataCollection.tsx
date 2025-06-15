@@ -1,5 +1,5 @@
 // frontend/src/components/Argosa/function/DataCollection.tsx
-// 자동 세션 관리가 적용된 개선된 버전
+// 통합 버전 - WebSocket 실시간 업데이트 + 자동 세션 관리 + 모든 기능 포함
 
 import { useState, useEffect, ReactNode, useCallback, useRef } from "react";
 import { motion } from "framer-motion";
@@ -39,33 +39,63 @@ import {
   Wifi,
   WifiOff,
   Eye,
-  EyeOff
+  EyeOff,
+  Chrome,
+  Activity,
+  Search
 } from "lucide-react";
 
 // API Configuration
 const API_BASE_URL = 'http://localhost:8000/api/argosa';
+const WS_URL = 'ws://localhost:8000/api/argosa/ws/state';
 
 // Type definitions
+interface SystemState {
+  system_status: 'idle' | 'preparing' | 'collecting' | 'error';
+  sessions: Record<string, SessionInfo>;
+  sync_status: SyncStatus | null;
+  firefox_status: 'closed' | 'opening' | 'ready' | 'error';
+  extension_status: 'connected' | 'disconnected';
+  extension_last_seen: string | null;
+  schedule_enabled: boolean;
+  data_sources_active: number;
+  total_conversations: number;
+}
+
+interface SessionInfo {
+  platform: string;
+  valid: boolean;
+  last_checked: string;
+  expires_at: string | null;
+  source: 'cache' | 'extension' | 'firefox' | 'timeout';
+  status: string;
+}
+
+interface SyncStatus {
+  sync_id: string;
+  status: string;
+  progress: number;
+  current_platform?: string;
+  collected: number;
+  message: string;
+}
+
 interface SectionProps {
   title: string;
   children: ReactNode;
 }
 
 interface LLMConfig {
+  key: string;
   name: string;
   type: string;
   url: string;
   enabled: boolean;
-  lastSync?: string;
-  status: 'connected' | 'disconnected' | 'syncing' | 'error' | 'opening';
   icon: string;
+  color: string;
   todayCount?: number;
   yesterdayCount?: number;
   dayBeforeCount?: number;
-  sessionValid?: boolean;
-  sessionLastChecked?: string;
-  sessionExpiresAt?: string;
-  color: string;
 }
 
 interface DailyStats {
@@ -77,6 +107,7 @@ interface DailyStats {
 interface LLMStatsProps {
   platform: string;
   config: LLMConfig;
+  sessionInfo?: SessionInfo;
 }
 
 interface StatCardProps {
@@ -108,159 +139,104 @@ interface SyncSettings {
   firefoxVisible: boolean;
 }
 
-interface SyncStatus {
-  status: string;
-  progress: number;
-  current_platform?: string;
-  collected: number;
-  message: string;
-  updated_at?: string;
-  error?: string;
+interface ScheduleFailure {
+  reason: string;
+  timestamp: string;
+  details: any;
 }
 
-// API Response Types
-interface FirefoxLaunchResponse {
-  success: boolean;
-  sync_id?: string;
-  error?: string;
-  details?: string;
-  invalidSessions?: string[];
-  reason?: string;
+interface ApiQuota {
+  [api: string]: {
+    used: number;
+    limit: number;
+    remaining: number;
+    percentage_used: number;
+  };
 }
 
-interface SessionCheckResponse {
-  valid: boolean;
-  lastChecked: string;
-  expiresAt?: string;
+interface SiteStats {
+  [domain: string]: {
+    success_rate: number;
+    avg_relevance: number;
+    visits: number;
+    requires_login: boolean;
+    valuable_paths: string[];
+  };
 }
 
-interface StatsResponse {
-  daily_stats?: Record<string, Record<string, number>>;
-  latest_sync?: Record<string, string>;
+interface SearchResults {
+  query: string;
+  results: Record<string, any>;
+  quality_score: number;
+  improved_query?: string;
+  metadata?: {
+    search_id: string;
+    iterations: number;
+    apis_used: string[];
+    sites_crawled: string[];
+    timestamp: string;
+  };
 }
 
-interface ScheduleFailureResponse {
-  failure: boolean;
-  reason?: string;
-}
-
-interface CleanDataResponse {
-  deleted: number;
-}
-
-interface FilesListResponse {
-  files: FileListItem[];
-}
-
-interface StatusResponse {
-  status: string;
-}
-
-interface OpenLoginResponse {
-  success: boolean;
-  error?: string;
-  details?: string;
-}
-
-// Platform configurations with colors - DEFAULT DISABLED except chatgpt and claude
-const INITIAL_LLM_CONFIGS: Record<string, LLMConfig> = {
+// Platform configurations
+const PLATFORMS: Record<string, LLMConfig> = {
   chatgpt: {
+    key: 'chatgpt',
     name: 'ChatGPT',
     type: 'OpenAI',
     url: 'https://chat.openai.com',
     enabled: true,
-    status: 'disconnected',
     icon: 'GPT',
-    todayCount: 0,
-    yesterdayCount: 0,
-    dayBeforeCount: 0,
     color: '#10a37f'
   },
   claude: {
+    key: 'claude',
     name: 'Claude',
     type: 'Anthropic',
     url: 'https://claude.ai',
     enabled: true,
-    status: 'disconnected',
     icon: 'C',
-    todayCount: 0,
-    yesterdayCount: 0,
-    dayBeforeCount: 0,
     color: '#6366f1'
   },
   gemini: {
+    key: 'gemini',
     name: 'Gemini',
     type: 'Google',
     url: 'https://gemini.google.com',
     enabled: false,
-    status: 'disconnected',
     icon: 'G',
-    todayCount: 0,
-    yesterdayCount: 0,
-    dayBeforeCount: 0,
     color: '#4285f4'
   },
   deepseek: {
+    key: 'deepseek',
     name: 'DeepSeek',
     type: 'DeepSeek',
     url: 'https://chat.deepseek.com',
     enabled: false,
-    status: 'disconnected',
     icon: 'DS',
-    todayCount: 0,
-    yesterdayCount: 0,
-    dayBeforeCount: 0,
     color: '#5b21b6'
   },
   grok: {
+    key: 'grok',
     name: 'Grok',
     type: 'xAI',
     url: 'https://grok.x.ai',
     enabled: false,
-    status: 'disconnected',
     icon: 'X',
-    todayCount: 0,
-    yesterdayCount: 0,
-    dayBeforeCount: 0,
     color: '#1f2937'
   },
   perplexity: {
+    key: 'perplexity',
     name: 'Perplexity',
     type: 'Perplexity',
     url: 'https://www.perplexity.ai',
     enabled: false,
-    status: 'disconnected',
     icon: 'P',
-    todayCount: 0,
-    yesterdayCount: 0,
-    dayBeforeCount: 0,
     color: '#10b981'
   }
 };
 
-// 저장된 enabled 상태를 가져오는 함수
-const getSavedEnabledStates = (): Record<string, boolean> => {
-  try {
-    const saved = localStorage.getItem('llmEnabledStates');
-    if (saved) {
-      return JSON.parse(saved);
-    }
-  } catch (e) {
-    console.error('Error loading enabled states:', e);
-  }
-  
-  // 기본값 반환
-  return {
-    chatgpt: true,
-    claude: true,
-    gemini: false,
-    deepseek: false,
-    grok: false,
-    perplexity: false
-  };
-};
-
-// Helper function for session expiry display
+// Helper functions
 const getSessionExpiryDisplay = (expiresAt: string | undefined) => {
   if (!expiresAt) return null;
   
@@ -283,322 +259,365 @@ const getSessionExpiryDisplay = (expiresAt: string | undefined) => {
   }
 };
 
+const formatDate = (dateString: string | null | undefined) => {
+  if (!dateString) return 'Never';
+  const date = new Date(dateString);
+  const now = new Date();
+  const diff = now.getTime() - date.getTime();
+  const minutes = Math.floor(diff / (1000 * 60));
+  const hours = Math.floor(diff / (1000 * 60 * 60));
+  
+  if (minutes < 1) return 'Just now';
+  if (minutes < 60) return `${minutes}m ago`;
+  if (hours < 24) return `${hours}h ago`;
+  return date.toLocaleDateString();
+};
+
 export default function DataCollection() {
-  const [isRunning, setIsRunning] = useState(false);
-  const [llmConfigs, setLlmConfigs] = useState(() => {
-    // enabled 상태를 별도로 로드
-    const savedEnabledStates = getSavedEnabledStates();
+  // State
+  const [systemState, setSystemState] = useState<SystemState>({
+    system_status: 'idle',
+    sessions: {},
+    sync_status: null,
+    firefox_status: 'closed',
+    extension_status: 'disconnected',
+    extension_last_seen: null,
+    schedule_enabled: false,
+    data_sources_active: 0,
+    total_conversations: 0
+  });
+  
+  const [platformConfigs, setPlatformConfigs] = useState(() => {
+    // Load enabled states from localStorage
+    const savedEnabledStates = localStorage.getItem('llmEnabledStates');
+    const configs = { ...PLATFORMS };
     
-    // 기본 설정 복사
-    const configs = { ...INITIAL_LLM_CONFIGS };
-    
-    // enabled 상태 적용
-    Object.keys(configs).forEach(key => {
-      if (savedEnabledStates.hasOwnProperty(key)) {
-        configs[key].enabled = savedEnabledStates[key];
+    if (savedEnabledStates) {
+      try {
+        const states = JSON.parse(savedEnabledStates);
+        Object.keys(states).forEach(key => {
+          if (configs[key]) {
+            configs[key].enabled = states[key];
+          }
+        });
+      } catch (e) {
+        console.error('Failed to load saved states:', e);
       }
-    });
+    }
     
-    console.log('Initial configs with saved enabled states:', configs);
     return configs;
   });
+  
+  const [stats, setStats] = useState<any>(null);
+  const [syncSettings, setSyncSettings] = useState<SyncSettings>(() => {
+    const saved = localStorage.getItem('syncSettings');
+    if (saved) {
+      try {
+        return JSON.parse(saved);
+      } catch (e) {
+        console.error('Failed to load sync settings:', e);
+      }
+    }
+    return {
+      startTime: '02:00',
+      interval: 'daily',
+      maxConversations: 20,
+      randomDelay: 5,
+      dataRetention: 30,
+      firefoxVisible: true
+    };
+  });
+  
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [showFilesModal, setShowFilesModal] = useState(false);
   const [filesList, setFilesList] = useState<FileListItem[]>([]);
-  const [dailyTotals, setDailyTotals] = useState<DailyStats>({
-    today: 0,
-    yesterday: 0,
-    dayBefore: 0
-  });
-  const [syncSettings, setSyncSettings] = useState<SyncSettings>({
-    startTime: '02:00',
-    interval: 'daily',
-    maxConversations: 20,
-    randomDelay: 5,
-    dataRetention: 30,
-    firefoxVisible: true
-  });
-  const [currentSyncId, setCurrentSyncId] = useState<string | null>(null);
-  const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
-  const [scheduleFailureReason, setScheduleFailureReason] = useState<string | null>(null);
-  const [isCheckingSessions, setIsCheckingSessions] = useState(false);
+  const [checkingSession, setCheckingSession] = useState<string | null>(null);
   const [openingLoginPlatform, setOpeningLoginPlatform] = useState<string | null>(null);
+  const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [sessionCheckError, setSessionCheckError] = useState<string | null>(null);
+  const [scheduleFailure, setScheduleFailure] = useState<ScheduleFailure | null>(null);
   const [backendError, setBackendError] = useState<string | null>(null);
-  const [backendConnected, setBackendConnected] = useState(false);
-  const [showSuccessMessage, setShowSuccessMessage] = useState(false);
-  const [successMessageText, setSuccessMessageText] = useState('');
   
-  // References for intervals
-  const syncStatusIntervalRef = useRef<NodeJS.Timeout | null>(null);
-  const statsIntervalRef = useRef<NodeJS.Timeout | null>(null);
-  const retryConnectionRef = useRef<NodeJS.Timeout | null>(null);
-  const sessionUpdateIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  // Web Crawler states
+  const [webSearchQuery, setWebSearchQuery] = useState('');
+  const [searchObjective, setSearchObjective] = useState('');
+  const [searchSources, setSearchSources] = useState({
+    apis: true,
+    websites: false,
+    focused: false,
+    ai_enhanced: true
+  });
+  const [isSearching, setIsSearching] = useState(false);
+  const [searchResults, setSearchResults] = useState<SearchResults | null>(null);
+  const [apiQuota, setApiQuota] = useState<ApiQuota>({});
+  const [siteStats, setSiteStats] = useState<SiteStats>({});
+  
+  // LLM Query states
+  const [llmQuery, setLlmQuery] = useState('');
+  const [queryType, setQueryType] = useState('question');
+  const [llmProvider, setLlmProvider] = useState('lm_studio');
+  const [temperature, setTemperature] = useState(0.3);
+  const [maxTokens, setMaxTokens] = useState(2000);
+  const [isQuerying, setIsQuerying] = useState(false);
+  const [llmResponse, setLlmResponse] = useState<any>(null);
+  const [analysisType, setAnalysisType] = useState('pattern');
+  const [analysisQuestions, setAnalysisQuestions] = useState('');
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [analysisResults, setAnalysisResults] = useState<any>(null);
+  const [providerStats, setProviderStats] = useState<any>({});
+  const [queryHistory, setQueryHistory] = useState<any[]>([]);
+  
+  // WebSocket and timer refs
+  const wsRef = useRef<WebSocket | null>(null);
+  const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const sessionAutoCheckRef = useRef<NodeJS.Timeout | null>(null);
   const loginCheckIntervalRef = useRef<NodeJS.Timeout | null>(null);
-
-  // Update daily totals
-  const updateDailyTotals = useCallback(() => {
-    let totals = { today: 0, yesterday: 0, dayBefore: 0 };
-    
-    Object.values(llmConfigs).forEach(config => {
-      totals.today += config.todayCount || 0;
-      totals.yesterday += config.yesterdayCount || 0;
-      totals.dayBefore += config.dayBeforeCount || 0;
-    });
-    
-    setDailyTotals(totals);
-  }, [llmConfigs]);
-
-  // Check backend connection
-  const checkBackendConnection = useCallback(async () => {
-    console.log('🔌 Checking backend connection...');
+  const statsIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  
+  // ======================== WebSocket Connection ========================
+  
+  const connectWebSocket = useCallback(() => {
+    console.log('Connecting to WebSocket...');
     
     try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 5000);
+      const ws = new WebSocket(WS_URL);
       
-      const url = `${API_BASE_URL}/status`;
-      console.log('🔌 Fetching:', url);
-      
-      const response = await fetch(url, {
-        method: 'GET',
-        signal: controller.signal,
-        headers: {
-          'Accept': 'application/json',
-          'Content-Type': 'application/json'
-        }
-      });
-      
-      clearTimeout(timeoutId);
-      
-      console.log('🔌 Backend response status:', response.status);
-      
-      if (response.ok) {
-        const data = await response.json() as StatusResponse;
-        console.log('🔌 Backend status:', data);
+      ws.onopen = () => {
+        console.log('WebSocket connected');
+        wsRef.current = ws;
         setBackendError(null);
-        setBackendConnected(true);
-        
-        if (retryConnectionRef.current) {
-          clearInterval(retryConnectionRef.current);
-          retryConnectionRef.current = null;
+      };
+      
+      ws.onmessage = (event) => {
+        try {
+          const message = JSON.parse(event.data);
+          if (message.type === 'state_update') {
+            setSystemState(message.data);
+          }
+        } catch (error) {
+          console.error('WebSocket message error:', error);
         }
+      };
+      
+      ws.onerror = (error) => {
+        console.error('WebSocket error:', error);
+        setBackendError('WebSocket connection error');
+      };
+      
+      ws.onclose = () => {
+        console.log('WebSocket disconnected');
+        wsRef.current = null;
         
-        return true;
-      } else {
-        setBackendError(`Backend returned status ${response.status}`);
-        setBackendConnected(false);
-        return false;
-      }
-    } catch (error: any) {
-      console.error('🔌 Backend connection error:', error);
+        // Reconnect after 5 seconds
+        reconnectTimeoutRef.current = setTimeout(() => {
+          connectWebSocket();
+        }, 5000);
+      };
       
-      if (error.name === 'AbortError') {
-        setBackendError('Connection timeout. Backend may be starting up...');
-      } else {
-        setBackendError('Cannot connect to backend. Ensure server is running on port 8000.');
-      }
-      
-      setBackendConnected(false);
-      
-      if (!retryConnectionRef.current) {
-        retryConnectionRef.current = setInterval(() => {
-          checkBackendConnection();
-        }, 10000);
-      }
-      
-      return false;
+    } catch (error) {
+      console.error('WebSocket connection error:', error);
+      setBackendError('Cannot connect to backend server');
     }
   }, []);
-
-  // Load statistics from backend
+  
+  // ======================== API Calls ========================
+  
   const loadStats = useCallback(async () => {
-    if (!backendConnected) return;
-    
     try {
       const response = await fetch(`${API_BASE_URL}/llm/conversations/stats`);
-      
       if (response.ok) {
-        const stats = await response.json() as StatsResponse;
-        
-        const today = new Date().toISOString().split('T')[0];
-        const yesterday = new Date(Date.now() - 86400000).toISOString().split('T')[0];
-        const dayBefore = new Date(Date.now() - 172800000).toISOString().split('T')[0];
-        
-        setLlmConfigs(prev => {
-          const updated = { ...prev };
-          Object.keys(updated).forEach(platform => {
-            const platformStats = stats.daily_stats?.[platform] || {};
-            // IMPORTANT: Only update stats, never change enabled state
-            updated[platform] = {
-              ...updated[platform],
-              todayCount: platformStats[today] || 0,
-              yesterdayCount: platformStats[yesterday] || 0,
-              dayBeforeCount: platformStats[dayBefore] || 0
-            };
-            
-            if (stats.latest_sync?.[platform]) {
-              updated[platform].lastSync = stats.latest_sync[platform];
-            }
-          });
-          
-          console.log('Stats loaded, enabled states preserved:', 
-            Object.entries(updated).map(([k, v]) => `${k}: ${v.enabled}`).join(', ')
-          );
-          
-          return updated;
-        });
+        const data = await response.json();
+        setStats(data);
       }
     } catch (error) {
       console.error('Failed to load stats:', error);
     }
-  }, [backendConnected]);
-
-  // Check schedule failures
-  const checkScheduleFailures = useCallback(async () => {
-    if (!backendConnected) return;
-    
+  }, []);
+  
+  const loadScheduleFailure = useCallback(async () => {
     try {
       const response = await fetch(`${API_BASE_URL}/llm/schedule/last-failure`);
       if (response.ok) {
-        const data = await response.json() as ScheduleFailureResponse;
-        
+        const data = await response.json();
         if (data.failure) {
-          setScheduleFailureReason(data.reason || null);
-          localStorage.setItem('argosa_schedule_failure', data.reason || '');
+          setScheduleFailure(data);
         } else {
-          setScheduleFailureReason(null);
-          localStorage.removeItem('argosa_schedule_failure');
+          setScheduleFailure(null);
         }
       }
     } catch (error) {
-      // Silently fail
+      console.error('Failed to load schedule failure:', error);
     }
-  }, [backendConnected]);
-
-  // Check session status - 쿠키 기반 검증 포함
-  const checkSessionStatus = useCallback(async (showProgress = false) => {
-    if (isCheckingSessions || !backendConnected) return;
-    
-    setIsCheckingSessions(true);
-    setSessionCheckError(null);
-    
-    console.log('🔄 Starting session check...');
+  }, []);
+  
+  const checkSessionManual = async (platform: string) => {
+    setCheckingSession(platform);
     
     try {
-      // Check ALL platforms to maintain session status
-      const allPlatforms = Object.entries(llmConfigs);
-      const updatedConfigs = { ...llmConfigs };
+      const response = await fetch(`${API_BASE_URL}/sessions/check-immediate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          platform, 
+          force_fresh: true 
+        })
+      });
       
-      for (let i = 0; i < allPlatforms.length; i++) {
-        const [platform, config] = allPlatforms[i];
+      if (response.ok) {
+        const result = await response.json();
         
-        if (showProgress) {
-          setLlmConfigs(prev => ({
-            ...prev,
-            [platform]: {
-              ...prev[platform],
-              status: 'syncing'
-            }
-          }));
-        }
-        
-        try {
-          console.log(`🔍 Checking session for ${platform}...`);
-          
-          const response = await fetch(`${API_BASE_URL}/llm/sessions/check-single`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              platform: platform,
-              enabled: config.enabled
-            })
-          });
-          
-          if (response.ok) {
-            const sessionData = await response.json() as SessionCheckResponse & { 
-              cookies?: boolean; 
-              sessionData?: any;
-              status?: string;
-            };
-            
-            console.log(`📍 Session check for ${platform}:`, {
-              platform,
-              valid: sessionData.valid,
-              lastChecked: sessionData.lastChecked,
-              expiresAt: sessionData.expiresAt,
-              hasCookies: sessionData.cookies,
-              status: sessionData.status
-            });
-            
-            updatedConfigs[platform] = {
-              ...updatedConfigs[platform],
-              sessionValid: sessionData.valid,
-              sessionLastChecked: sessionData.lastChecked,
-              sessionExpiresAt: sessionData.expiresAt,
-              status: 'disconnected'
-            };
-            
-            console.log(`✅ ${platform}: sessionValid=${sessionData.valid}`);
-          } else {
-            const errorText = await response.text();
-            console.error(`❌ Failed to check session for ${platform}:`, response.status, errorText);
-            updatedConfigs[platform] = {
-              ...updatedConfigs[platform],
-              sessionValid: false,
-              status: 'disconnected'
-            };
+        // Update local state immediately
+        setSystemState(prev => ({
+          ...prev,
+          sessions: {
+            ...prev.sessions,
+            [platform]: result
           }
-        } catch (error) {
-          console.error(`Error checking session for ${platform}:`, error);
-        }
+        }));
         
-        if (i < allPlatforms.length - 1 && showProgress) {
-          await new Promise(resolve => setTimeout(resolve, 300));
-        }
+        return result.valid;
       }
       
-      // Update all configs at once
-      setLlmConfigs(updatedConfigs);
+      return false;
       
     } catch (error) {
-      setSessionCheckError('Failed to check sessions');
+      console.error('Session check error:', error);
+      setSessionCheckError(`Failed to check session for ${PLATFORMS[platform]?.name}`);
+      return false;
     } finally {
-      setIsCheckingSessions(false);
+      setCheckingSession(null);
     }
-  }, [llmConfigs, isCheckingSessions, backendConnected]);
-
-  // Start automatic session checking
-  const startAutoSessionCheck = useCallback(() => {
-    if (sessionAutoCheckRef.current) {
-      clearInterval(sessionAutoCheckRef.current);
+  };
+  
+  const checkAllSessions = async () => {
+    console.log('🔄 Checking all sessions...');
+    
+    try {
+      const enabledPlatforms = Object.keys(platformConfigs).filter(
+        key => platformConfigs[key].enabled
+      );
+      
+      for (const platform of enabledPlatforms) {
+        await checkSessionManual(platform);
+        // Small delay between checks
+        await new Promise(resolve => setTimeout(resolve, 300));
+      }
+      
+    } catch (error) {
+      console.error('Error checking all sessions:', error);
+    }
+  };
+  
+  const startSync = async () => {
+    const enabledPlatforms = Object.values(platformConfigs)
+      .filter(p => p.enabled)
+      .map(p => ({ platform: p.key, enabled: true }));
+    
+    if (enabledPlatforms.length === 0) {
+      setSuccessMessage('Please enable at least one platform');
+      setTimeout(() => setSuccessMessage(null), 3000);
+      return;
     }
     
-    // Check sessions every 30 seconds
-    sessionAutoCheckRef.current = setInterval(() => {
-      checkSessionStatus(false);
-    }, 30000);
+    // Check sessions before sync
+    const invalidSessions = [];
+    for (const { platform } of enabledPlatforms) {
+      const sessionInfo = systemState.sessions[platform];
+      if (!sessionInfo?.valid) {
+        invalidSessions.push(platform);
+      }
+    }
     
-    console.log('🔄 Started automatic session checking (every 30s)');
-  }, [checkSessionStatus]);
-
-  // Open login page for specific platform - 개선된 버전
-  const handleOpenLogin = async (platform: string) => {
-    const config = llmConfigs[platform];
-    if (!config || openingLoginPlatform || !backendConnected) return;
+    if (invalidSessions.length > 0) {
+      const platformNames = invalidSessions.map(p => PLATFORMS[p]?.name || p).join(', ');
+      
+      if (window.confirm(`The following platforms need login: ${platformNames}\n\nWould you like to open the login page?`)) {
+        openLoginPage(invalidSessions[0]);
+        return;
+      } else {
+        return;
+      }
+    }
+    
+    try {
+      const response = await fetch(`${API_BASE_URL}/llm/firefox/launch`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          platforms: enabledPlatforms,
+          settings: {
+            ...syncSettings,
+            debug: syncSettings.firefoxVisible
+          }
+        })
+      });
+      
+      if (!response.ok) {
+        const error = await response.json();
+        
+        if (error.invalidSessions?.length > 0) {
+          const platformNames = error.invalidSessions.map((p: string) => 
+            PLATFORMS[p]?.name || p
+          ).join(', ');
+          
+          setSessionCheckError(`Invalid sessions for: ${platformNames}. Please log in and try again.`);
+          
+          // Update session states
+          setSystemState(prev => {
+            const updatedSessions = { ...prev.sessions };
+            error.invalidSessions.forEach((platform: string) => {
+              if (updatedSessions[platform]) {
+                updatedSessions[platform].valid = false;
+              }
+            });
+            return { ...prev, sessions: updatedSessions };
+          });
+          
+          // Offer to open login
+          if (window.confirm(`${platformNames} requires login.\n\nWould you like to open the login page?`)) {
+            openLoginPage(error.invalidSessions[0]);
+          }
+        } else if (error.reason === 'smart_scheduling') {
+          setSuccessMessage('Sync skipped: Data is already up to date');
+          setTimeout(() => setSuccessMessage(null), 5000);
+        } else {
+          throw new Error(error.detail || error.error || 'Sync failed');
+        }
+        
+        return;
+      }
+      
+      const result = await response.json();
+      console.log('Sync started:', result);
+      
+      // Clear any schedule failure
+      setScheduleFailure(null);
+      
+    } catch (error: any) {
+      console.error('Failed to start sync:', error);
+      setSessionCheckError(`Error: ${error.message}`);
+      setTimeout(() => setSessionCheckError(null), 5000);
+    }
+  };
+  
+  const cancelSync = async () => {
+    if (!systemState.sync_status?.sync_id) return;
+    
+    try {
+      await fetch(`${API_BASE_URL}/llm/sync/cancel/${systemState.sync_status.sync_id}`, {
+        method: 'POST'
+      });
+    } catch (error) {
+      console.error('Failed to cancel sync:', error);
+    }
+  };
+  
+  const openLoginPage = async (platform: string) => {
+    const config = PLATFORMS[platform];
+    if (!config || openingLoginPlatform) return;
     
     console.log(`🔐 Opening login for ${platform}`);
-    
     setOpeningLoginPlatform(platform);
-    
-    setLlmConfigs(prev => ({
-      ...prev,
-      [platform]: {
-        ...prev[platform],
-        status: 'opening'
-      }
-    }));
     
     try {
       const response = await fetch(`${API_BASE_URL}/llm/sessions/open-login`, {
@@ -611,61 +630,33 @@ export default function DataCollection() {
         })
       });
       
-      const result = await response.json() as OpenLoginResponse;
+      const result = await response.json();
       
       if (result.success) {
         console.log(`✅ Opening ${config.name} login page`);
-        console.log('The session will be automatically detected when you log in.');
         
-        // 로그인 감지를 위한 폴링 시작
+        // Start checking for successful login
         let checkCount = 0;
-        const maxChecks = 60; // 최대 5분 (5초 * 60)
+        const maxChecks = 60; // 5 minutes
         
         loginCheckIntervalRef.current = setInterval(async () => {
           checkCount++;
           
-          // 세션 체크
-          const sessionResponse = await fetch(`${API_BASE_URL}/llm/sessions/check-single`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              platform: platform,
-              enabled: true
-            })
-          });
+          const isValid = await checkSessionManual(platform);
           
-          if (sessionResponse.ok) {
-            const sessionData = await sessionResponse.json() as SessionCheckResponse;
+          if (isValid) {
+            console.log(`✅ ${platform} login detected!`);
             
-            if (sessionData.valid) {
-              console.log(`✅ ${platform} login detected!`);
-              
-              // 상태 업데이트
-              setLlmConfigs(prev => ({
-                ...prev,
-                [platform]: {
-                  ...prev[platform],
-                  sessionValid: true,
-                  sessionLastChecked: sessionData.lastChecked,
-                  sessionExpiresAt: sessionData.expiresAt,
-                  status: 'disconnected'
-                }
-              }));
-              
-              setOpeningLoginPlatform(null);
-              if (loginCheckIntervalRef.current) {
-                clearInterval(loginCheckIntervalRef.current);
-                loginCheckIntervalRef.current = null;
-              }
-              
-              // 성공 메시지 표시
-              setSuccessMessageText(`${config.name} login successful!`);
-              setShowSuccessMessage(true);
-              setTimeout(() => setShowSuccessMessage(false), 5000);
+            setOpeningLoginPlatform(null);
+            if (loginCheckIntervalRef.current) {
+              clearInterval(loginCheckIntervalRef.current);
+              loginCheckIntervalRef.current = null;
             }
+            
+            setSuccessMessage(`${config.name} login successful!`);
+            setTimeout(() => setSuccessMessage(null), 5000);
           }
           
-          // 타임아웃 체크
           if (checkCount >= maxChecks) {
             console.log(`⏱️ Login monitoring timeout for ${platform}`);
             setOpeningLoginPlatform(null);
@@ -673,534 +664,25 @@ export default function DataCollection() {
               clearInterval(loginCheckIntervalRef.current);
               loginCheckIntervalRef.current = null;
             }
-            
-            setLlmConfigs(prev => ({
-              ...prev,
-              [platform]: {
-                ...prev[platform],
-                status: 'disconnected'
-              }
-            }));
           }
-        }, 5000); // 5초마다 체크
+        }, 5000);
         
       } else {
         console.error(`❌ Failed to open ${config.name} login page`);
-        console.error(`Error: ${result.error}`);
-        console.error(`Details: ${result.details || 'None'}`);
-        
         setOpeningLoginPlatform(null);
-        
-        setLlmConfigs(prev => ({
-          ...prev,
-          [platform]: {
-            ...prev[platform],
-            status: 'disconnected'
-          }
-        }));
       }
     } catch (error) {
       console.error(`❌ Failed to open login page: ${error}`);
-      
       setOpeningLoginPlatform(null);
-      
-      setLlmConfigs(prev => ({
-        ...prev,
-        [platform]: {
-          ...prev[platform],
-          status: 'disconnected'
-        }
-      }));
     }
   };
-
-  // Check sync status
-  const checkSyncStatus = useCallback(async () => {
-    if (!currentSyncId || !isRunning || !backendConnected) return;
-    
-    try {
-      const response = await fetch(`${API_BASE_URL}/llm/sync/status/${currentSyncId}`);
-      
-      if (response.ok) {
-        const status = await response.json() as SyncStatus;
-        setSyncStatus(status);
-        
-        // Update platform status
-        if (status.current_platform) {
-          setLlmConfigs(prev => {
-            const updated = { ...prev };
-            Object.keys(updated).forEach(key => {
-              if (updated[key].enabled) {
-                updated[key].status = key === status.current_platform ? 'syncing' : 'disconnected';
-              }
-            });
-            return updated;
-          });
-        }
-        
-        // Check if completed
-        if (['completed', 'error', 'cancelled'].includes(status.status)) {
-          setIsRunning(false);
-          setCurrentSyncId(null);
-          setSyncStatus(null);
-          
-          if (syncStatusIntervalRef.current) {
-            clearInterval(syncStatusIntervalRef.current);
-            syncStatusIntervalRef.current = null;
-          }
-          
-          // Reset all status
-          setLlmConfigs(prev => {
-            const updated = { ...prev };
-            Object.keys(updated).forEach(key => {
-              if (updated[key].enabled) {
-                updated[key].status = 'disconnected';
-              }
-            });
-            return updated;
-          });
-          
-          // Reload stats
-          await loadStats();
-          
-          // Show appropriate message
-          if (status.status === 'completed') {
-            console.log(`✅ Sync completed! Collected ${status.collected} conversations.`);
-            setSuccessMessageText(`Sync completed! Collected ${status.collected} conversations.`);
-            setShowSuccessMessage(true);
-            setTimeout(() => setShowSuccessMessage(false), 5000);
-          } else if (status.status === 'cancelled') {
-            console.log(`⚠️ Sync was cancelled.`);
-          } else if (status.error === 'session_expired') {
-            console.error(`❌ Sync failed: Session expired. Please log in and try again.`);
-            checkSessionStatus(true); // Re-check all sessions
-          } else {
-            console.error(`❌ Sync failed: ${status.message}`);
-          }
-        }
-      }
-    } catch (error) {
-      // Silently fail
-    }
-  }, [currentSyncId, isRunning, backendConnected, loadStats, checkSessionStatus]);
-
-  // Cancel sync
-  const handleCancelSync = async () => {
-    if (!isRunning || !currentSyncId) return;
-    
-    try {
-      const response = await fetch(`${API_BASE_URL}/llm/sync/cancel/${currentSyncId}`, {
-        method: 'POST'
-      });
-      
-      if (response.ok) {
-        setIsRunning(false);
-        setCurrentSyncId(null);
-        setSyncStatus(null);
-        
-        if (syncStatusIntervalRef.current) {
-          clearInterval(syncStatusIntervalRef.current);
-          syncStatusIntervalRef.current = null;
-        }
-        
-        setLlmConfigs(prev => {
-          const updated = { ...prev };
-          Object.keys(updated).forEach(key => {
-            if (updated[key].enabled) {
-              updated[key].status = 'disconnected';
-            }
-          });
-          return updated;
-        });
-        
-        console.log('✅ Sync cancelled successfully');
-        setSuccessMessageText('Sync cancelled successfully');
-        setShowSuccessMessage(true);
-        setTimeout(() => setShowSuccessMessage(false), 5000);
-      }
-    } catch (error) {
-      // Silently fail
-    }
-  };
-
-  // Initialize on mount
-  useEffect(() => {
-    const init = async () => {
-      // Load saved sync settings
-      const savedSyncSettings = localStorage.getItem('syncSettings');
-      
-      if (savedSyncSettings) {
-        try {
-          setSyncSettings(JSON.parse(savedSyncSettings));
-        } catch (e) {
-          // Ignore parse errors
-        }
-      }
-      
-      // Check backend
-      const isConnected = await checkBackendConnection();
-      
-      if (isConnected) {
-        await loadStats();
-        await checkScheduleFailures();
-        console.log('🔍 Initial session check...');
-        await checkSessionStatus(false);
-        
-        // Start automatic session checking
-        startAutoSessionCheck();
-        
-        // Set up periodic refresh
-        statsIntervalRef.current = setInterval(() => {
-          loadStats();
-          checkScheduleFailures();
-        }, 30000);
-      }
-    };
-    
-    init();
-    
-    // Cleanup
-    return () => {
-      if (statsIntervalRef.current) clearInterval(statsIntervalRef.current);
-      if (syncStatusIntervalRef.current) clearInterval(syncStatusIntervalRef.current);
-      if (retryConnectionRef.current) clearInterval(retryConnectionRef.current);
-      if (sessionUpdateIntervalRef.current) clearInterval(sessionUpdateIntervalRef.current);
-      if (sessionAutoCheckRef.current) clearInterval(sessionAutoCheckRef.current);
-      if (loginCheckIntervalRef.current) clearInterval(loginCheckIntervalRef.current);
-    };
-  }, []); // Empty deps - only run once
-
-  // Auto-clear session check error
-  useEffect(() => {
-    if (sessionCheckError) {
-      const timer = setTimeout(() => {
-        setSessionCheckError(null);
-      }, 10000); // Clear after 10 seconds
-      
-      return () => clearTimeout(timer);
-    }
-  }, [sessionCheckError]);
-
-  // Monitor sync status
-  useEffect(() => {
-    if (isRunning && currentSyncId && backendConnected) {
-      if (syncStatusIntervalRef.current) {
-        clearInterval(syncStatusIntervalRef.current);
-      }
-      
-      checkSyncStatus();
-      
-      syncStatusIntervalRef.current = setInterval(checkSyncStatus, 2000);
-      
-      return () => {
-        if (syncStatusIntervalRef.current) {
-          clearInterval(syncStatusIntervalRef.current);
-          syncStatusIntervalRef.current = null;
-        }
-      };
-    }
-  }, [isRunning, currentSyncId, backendConnected, checkSyncStatus]);
-
-  // Save configs
-  useEffect(() => {
-    const configsToSave: Record<string, LLMConfig> = {};
-    Object.keys(llmConfigs).forEach(key => {
-      configsToSave[key] = { ...llmConfigs[key] };
-    });
-    
-    const jsonString = JSON.stringify(configsToSave);
-    localStorage.setItem('llmConfigs', jsonString);
-    
-    console.log('Saving configs to localStorage:', configsToSave);
-    console.log('Enabled states:', Object.entries(configsToSave).map(([k, v]) => `${k}: ${v.enabled}`).join(', '));
-    
-    updateDailyTotals();
-  }, [llmConfigs, updateDailyTotals]);
-
-  // Auto-save sync settings and schedule when changed
-  useEffect(() => {
-    localStorage.setItem('syncSettings', JSON.stringify(syncSettings));
-    
-    // Auto-save schedule to backend
-    if (backendConnected) {
-      const saveSchedule = async () => {
-        try {
-          // Only include enabled platforms
-          const enabledPlatformKeys = Object.entries(llmConfigs)
-            .filter(([_, config]) => config.enabled)
-            .map(([key]) => key);
-          
-          const response = await fetch(`${API_BASE_URL}/llm/sync/schedule`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              enabled: syncSettings.interval !== 'manual',
-              startTime: syncSettings.startTime,
-              interval: syncSettings.interval,
-              platforms: enabledPlatformKeys,
-              settings: syncSettings
-            })
-          });
-          
-          if (response.ok) {
-            console.log('✅ Schedule auto-saved');
-          }
-        } catch (error) {
-          console.error('Failed to auto-save schedule');
-        }
-      };
-      
-      // Debounce the save
-      const timeoutId = setTimeout(saveSchedule, 1000);
-      return () => clearTimeout(timeoutId);
-    }
-  }, [syncSettings, llmConfigs, backendConnected]);
-
-  // Handle toggle platform
-  const handleTogglePlatform = (platform: string) => {
-    setLlmConfigs(prev => {
-      const newConfigs = {
-        ...prev,
-        [platform]: {
-          ...prev[platform],
-          enabled: !prev[platform].enabled
-        }
-      };
-      
-      // enabled 상태만 별도로 저장
-      const enabledStates: Record<string, boolean> = {};
-      Object.keys(newConfigs).forEach(key => {
-        enabledStates[key] = newConfigs[key].enabled;
-      });
-      localStorage.setItem('llmEnabledStates', JSON.stringify(enabledStates));
-      
-      console.log(`Toggled ${platform}: ${prev[platform].enabled} -> ${newConfigs[platform].enabled}`);
-      console.log('Saved enabled states:', enabledStates);
-      
-      return newConfigs;
-    });
-  };
-
-  // Manual session refresh
-  const refreshSessions = async () => {
-    console.log('🔄 Manually refreshing session status...');
-    await checkSessionStatus(true);
-  };
-
-  // Handle sync now
-  const handleSyncNow = async () => {
-    console.log('🔍 Sync button clicked');
-    
-    if (isRunning) {
-      console.log('⚠️ Sync is already in progress.');
-      return;
-    }
-    
-    // Check backend
-    if (!backendConnected) {
-      console.log('🔌 Backend not connected, attempting to connect...');
-      const isConnected = await checkBackendConnection();
-      if (!isConnected) {
-        console.error('❌ Cannot connect to backend server');
-        return;
-      }
-    }
-    
-    // Get current enabled platforms
-    const enabledPlatforms = Object.entries(llmConfigs)
-      .filter(([_, config]) => config.enabled);
-    
-    console.log(`✅ Found ${enabledPlatforms.length} enabled platforms:`, enabledPlatforms.map(([key]) => key));
-    
-    if (enabledPlatforms.length === 0) {
-      console.error('❌ Please enable at least one platform.');
-      return;
-    }
-    
-    // Log current session states before sync
-    console.log('📊 Current session states before sync:');
-    enabledPlatforms.forEach(([platform, config]) => {
-      console.log(`  ${platform}: sessionValid=${config.sessionValid}, status=${config.status}`);
-    });
-    
-    // Force session check before sync
-    console.log('🔄 Checking sessions before sync...');
-    await checkSessionStatus(false);
-    
-    // Wait a bit for state to update
-    await new Promise(resolve => setTimeout(resolve, 1000));
-    
-    // Get the latest llmConfigs state by creating a promise
-    const getLatestConfigs = () => new Promise<typeof llmConfigs>(resolve => {
-      setLlmConfigs(currentConfigs => {
-        resolve(currentConfigs);
-        return currentConfigs;
-      });
-    });
-    
-    try {
-      // Get the latest llmConfigs state
-      const latestConfigs = await getLatestConfigs();
-      
-      // Re-check enabled platforms with latest configs
-      const updatedEnabledPlatforms = Object.entries(latestConfigs)
-        .filter(([_, config]) => config.enabled);
-      
-      console.log(`✅ Found ${updatedEnabledPlatforms.length} enabled platforms after session check:`, 
-        updatedEnabledPlatforms.map(([key]) => key));
-      
-      // Log session states after check
-      console.log('📊 Session states after check:');
-      updatedEnabledPlatforms.forEach(([platform, config]) => {
-        console.log(`  ${platform}: sessionValid=${config.sessionValid}, status=${config.status}`);
-      });
-      
-      if (updatedEnabledPlatforms.length === 0) {
-        console.error('❌ Please enable at least one platform.');
-        return;
-      }
-      
-      // Check if any enabled platform has invalid session
-      const invalidPlatforms = updatedEnabledPlatforms.filter(([_, config]) => !config.sessionValid);
-      if (invalidPlatforms.length > 0) {
-        console.error('❌ Found platforms with invalid sessions:', invalidPlatforms.map(([key]) => key));
-        const platformNames = invalidPlatforms.map(([key, config]) => config.name).join(', ');
-        
-        if (window.confirm(`The following platforms need login: ${platformNames}\n\nWould you like to open the login page?`)) {
-          handleOpenLogin(invalidPlatforms[0][0]);
-          return;
-        } else {
-          return;
-        }
-      }
-      
-      // Session validation will be handled by backend automatically
-      console.log('🚀 Starting sync process...');
-      
-      setIsRunning(true);
-      
-      try {
-        const requestBody = {
-          platforms: updatedEnabledPlatforms
-            .map(([key, config]) => ({
-              platform: key,
-              enabled: true,
-              sessionValid: config.sessionValid // Include session status
-            })),
-          settings: {
-            ...syncSettings,
-            debug: syncSettings.firefoxVisible
-          }
-        };
-        
-        console.log('📤 Sending sync request to:', `${API_BASE_URL}/llm/firefox/launch`);
-        console.log('📤 Request body:', JSON.stringify(requestBody, null, 2));
-        
-        const response = await fetch(`${API_BASE_URL}/llm/firefox/launch`, {
-          method: 'POST',
-          headers: { 
-            'Content-Type': 'application/json',
-            'Accept': 'application/json'
-          },
-          body: JSON.stringify(requestBody)
-        });
-        
-        console.log('📥 Response status:', response.status);
-        
-        const responseText = await response.text();
-        console.log('📥 Response text:', responseText);
-        
-        let result: FirefoxLaunchResponse;
-        try {
-          result = JSON.parse(responseText);
-        } catch (e) {
-          console.error('❌ Failed to parse response:', e);
-          console.error('Raw response:', responseText);
-          throw new Error('Invalid JSON response from server');
-        }
-        
-        console.log('📥 Response data:', result);
-        
-        if (result.success) {
-          setCurrentSyncId(result.sync_id || null);
-          console.log('✅ Firefox launched successfully!');
-          console.log('🆔 Sync ID:', result.sync_id);
-          console.log('The extension will now collect conversations.');
-        } else {
-          console.error('❌ Launch failed:', result);
-          if (result.invalidSessions && result.invalidSessions.length > 0) {
-            // 세션이 유효하지 않은 플랫폼들 처리
-            console.error('❌ Invalid sessions detected for:', result.invalidSessions.join(', '));
-            
-            // 백엔드가 invalid라고 판단한 세션들의 프론트엔드 상태 확인
-            console.log('🔍 Checking frontend vs backend session state mismatch:');
-            result.invalidSessions.forEach((platform: string) => {
-              const frontendState = llmConfigs[platform];
-              console.log(`  ${platform}: Frontend says sessionValid=${frontendState?.sessionValid}, Backend says invalid`);
-            });
-            
-            // 에러 메시지 표시
-            const platformNames = result.invalidSessions.map((p: string) => 
-              llmConfigs[p]?.name || p
-            ).join(', ');
-            
-            setSessionCheckError(`Backend detected invalid sessions for: ${platformNames}. Please log in and try again.`);
-            
-            // 해당 플랫폼들의 세션을 무효화
-            setLlmConfigs(prev => {
-              const updated = { ...prev };
-              result.invalidSessions!.forEach((platform: string) => {
-                if (updated[platform]) {
-                  updated[platform].sessionValid = false;
-                  updated[platform].status = 'disconnected';
-                }
-              });
-              return updated;
-            });
-            
-            // 세션 재확인
-            setTimeout(() => {
-              checkSessionStatus(true);
-            }, 1000);
-            
-            // 첫 번째 유효하지 않은 플랫폼의 로그인 페이지 자동으로 열기 옵션
-            if (window.confirm(`Backend reports that ${platformNames} requires login.\n\nWould you like to open the login page for ${llmConfigs[result.invalidSessions[0]]?.name || result.invalidSessions[0]}?`)) {
-              handleOpenLogin(result.invalidSessions[0]);
-            }
-          } else if (result.reason === 'smart_scheduling') {
-            console.log('⚠️ ' + result.error);
-            setSuccessMessageText('Sync skipped: Data is already up to date');
-            setShowSuccessMessage(true);
-            setTimeout(() => setShowSuccessMessage(false), 5000);
-          } else {
-            console.error(`Failed: ${result.error}`);
-            console.error(`Details: ${result.details || ''}`);
-            setSessionCheckError(result.error || 'Sync failed. Please try again.');
-          }
-          setIsRunning(false);
-        }
-      } catch (error) {
-        console.error('❌ Failed to start sync:', error);
-        setIsRunning(false);
-      }
-    } catch (error) {
-      console.error('❌ Failed to get latest configs:', error);
-      setIsRunning(false);
-    }
-  };
-
-  // Handle clean data
-  const handleCleanData = async () => {
+  
+  const cleanData = async () => {
     if (!window.confirm(
       'Delete all collected data?\n\n' +
       'This will permanently remove all conversation files.\n' +
       'This action cannot be undone!'
     )) return;
-    
-    if (!backendConnected) {
-      console.error('Backend not connected');
-      return;
-    }
     
     try {
       const response = await fetch(`${API_BASE_URL}/llm/conversations/clean?days=0`, {
@@ -1208,46 +690,25 @@ export default function DataCollection() {
       });
       
       if (response.ok) {
-        const result = await response.json() as CleanDataResponse;
+        const result = await response.json();
         
-        setDailyTotals({ today: 0, yesterday: 0, dayBefore: 0 });
+        setSuccessMessage(`Deleted ${result.deleted} files.`);
+        setTimeout(() => setSuccessMessage(null), 5000);
         
-        setLlmConfigs(prev => {
-          const updated = { ...prev };
-          Object.keys(updated).forEach(key => {
-            // Only reset counts, preserve enabled state
-            updated[key] = {
-              ...updated[key],
-              todayCount: 0,
-              yesterdayCount: 0,
-              dayBeforeCount: 0
-            };
-          });
-          return updated;
-        });
-        
-        console.log(`✅ Deleted ${result.deleted} files.`);
-        setSuccessMessageText(`Deleted ${result.deleted} files.`);
-        setShowSuccessMessage(true);
-        setTimeout(() => setShowSuccessMessage(false), 5000);
+        // Reload stats
+        await loadStats();
       }
     } catch (error) {
       console.error('Failed to clean data');
     }
   };
-
-  // Handle view files
-  const handleViewFiles = async () => {
-    if (!backendConnected) {
-      console.error('Backend not connected');
-      return;
-    }
-    
+  
+  const viewFiles = async () => {
     try {
       const response = await fetch(`${API_BASE_URL}/llm/conversations/files`);
       
       if (response.ok) {
-        const data = await response.json() as FilesListResponse;
+        const data = await response.json();
         setFilesList(data.files || []);
         setShowFilesModal(true);
       }
@@ -1255,24 +716,393 @@ export default function DataCollection() {
       console.error('Failed to load files');
     }
   };
-
-  // Format date helper
-  const formatDate = (dateString: string | undefined) => {
-    if (!dateString) return 'Never';
-    const date = new Date(dateString);
-    const now = new Date();
-    const diff = now.getTime() - date.getTime();
-    const hours = Math.floor(diff / (1000 * 60 * 60));
+  
+  // ======================== Web Crawler Functions ========================
+  
+  const executeWebSearch = async () => {
+    if (!webSearchQuery.trim() || isSearching) return;
     
-    if (hours < 1) {
-      const minutes = Math.floor(diff / (1000 * 60));
-      return `${minutes}m ago`;
-    } else if (hours < 24) {
-      return `${hours}h ago`;
-    } else {
-      return date.toLocaleDateString();
+    setIsSearching(true);
+    setSearchResults(null);
+    
+    try {
+      // Prepare search sources
+      const sources = [];
+      if (searchSources.apis) sources.push('apis');
+      if (searchSources.websites) sources.push('websites');
+      if (searchSources.focused) sources.push('focused');
+      
+      const context: any = {
+        objective: searchObjective,
+        ai_enhanced: searchSources.ai_enhanced
+      };
+      
+      // Add Firefox profile path if available
+      if (systemState.firefox_status === 'ready') {
+        context.firefox_profile_path = '/path/to/firefox/profile'; // This should come from backend
+      }
+      
+      const response = await fetch(`${API_BASE_URL}/crawler/search`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          query: webSearchQuery,
+          context: context
+        })
+      });
+      
+      if (response.ok) {
+        const result = await response.json();
+        setSearchResults(result);
+        
+        // Show success message if quality is good
+        if (result.quality_score >= 0.7) {
+          setSuccessMessage(`Search completed with ${(result.quality_score * 100).toFixed(0)}% quality`);
+          setTimeout(() => setSuccessMessage(null), 5000);
+        }
+      } else {
+        const error = await response.json();
+        throw new Error(error.detail || 'Search failed');
+      }
+      
+    } catch (error: any) {
+      console.error('Search error:', error);
+      setSessionCheckError(`Search failed: ${error.message}`);
+      setTimeout(() => setSessionCheckError(null), 5000);
+    } finally {
+      setIsSearching(false);
     }
   };
+  
+  const loadApiQuota = async () => {
+    try {
+      const response = await fetch(`${API_BASE_URL}/crawler/quota`);
+      
+      if (response.ok) {
+        const data = await response.json();
+        setApiQuota(data);
+      }
+    } catch (error) {
+      console.error('Failed to load API quota:', error);
+    }
+  };
+  
+  const loadSiteStats = async () => {
+    try {
+      const response = await fetch(`${API_BASE_URL}/crawler/sites/stats`);
+      
+      if (response.ok) {
+        const data = await response.json();
+        setSiteStats(data);
+      }
+    } catch (error) {
+      console.error('Failed to load site stats:', error);
+    }
+  };
+  
+  // ======================== LLM Query Functions ========================
+  
+  const executeLLMQuery = async () => {
+    if (!llmQuery.trim() || isQuerying) return;
+    
+    setIsQuerying(true);
+    setLlmResponse(null);
+    
+    try {
+      const response = await fetch(`${API_BASE_URL}/llm/query/process`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          query: llmQuery,
+          query_type: queryType,
+          provider: llmProvider,
+          temperature: temperature,
+          max_tokens: maxTokens
+        })
+      });
+      
+      if (response.ok) {
+        const result = await response.json();
+        setLlmResponse(result);
+        
+        // Reload provider stats
+        await loadProviderStats();
+      } else {
+        const error = await response.json();
+        throw new Error(error.detail || 'Query failed');
+      }
+      
+    } catch (error: any) {
+      console.error('LLM query error:', error);
+      setSessionCheckError(`Query failed: ${error.message}`);
+      setTimeout(() => setSessionCheckError(null), 5000);
+    } finally {
+      setIsQuerying(false);
+    }
+  };
+  
+  const analyzeConversations = async () => {
+    setIsAnalyzing(true);
+    setAnalysisResults(null);
+    
+    try {
+      // Get all conversations from stats
+      const conversationsResponse = await fetch(`${API_BASE_URL}/llm/conversations/stats`);
+      if (!conversationsResponse.ok) throw new Error('Failed to load conversations');
+      
+      const statsData = await conversationsResponse.json();
+      
+      // Prepare questions
+      const questions = analysisQuestions.split('\n').filter(q => q.trim());
+      
+      const response = await fetch(`${API_BASE_URL}/llm/query/analyze`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          data: statsData,
+          analysis_type: analysisType,
+          questions: questions,
+          output_format: 'structured',
+          provider: llmProvider
+        })
+      });
+      
+      if (response.ok) {
+        const result = await response.json();
+        setAnalysisResults(result);
+      } else {
+        throw new Error('Analysis failed');
+      }
+      
+    } catch (error: any) {
+      console.error('Analysis error:', error);
+      setSessionCheckError(`Analysis failed: ${error.message}`);
+      setTimeout(() => setSessionCheckError(null), 5000);
+    } finally {
+      setIsAnalyzing(false);
+    }
+  };
+  
+  const comparePlatforms = async () => {
+    setIsAnalyzing(true);
+    setAnalysisResults(null);
+    
+    try {
+      // Get platform data
+      const platformData: any = {};
+      
+      for (const platform of Object.keys(platformConfigs)) {
+        const response = await fetch(`${API_BASE_URL}/llm/conversations/files`);
+        if (response.ok) {
+          const data = await response.json();
+          const platformFiles = data.files.find((f: any) => f.platform === platform);
+          if (platformFiles) {
+            platformData[platform] = platformFiles.files || [];
+          }
+        }
+      }
+      
+      const response = await fetch(`${API_BASE_URL}/llm/query/compare/platforms`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(platformData)
+      });
+      
+      if (response.ok) {
+        const result = await response.json();
+        setAnalysisResults(result);
+      } else {
+        throw new Error('Comparison failed');
+      }
+      
+    } catch (error: any) {
+      console.error('Comparison error:', error);
+      setSessionCheckError(`Comparison failed: ${error.message}`);
+      setTimeout(() => setSessionCheckError(null), 5000);
+    } finally {
+      setIsAnalyzing(false);
+    }
+  };
+  
+  const loadProviderStats = async () => {
+    try {
+      const response = await fetch(`${API_BASE_URL}/llm/query/stats/providers`);
+      
+      if (response.ok) {
+        const data = await response.json();
+        setProviderStats(data);
+      }
+    } catch (error) {
+      console.error('Failed to load provider stats:', error);
+    }
+  };
+  
+  const loadQueryHistory = async () => {
+    try {
+      const response = await fetch(`${API_BASE_URL}/llm/query/history?limit=20`);
+      
+      if (response.ok) {
+        const data = await response.json();
+        setQueryHistory(data);
+      }
+    } catch (error) {
+      console.error('Failed to load query history:', error);
+    }
+  };
+  
+  // ======================== Platform Management ========================
+  
+  const togglePlatform = (platform: string) => {
+    const newEnabled = !platformConfigs[platform].enabled;
+    
+    // Update local state
+    setPlatformConfigs(prev => ({
+      ...prev,
+      [platform]: {
+        ...prev[platform],
+        enabled: newEnabled
+      }
+    }));
+    
+    // Save to localStorage
+    const enabledStates = Object.entries(platformConfigs).reduce((acc, [key, config]) => {
+      acc[key] = key === platform ? newEnabled : config.enabled;
+      return acc;
+    }, {} as Record<string, boolean>);
+    
+    localStorage.setItem('llmEnabledStates', JSON.stringify(enabledStates));
+    
+    // If enabling, check session immediately
+    if (newEnabled) {
+      checkSessionManual(platform);
+    }
+  };
+  
+  // ======================== Effects ========================
+  
+  // Initialize
+  useEffect(() => {
+    // Connect WebSocket
+    connectWebSocket();
+    
+    // Load initial data
+    loadStats();
+    loadScheduleFailure();
+    loadApiQuota();
+    loadSiteStats();
+    loadProviderStats();
+    loadQueryHistory();
+    
+    // Check all sessions on mount
+    checkAllSessions();
+    
+    // Set up periodic refresh
+    statsIntervalRef.current = setInterval(() => {
+      loadStats();
+      loadScheduleFailure();
+    }, 30000);
+    
+    // Set up automatic session checking (every 30 seconds)
+    sessionAutoCheckRef.current = setInterval(() => {
+      checkAllSessions();
+    }, 30000);
+    
+    return () => {
+      if (wsRef.current) {
+        wsRef.current.close();
+      }
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current);
+      }
+      if (sessionAutoCheckRef.current) {
+        clearInterval(sessionAutoCheckRef.current);
+      }
+      if (loginCheckIntervalRef.current) {
+        clearInterval(loginCheckIntervalRef.current);
+      }
+      if (statsIntervalRef.current) {
+        clearInterval(statsIntervalRef.current);
+      }
+    };
+  }, [connectWebSocket, loadStats, loadScheduleFailure]);
+  
+  // Save sync settings when changed
+  useEffect(() => {
+    localStorage.setItem('syncSettings', JSON.stringify(syncSettings));
+  }, [syncSettings]);
+  
+  // Auto-clear messages
+  useEffect(() => {
+    if (sessionCheckError) {
+      const timer = setTimeout(() => setSessionCheckError(null), 10000);
+      return () => clearTimeout(timer);
+    }
+  }, [sessionCheckError]);
+  
+  // ======================== Helper Functions ========================
+  
+  const getSessionStatus = (platform: string) => {
+    const session = systemState.sessions[platform];
+    if (!session) return { valid: false, status: 'unknown' };
+    
+    if (session.source === 'timeout') {
+      return { valid: false, status: 'timeout' };
+    }
+    
+    if (session.expires_at) {
+      const expires = new Date(session.expires_at);
+      const now = new Date();
+      if (expires > now) {
+        const hours = Math.floor((expires.getTime() - now.getTime()) / (1000 * 60 * 60));
+        return { 
+          valid: true, 
+          status: `Active (${hours}h remaining)`,
+          expiresAt: session.expires_at
+        };
+      }
+    }
+    
+    return { 
+      valid: session.valid, 
+      status: session.valid ? 'Active' : 'Login required',
+      expiresAt: session.expires_at
+    };
+  };
+  
+  const isBackendConnected = wsRef.current?.readyState === WebSocket.OPEN || 
+    systemState.extension_status === 'connected' ||
+    Object.keys(systemState.sessions).length > 0;
+  
+  const canSync = isBackendConnected && 
+    systemState.system_status === 'idle' &&
+    Object.values(platformConfigs).some(p => p.enabled);
+    
+  const getDailyStats = () => {
+    if (!stats?.daily_stats) return { today: 0, yesterday: 0, dayBefore: 0 };
+    
+    const today = new Date().toISOString().split('T')[0];
+    const yesterday = new Date(Date.now() - 86400000).toISOString().split('T')[0];
+    const dayBefore = new Date(Date.now() - 172800000).toISOString().split('T')[0];
+    
+    let totals = { today: 0, yesterday: 0, dayBefore: 0 };
+    
+    Object.entries(stats.daily_stats).forEach(([platform, platformStats]: [string, any]) => {
+      totals.today += platformStats[today] || 0;
+      totals.yesterday += platformStats[yesterday] || 0;
+      totals.dayBefore += platformStats[dayBefore] || 0;
+      
+      // Update platform counts
+      if (platformConfigs[platform]) {
+        platformConfigs[platform].todayCount = platformStats[today] || 0;
+        platformConfigs[platform].yesterdayCount = platformStats[yesterday] || 0;
+        platformConfigs[platform].dayBeforeCount = platformStats[dayBefore] || 0;
+      }
+    });
+    
+    return totals;
+  };
+  
+  const dailyStats = getDailyStats();
 
   return (
     <div className="h-full w-full flex flex-col text-gray-800">
@@ -1284,28 +1114,45 @@ export default function DataCollection() {
             <p className="text-sm text-gray-600">Collect and analyze your AI conversations</p>
           </div>
           <div className="flex items-center gap-2">
+            {/* Backend Status */}
             <div className="flex items-center gap-2 text-sm">
-              {backendConnected ? (
+              {isBackendConnected ? (
                 <>
-                  <Wifi className="h-4 w-4 text-gray-500" />
-                  <span className="text-gray-600">Backend Connected</span>
+                  <Wifi className="h-4 w-4 text-green-500" />
+                  <span className="text-gray-600">Backend</span>
                 </>
               ) : (
                 <>
-                  <WifiOff className="h-4 w-4 text-gray-500" />
-                  <span className="text-gray-600">Backend Disconnected</span>
+                  <WifiOff className="h-4 w-4 text-red-500" />
+                  <span className="text-gray-600">Backend</span>
                 </>
               )}
             </div>
-            <Badge variant={isRunning ? "default" : "secondary"}>
-              {isRunning ? "Running" : "Ready"}
+            
+            {/* Extension Status */}
+            <div className="flex items-center gap-2 text-sm">
+              {systemState.extension_status === 'connected' ? (
+                <>
+                  <Chrome className="h-4 w-4 text-green-500" />
+                  <span className="text-gray-600">Extension</span>
+                  {systemState.extension_last_seen && (
+                    <span className="text-xs text-gray-400">
+                      ({formatDate(systemState.extension_last_seen)})
+                    </span>
+                  )}
+                </>
+              ) : (
+                <>
+                  <Chrome className="h-4 w-4 text-gray-400" />
+                  <span className="text-gray-400">Extension</span>
+                </>
+              )}
+            </div>
+            
+            {/* System Status */}
+            <Badge variant={systemState.system_status === 'collecting' ? "default" : "secondary"}>
+              {systemState.system_status}
             </Badge>
-            {isRunning && syncStatus && (
-              <div className="flex items-center gap-2 text-sm">
-                <RefreshCw className="h-4 w-4 animate-spin" />
-                <span>{syncStatus.message}</span>
-              </div>
-            )}
           </div>
         </div>
       </header>
@@ -1327,7 +1174,10 @@ export default function DataCollection() {
                   size="sm"
                   variant="outline"
                   className="ml-2"
-                  onClick={checkBackendConnection}
+                  onClick={() => {
+                    setBackendError(null);
+                    connectWebSocket();
+                  }}
                 >
                   <RefreshCw className="h-3 w-3 mr-1" />
                   Retry
@@ -1337,73 +1187,81 @@ export default function DataCollection() {
           )}
 
           {/* Success Message */}
-          {showSuccessMessage && (
-            <Alert className="mb-6 border-gray-200 bg-gray-50">
-              <CheckCircle className="h-4 w-4 text-gray-600" />
-              <AlertDescription className="text-gray-800">
-                {successMessageText}
+          {successMessage && (
+            <Alert className="mb-6 border-green-200 bg-green-50">
+              <CheckCircle className="h-4 w-4 text-green-600" />
+              <AlertDescription className="text-green-800">
+                {successMessage}
               </AlertDescription>
             </Alert>
           )}
 
+          {/* Session Check Error */}
+          {sessionCheckError && (
+            <Alert variant="destructive" className="mb-6">
+              <AlertCircle className="h-4 w-4" />
+              <AlertDescription>{sessionCheckError}</AlertDescription>
+            </Alert>
+          )}
+
           {/* Sync Progress */}
-          {isRunning && syncStatus && (
-            <div className="mb-6">
-              <Card>
-                <CardContent className="p-4">
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between text-sm">
-                      <span>Syncing {syncStatus.current_platform || 'platforms'}...</span>
-                      <span>{syncStatus.progress}%</span>
-                    </div>
-                    <Progress value={syncStatus.progress} />
-                    <div className="text-xs text-gray-500">
-                      Collected {syncStatus.collected} conversations
-                    </div>
+          {systemState.sync_status && (
+            <Card className="mb-6">
+              <CardContent className="p-4">
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between text-sm">
+                    <span className="flex items-center gap-2">
+                      <Activity className="h-4 w-4 animate-pulse" />
+                      {systemState.sync_status.message}
+                    </span>
+                    <span>{systemState.sync_status.progress}%</span>
                   </div>
-                </CardContent>
-              </Card>
-            </div>
+                  <Progress value={systemState.sync_status.progress} />
+                  <div className="text-xs text-gray-500">
+                    Collected {systemState.sync_status.collected} conversations
+                    {systemState.sync_status.current_platform && 
+                      ` • Currently: ${PLATFORMS[systemState.sync_status.current_platform]?.name}`}
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
           )}
 
           <div className="grid lg:grid-cols-3 gap-6">
             {/* Left Panel */}
             <div className="lg:col-span-2 space-y-6">
               <Section title="Data Sources">
-                <Tabs 
-                  defaultValue="llm" 
-                  className="w-full"
-                  onValueChange={(value) => {
-                    if (value === 'llm' && backendConnected && !isCheckingSessions) {
-                      // Check all platforms when tab is activated
-                      checkSessionStatus(true);
-                    }
-                  }}
-                >
+                <Tabs defaultValue="llm" className="w-full">
                   <TabsList className="grid w-full grid-cols-3">
-                    <TabsTrigger value="web" disabled={isRunning}>
+                    <TabsTrigger value="web" disabled={systemState.system_status !== 'idle'}>
                       <Globe className="h-4 w-4 mr-2" />
                       Web Crawler
                     </TabsTrigger>
                     <TabsTrigger value="llm" className="relative">
                       <Bot className="h-4 w-4 mr-2" />
                       LLM Models
-                      {isRunning && (
+                      {systemState.system_status === 'collecting' && (
                         <span className="absolute -top-1 -right-1 flex h-3 w-3">
                           <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
                           <span className="relative inline-flex rounded-full h-3 w-3 bg-blue-500"></span>
                         </span>
                       )}
                     </TabsTrigger>
-                    <TabsTrigger value="api" disabled={isRunning}>
-                      <Database className="h-4 w-4 mr-2" />
-                      API/Database
+                    <TabsTrigger value="llm" className="relative">
+                      <Bot className="h-4 w-4 mr-2" />
+                      LLM Models
+                      {systemState.system_status === 'collecting' && (
+                        <span className="absolute -top-1 -right-1 flex h-3 w-3">
+                          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
+                          <span className="relative inline-flex rounded-full h-3 w-3 bg-blue-500"></span>
+                        </span>
+                      )}
                     </TabsTrigger>
                   </TabsList>
 
-                  <TabsContent value="llm" className="space-y-4">
+                  <TabsContent value="llm-query" className="space-y-4">
                     {/* Schedule Failure Alert */}
-                    {scheduleFailureReason && (
+                    {scheduleFailure && (
                       <Card className="border-red-200 bg-red-50">
                         <CardHeader className="pb-3">
                           <CardTitle className="flex items-center gap-2 text-red-900">
@@ -1413,24 +1271,21 @@ export default function DataCollection() {
                         </CardHeader>
                         <CardContent>
                           <p className="text-sm text-red-800 mb-3">
-                            Last scheduled sync failed:
+                            Last scheduled sync failed at {formatDate(scheduleFailure.timestamp)}:
                           </p>
                           <div className="bg-white/80 rounded p-3 text-sm text-red-700">
-                            {scheduleFailureReason === 'session_expired' && 
+                            {scheduleFailure.reason === 'session_expired' && 
                               'Session expired. Please log in again.'}
-                            {scheduleFailureReason === 'smart_scheduling' && 
+                            {scheduleFailure.reason === 'smart_scheduling' && 
                               'Data is already up to date.'}
-                            {scheduleFailureReason && !['session_expired', 'smart_scheduling'].includes(scheduleFailureReason) && 
-                              scheduleFailureReason}
+                            {scheduleFailure.reason && !['session_expired', 'smart_scheduling'].includes(scheduleFailure.reason) && 
+                              scheduleFailure.reason}
                           </div>
                           <Button
                             size="sm"
                             variant="outline"
                             className="mt-3"
-                            onClick={() => {
-                              setScheduleFailureReason(null);
-                              localStorage.removeItem('argosa_schedule_failure');
-                            }}
+                            onClick={() => setScheduleFailure(null)}
                           >
                             Dismiss
                           </Button>
@@ -1446,8 +1301,8 @@ export default function DataCollection() {
                           <Button 
                             variant="outline" 
                             size="sm"
-                            onClick={handleViewFiles}
-                            disabled={!backendConnected}
+                            onClick={viewFiles}
+                            disabled={!isBackendConnected}
                           >
                             <FolderOpen className="h-4 w-4 mr-2" />
                             View Files
@@ -1474,15 +1329,15 @@ export default function DataCollection() {
                           <h4 className="text-sm font-medium mb-3">Statistics</h4>
                           <div className="grid grid-cols-3 gap-4">
                             <div className="text-center">
-                              <div className="text-2xl font-bold">{dailyTotals.today}</div>
+                              <div className="text-2xl font-bold">{dailyStats.today}</div>
                               <div className="text-xs text-gray-500">Today</div>
                             </div>
                             <div className="text-center">
-                              <div className="text-2xl font-bold">{dailyTotals.yesterday}</div>
+                              <div className="text-2xl font-bold">{dailyStats.yesterday}</div>
                               <div className="text-xs text-gray-500">Yesterday</div>
                             </div>
                             <div className="text-center">
-                              <div className="text-2xl font-bold">{dailyTotals.dayBefore}</div>
+                              <div className="text-2xl font-bold">{dailyStats.dayBefore}</div>
                               <div className="text-xs text-gray-500">2 days ago</div>
                             </div>
                           </div>
@@ -1496,7 +1351,7 @@ export default function DataCollection() {
                         <CardTitle className="flex items-center justify-between">
                           <span>LLM Platforms</span>
                           <div className="flex items-center gap-2">
-                            {isCheckingSessions && (
+                            {checkingSession && (
                               <span className="text-sm text-gray-600 flex items-center gap-1">
                                 <RefreshCw className="h-3 w-3 animate-spin" />
                                 Checking sessions...
@@ -1505,8 +1360,8 @@ export default function DataCollection() {
                             <Button
                               size="sm"
                               variant="ghost"
-                              onClick={() => checkSessionStatus(true)}
-                              disabled={isCheckingSessions || !backendConnected}
+                              onClick={checkAllSessions}
+                              disabled={checkingSession !== null || !isBackendConnected}
                             >
                               <RefreshCw className="h-3 w-3" />
                             </Button>
@@ -1514,14 +1369,6 @@ export default function DataCollection() {
                         </CardTitle>
                       </CardHeader>
                       <CardContent className="space-y-4">
-                        {/* Session Error */}
-                        {sessionCheckError && (
-                          <Alert variant="destructive">
-                            <AlertCircle className="h-4 w-4" />
-                            <AlertDescription>{sessionCheckError}</AlertDescription>
-                          </Alert>
-                        )}
-
                         {/* Auto Session Check Notice */}
                         <Alert className="bg-blue-50 border-blue-200">
                           <CheckCircle className="h-4 w-4 text-blue-600" />
@@ -1533,122 +1380,118 @@ export default function DataCollection() {
 
                         {/* Platform List */}
                         <div className="space-y-2">
-                          {Object.entries(llmConfigs).map(([key, config]) => (
-                            <div 
-                              key={key} 
-                              className={`rounded-lg p-4 transition-all duration-300 ${
-                                isCheckingSessions && config.status === 'syncing' 
-                                  ? 'ring-2 ring-gray-400' 
-                                  : config.status === 'opening'
-                                  ? 'ring-2 ring-gray-400'
-                                  : config.status === 'syncing' && isRunning
-                                  ? 'ring-2 ring-gray-400'
-                                  : config.enabled
-                                  ? 'bg-gray-50'
-                                  : 'bg-gray-50 opacity-60'
-                              }`}
-                            >
-                              <div className="flex items-center justify-between">
-                                <div className="flex items-center gap-3">
-                                  <div 
-                                    className={`w-10 h-10 rounded-lg flex items-center justify-center font-bold text-sm transition-colors ${
-                                      config.enabled ? 'bg-gray-700 text-white' : 'bg-gray-300 text-gray-600'
-                                    }`}
-                                  >
-                                    {config.icon}
-                                  </div>
-                                  <div>
-                                    <h4 className="font-medium">{config.name}</h4>
-                                    <p className="text-xs text-gray-500">{config.url}</p>
-                                    <p className="text-xs text-gray-400 mt-1">
-                                      Today: {config.todayCount} | Yesterday: {config.yesterdayCount} | 2 days: {config.dayBeforeCount}
-                                    </p>
-                                    <div className="flex items-center gap-2 mt-1">
-                                      {isCheckingSessions && config.status === 'syncing' ? (
-                                        <span className="text-xs text-gray-600 flex items-center gap-1">
-                                          <RefreshCw className="h-3 w-3 animate-spin" />
-                                          Checking...
-                                        </span>
-                                      ) : config.status === 'opening' ? (
-                                        <span className="text-xs text-gray-600 flex items-center gap-1">
-                                          <Loader2 className="h-3 w-3 animate-spin" />
-                                          Opening login page...
-                                        </span>
-                                      ) : config.status === 'syncing' && isRunning ? (
-                                        <span className="text-xs text-gray-600 flex items-center gap-1">
-                                          <RefreshCw className="h-3 w-3 animate-spin" />
-                                          Collecting...
-                                        </span>
-                                      ) : config.sessionValid ? (
-                                        <>
-                                          <span className="text-xs text-gray-600 font-medium flex items-center gap-1">
-                                            <CheckCircle className="h-3 w-3" />
-                                            Session active
+                          {Object.values(platformConfigs).map((config) => {
+                            const { valid, status, expiresAt } = getSessionStatus(config.key);
+                            const isChecking = checkingSession === config.key;
+                            const isOpening = openingLoginPlatform === config.key;
+                            const isSyncing = systemState.sync_status?.current_platform === config.key;
+                            
+                            return (
+                              <div 
+                                key={config.key} 
+                                className={`rounded-lg p-4 transition-all duration-300 ${
+                                  isChecking || isOpening || isSyncing
+                                    ? 'ring-2 ring-gray-400' 
+                                    : config.enabled
+                                    ? 'bg-gray-50'
+                                    : 'bg-gray-50 opacity-60'
+                                }`}
+                              >
+                                <div className="flex items-center justify-between">
+                                  <div className="flex items-center gap-3">
+                                    <div 
+                                      className="w-10 h-10 rounded-lg flex items-center justify-center font-bold text-sm text-white"
+                                      style={{ backgroundColor: config.enabled ? config.color : '#9CA3AF' }}
+                                    >
+                                      {config.icon}
+                                    </div>
+                                    <div>
+                                      <h4 className="font-medium">{config.name}</h4>
+                                      <p className="text-xs text-gray-500">{config.url}</p>
+                                      <p className="text-xs text-gray-400 mt-1">
+                                        Today: {config.todayCount || 0} | 
+                                        Yesterday: {config.yesterdayCount || 0} | 
+                                        2 days: {config.dayBeforeCount || 0}
+                                      </p>
+                                      <div className="flex items-center gap-2 mt-1">
+                                        {isChecking ? (
+                                          <span className="text-xs text-gray-600 flex items-center gap-1">
+                                            <Loader2 className="h-3 w-3 animate-spin" />
+                                            Checking session...
                                           </span>
-                                          {config.sessionExpiresAt && getSessionExpiryDisplay(config.sessionExpiresAt) && (
-                                            <span className="text-xs text-gray-600 flex items-center gap-1">
-                                              <Clock className="h-3 w-3" />
-                                              {getSessionExpiryDisplay(config.sessionExpiresAt)} remaining
+                                        ) : isOpening ? (
+                                          <span className="text-xs text-gray-600 flex items-center gap-1">
+                                            <Loader2 className="h-3 w-3 animate-spin" />
+                                            Opening login page...
+                                          </span>
+                                        ) : isSyncing ? (
+                                          <span className="text-xs text-gray-600 flex items-center gap-1">
+                                            <RefreshCw className="h-3 w-3 animate-spin" />
+                                            Collecting...
+                                          </span>
+                                        ) : (
+                                          <>
+                                            <span className={`text-xs font-medium flex items-center gap-1 ${
+                                              valid ? 'text-green-600' : 'text-gray-600'
+                                            }`}>
+                                              {valid ? (
+                                                <CheckCircle className="h-3 w-3" />
+                                              ) : (
+                                                <AlertCircle className="h-3 w-3" />
+                                              )}
+                                              {status}
                                             </span>
-                                          )}
-                                        </>
-                                      ) : (
-                                        <span className="text-xs text-gray-800 font-medium flex items-center gap-1">
-                                          <AlertCircle className="h-3 w-3" />
-                                          {config.enabled ? '⚠️ Session expired - Login required' : 'Login required'}
-                                        </span>
-                                      )}
-                                      {config.lastSync && (
-                                        <span className="text-xs text-gray-400">
-                                          • Last: {formatDate(config.lastSync)}
-                                        </span>
-                                      )}
+                                            {valid && expiresAt && getSessionExpiryDisplay(expiresAt) && (
+                                              <span className="text-xs text-gray-600 flex items-center gap-1">
+                                                <Clock className="h-3 w-3" />
+                                                {getSessionExpiryDisplay(expiresAt)} remaining
+                                              </span>
+                                            )}
+                                          </>
+                                        )}
+                                        {stats?.latest_sync?.[config.key] && (
+                                          <span className="text-xs text-gray-400">
+                                            • Last: {formatDate(stats.latest_sync[config.key])}
+                                          </span>
+                                        )}
+                                      </div>
                                     </div>
                                   </div>
-                                </div>
-                                <div className="flex items-center gap-2">
-                                  {!config.sessionValid && (
+                                  <div className="flex items-center gap-2">
+                                    {!valid && config.enabled && (
+                                      <Button
+                                        variant="outline"
+                                        size="sm"
+                                        onClick={() => openLoginPage(config.key)}
+                                        disabled={isChecking || isOpening || systemState.system_status !== 'idle'}
+                                      >
+                                        <ExternalLink className="h-3 w-3 mr-1" />
+                                        Login
+                                      </Button>
+                                    )}
                                     <Button
                                       variant="outline"
                                       size="sm"
-                                      onClick={() => handleOpenLogin(key)}
-                                      disabled={isRunning || isCheckingSessions || openingLoginPlatform !== null || !backendConnected}
+                                      onClick={() => togglePlatform(config.key)}
+                                      disabled={systemState.system_status !== 'idle'}
                                     >
-                                      {openingLoginPlatform === key ? (
-                                        <>
-                                          <Loader2 className="h-3 w-3 mr-1 animate-spin" />
-                                          Opening...
-                                        </>
-                                      ) : (
-                                        <>
-                                          <ExternalLink className="h-3 w-3 mr-1" />
-                                          Login
-                                        </>
-                                      )}
+                                      {config.enabled ? 'Disable' : 'Enable'}
                                     </Button>
-                                  )}
-                                  <Button
-                                    variant="outline"
-                                    size="sm"
-                                    onClick={() => handleTogglePlatform(key)}
-                                    disabled={isRunning || isCheckingSessions}
-                                  >
-                                    {config.enabled ? 'Disable' : 'Enable'}
-                                  </Button>
+                                  </div>
                                 </div>
                               </div>
-                            </div>
-                          ))}
+                            );
+                          })}
                         </div>
                         
                         <div className="flex gap-2 pt-2">
                           <Button 
                             className="flex-1" 
-                            onClick={isRunning ? handleCancelSync : handleSyncNow}
-                            disabled={(!isRunning && Object.values(llmConfigs).filter(c => c.enabled).length === 0) || isCheckingSessions || !backendConnected}
-                            variant={isRunning ? "destructive" : "default"}
+                            onClick={systemState.system_status === 'collecting' ? cancelSync : startSync}
+                            disabled={!canSync || checkingSession !== null}
+                            variant={systemState.system_status === 'collecting' ? "destructive" : "default"}
                           >
-                            {isRunning ? (
+                            {systemState.system_status === 'collecting' ? (
                               <>
                                 <X className="h-4 w-4 mr-2" />
                                 Cancel Sync
@@ -1663,9 +1506,11 @@ export default function DataCollection() {
                           <Button 
                             variant="outline"
                             onClick={() => setShowAdvanced(!showAdvanced)}
-                            disabled={isRunning || isCheckingSessions}
+                            disabled={systemState.system_status !== 'idle'}
                           >
-                            <ChevronDown className={`h-4 w-4 mr-2 transition-transform ${showAdvanced ? 'rotate-180' : ''}`} />
+                            <ChevronDown className={`h-4 w-4 mr-2 transition-transform ${
+                              showAdvanced ? 'rotate-180' : ''
+                            }`} />
                             Advanced
                           </Button>
                         </div>
@@ -1674,7 +1519,6 @@ export default function DataCollection() {
                         {showAdvanced && (
                           <Card className="mt-4">
                             <CardContent className="pt-6 space-y-4">
-                              {/* Firefox Visibility Toggle */}
                               <div className="flex items-center justify-between p-4 bg-gray-50 rounded-lg">
                                 <div className="space-y-0.5">
                                   <Label className="text-base">Firefox Window Visibility</Label>
@@ -1690,7 +1534,9 @@ export default function DataCollection() {
                                   )}
                                   <Switch
                                     checked={syncSettings.firefoxVisible}
-                                    onCheckedChange={(checked) => setSyncSettings(prev => ({ ...prev, firefoxVisible: checked }))}
+                                    onCheckedChange={(checked) => 
+                                      setSyncSettings(prev => ({ ...prev, firefoxVisible: checked }))
+                                    }
                                   />
                                 </div>
                               </div>
@@ -1702,14 +1548,18 @@ export default function DataCollection() {
                                     <Input 
                                       type="time" 
                                       value={syncSettings.startTime}
-                                      onChange={(e) => setSyncSettings(prev => ({ ...prev, startTime: e.target.value }))}
+                                      onChange={(e) => 
+                                        setSyncSettings(prev => ({ ...prev, startTime: e.target.value }))
+                                      }
                                     />
                                   </div>
                                   <div>
                                     <select 
                                       className="w-full px-3 py-2 border border-gray-200 rounded-md"
                                       value={syncSettings.interval}
-                                      onChange={(e) => setSyncSettings(prev => ({ ...prev, interval: e.target.value }))}
+                                      onChange={(e) => 
+                                        setSyncSettings(prev => ({ ...prev, interval: e.target.value }))
+                                      }
                                     >
                                       <option value="daily">Daily (1 day)</option>
                                       <option value="3days">Every 3 days</option>
@@ -1730,7 +1580,12 @@ export default function DataCollection() {
                                 <Input 
                                   type="number" 
                                   value={syncSettings.maxConversations}
-                                  onChange={(e) => setSyncSettings(prev => ({ ...prev, maxConversations: parseInt(e.target.value) || 20 }))}
+                                  onChange={(e) => 
+                                    setSyncSettings(prev => ({ 
+                                      ...prev, 
+                                      maxConversations: parseInt(e.target.value) || 20 
+                                    }))
+                                  }
                                   className="mt-1" 
                                 />
                               </div>
@@ -1740,9 +1595,31 @@ export default function DataCollection() {
                                 <Input 
                                   type="number" 
                                   value={syncSettings.randomDelay}
-                                  onChange={(e) => setSyncSettings(prev => ({ ...prev, randomDelay: parseInt(e.target.value) || 5 }))}
+                                  onChange={(e) => 
+                                    setSyncSettings(prev => ({ 
+                                      ...prev, 
+                                      randomDelay: parseInt(e.target.value) || 5 
+                                    }))
+                                  }
                                   min="2" 
                                   max="30" 
+                                  className="mt-1" 
+                                />
+                              </div>
+                              
+                              <div>
+                                <label className="text-sm font-medium">Data Retention (days)</label>
+                                <Input 
+                                  type="number" 
+                                  value={syncSettings.dataRetention}
+                                  onChange={(e) => 
+                                    setSyncSettings(prev => ({ 
+                                      ...prev, 
+                                      dataRetention: parseInt(e.target.value) || 30 
+                                    }))
+                                  }
+                                  min="1" 
+                                  max="365" 
                                   className="mt-1" 
                                 />
                               </div>
@@ -1756,7 +1633,6 @@ export default function DataCollection() {
                                     className="text-blue-600 underline text-sm mt-2"
                                     onClick={() => {
                                       if (window.confirm('Reset all settings to default?\n\nThis will clear all saved configurations.')) {
-                                        localStorage.removeItem('llmConfigs');
                                         localStorage.removeItem('llmEnabledStates');
                                         localStorage.removeItem('syncSettings');
                                         window.location.reload();
@@ -1774,8 +1650,8 @@ export default function DataCollection() {
                         <Button 
                           variant="destructive" 
                           className="w-full"
-                          onClick={handleCleanData}
-                          disabled={isRunning || isCheckingSessions || !backendConnected}
+                          onClick={cleanData}
+                          disabled={systemState.system_status !== 'idle' || !isBackendConnected}
                         >
                           <Trash2 className="h-4 w-4 mr-2" />
                           Clean All Data
@@ -1785,23 +1661,632 @@ export default function DataCollection() {
                   </TabsContent>
 
                   <TabsContent value="web" className="space-y-4">
+                    {/* Search Interface */}
                     <Card>
                       <CardHeader>
-                        <CardTitle>Web Crawler</CardTitle>
+                        <CardTitle>Web Search & Crawling</CardTitle>
+                      </CardHeader>
+                      <CardContent className="space-y-4">
+                        <div className="space-y-3">
+                          <div>
+                            <Label>Search Query</Label>
+                            <div className="flex gap-2 mt-1">
+                              <Input
+                                placeholder="Enter your search query..."
+                                value={webSearchQuery}
+                                onChange={(e) => setWebSearchQuery(e.target.value)}
+                                onKeyPress={(e) => {
+                                  if (e.key === 'Enter' && webSearchQuery.trim()) {
+                                    executeWebSearch();
+                                  }
+                                }}
+                                disabled={isSearching}
+                              />
+                              <Button
+                                onClick={executeWebSearch}
+                                disabled={!webSearchQuery.trim() || isSearching}
+                              >
+                                {isSearching ? (
+                                  <>
+                                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                                    Searching...
+                                  </>
+                                ) : (
+                                  <>
+                                    <Search className="h-4 w-4 mr-2" />
+                                    Search
+                                  </>
+                                )}
+                              </Button>
+                            </div>
+                          </div>
+
+                          <div>
+                            <Label>Search Objective (Optional)</Label>
+                            <Input
+                              placeholder="What are you looking for specifically?"
+                              value={searchObjective}
+                              onChange={(e) => setSearchObjective(e.target.value)}
+                              disabled={isSearching}
+                              className="mt-1"
+                            />
+                          </div>
+
+                          <div>
+                            <Label>Search Sources</Label>
+                            <div className="grid grid-cols-2 gap-2 mt-2">
+                              <label className="flex items-center space-x-2">
+                                <input
+                                  type="checkbox"
+                                  checked={searchSources.apis}
+                                  onChange={(e) => setSearchSources(prev => ({ ...prev, apis: e.target.checked }))}
+                                  disabled={isSearching}
+                                  className="rounded"
+                                />
+                                <span className="text-sm">APIs (Google, News)</span>
+                              </label>
+                              <label className="flex items-center space-x-2">
+                                <input
+                                  type="checkbox"
+                                  checked={searchSources.websites}
+                                  onChange={(e) => setSearchSources(prev => ({ ...prev, websites: e.target.checked }))}
+                                  disabled={isSearching}
+                                  className="rounded"
+                                />
+                                <span className="text-sm">Direct Website Crawl</span>
+                              </label>
+                              <label className="flex items-center space-x-2">
+                                <input
+                                  type="checkbox"
+                                  checked={searchSources.focused}
+                                  onChange={(e) => setSearchSources(prev => ({ ...prev, focused: e.target.checked }))}
+                                  disabled={isSearching}
+                                  className="rounded"
+                                />
+                                <span className="text-sm">Focused Sites</span>
+                              </label>
+                              <label className="flex items-center space-x-2">
+                                <input
+                                  type="checkbox"
+                                  checked={searchSources.ai_enhanced}
+                                  onChange={(e) => setSearchSources(prev => ({ ...prev, ai_enhanced: e.target.checked }))}
+                                  disabled={isSearching}
+                                  className="rounded"
+                                />
+                                <span className="text-sm">AI Enhancement</span>
+                              </label>
+                            </div>
+                          </div>
+                        </div>
+                      </CardContent>
+                    </Card>
+
+                    {/* API Quota Status */}
+                    <Card>
+                      <CardHeader>
+                        <CardTitle className="flex items-center justify-between">
+                          <span>API Quota Status</span>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={loadApiQuota}
+                            disabled={!isBackendConnected}
+                          >
+                            <RefreshCw className="h-4 w-4" />
+                          </Button>
+                        </CardTitle>
                       </CardHeader>
                       <CardContent>
-                        <p className="text-sm text-gray-500">Coming soon...</p>
+                        <div className="space-y-3">
+                          {Object.entries(apiQuota).map(([api, quota]) => (
+                            <div key={api} className="space-y-1">
+                              <div className="flex items-center justify-between text-sm">
+                                <span className="font-medium capitalize">{api}</span>
+                                <span className="text-xs text-gray-500">
+                                  {quota.used} / {quota.limit} used
+                                </span>
+                              </div>
+                              <Progress value={quota.percentage_used} className="h-2" />
+                              <p className="text-xs text-gray-500">
+                                {quota.remaining} requests remaining
+                              </p>
+                            </div>
+                          ))}
+                          {Object.keys(apiQuota).length === 0 && (
+                            <p className="text-sm text-gray-500 text-center py-4">
+                              No API quota data available
+                            </p>
+                          )}
+                        </div>
+                      </CardContent>
+                    </Card>
+
+                    {/* Search Results */}
+                    {searchResults && (
+                      <Card>
+                        <CardHeader>
+                          <CardTitle className="flex items-center justify-between">
+                            <span>Search Results</span>
+                            <Badge variant={searchResults.quality_score >= 0.7 ? "default" : "secondary"}>
+                              Quality: {(searchResults.quality_score * 100).toFixed(0)}%
+                            </Badge>
+                          </CardTitle>
+                        </CardHeader>
+                        <CardContent>
+                          <div className="space-y-4">
+                            {/* Improved Query Suggestion */}
+                            {searchResults.improved_query && searchResults.improved_query !== webSearchQuery && (
+                              <Alert className="bg-blue-50 border-blue-200">
+                                <AlertCircle className="h-4 w-4 text-blue-600" />
+                                <AlertDescription className="text-blue-800">
+                                  <strong>Suggested improved query:</strong> "{searchResults.improved_query}"
+                                  <Button
+                                    size="sm"
+                                    variant="link"
+                                    className="ml-2 p-0 h-auto"
+                                    onClick={() => {
+                                      setWebSearchQuery(searchResults.improved_query);
+                                      executeWebSearch();
+                                    }}
+                                  >
+                                    Try it
+                                  </Button>
+                                </AlertDescription>
+                              </Alert>
+                            )}
+
+                            {/* Results by Source */}
+                            {Object.entries(searchResults.results).map(([source, data]: [string, any]) => (
+                              <div key={source} className="border rounded-lg p-4">
+                                <h4 className="font-medium mb-2 flex items-center gap-2">
+                                  <Globe className="h-4 w-4 text-gray-500" />
+                                  {source}
+                                  {data.error && (
+                                    <Badge variant="destructive" className="ml-auto">Error</Badge>
+                                  )}
+                                </h4>
+                                
+                                {data.error ? (
+                                  <p className="text-sm text-red-600">{data.error}</p>
+                                ) : (
+                                  <div className="space-y-2">
+                                    {data.analysis && (
+                                      <div className="text-sm space-y-1">
+                                        {Object.entries(data.analysis).map(([key, value]) => (
+                                          <div key={key}>
+                                            <span className="font-medium">{key}: </span>
+                                            <span className="text-gray-600">
+                                              {typeof value === 'object' ? JSON.stringify(value) : String(value)}
+                                            </span>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    )}
+                                    
+                                    {data.results && Array.isArray(data.results) && (
+                                      <div className="mt-2 space-y-2">
+                                        {data.results.slice(0, 3).map((result: any, idx: number) => (
+                                          <div key={idx} className="p-2 bg-gray-50 rounded text-sm">
+                                            <a 
+                                              href={result.link || result.url} 
+                                              target="_blank" 
+                                              rel="noopener noreferrer"
+                                              className="text-blue-600 hover:underline font-medium"
+                                            >
+                                              {result.title}
+                                            </a>
+                                            <p className="text-gray-600 text-xs mt-1">
+                                              {result.snippet || result.description}
+                                            </p>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+                            ))}
+
+                            {/* Metadata */}
+                            <div className="text-xs text-gray-500 pt-2 border-t">
+                              <div className="flex flex-wrap gap-4">
+                                <span>Search ID: {searchResults.metadata?.search_id}</span>
+                                <span>Iterations: {searchResults.metadata?.iterations}</span>
+                                <span>APIs used: {searchResults.metadata?.apis_used?.join(', ')}</span>
+                              </div>
+                            </div>
+                          </div>
+                        </CardContent>
+                      </Card>
+                    )}
+
+                    {/* Site Statistics */}
+                    <Card>
+                      <CardHeader>
+                        <CardTitle className="flex items-center justify-between">
+                          <span>Site Statistics</span>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={loadSiteStats}
+                            disabled={!isBackendConnected}
+                          >
+                            <RefreshCw className="h-4 w-4" />
+                          </Button>
+                        </CardTitle>
+                      </CardHeader>
+                      <CardContent>
+                        <div className="space-y-3">
+                          {Object.entries(siteStats).map(([domain, stats]) => (
+                            <div key={domain} className="border rounded-lg p-3">
+                              <div className="flex items-center justify-between mb-2">
+                                <h5 className="font-medium text-sm">{domain}</h5>
+                                {stats.requires_login && (
+                                  <Badge variant="secondary" className="text-xs">
+                                    Login Required
+                                  </Badge>
+                                )}
+                              </div>
+                              <div className="grid grid-cols-2 gap-2 text-xs">
+                                <div>
+                                  <span className="text-gray-500">Success Rate:</span>
+                                  <span className="ml-1 font-medium">
+                                    {(stats.success_rate * 100).toFixed(0)}%
+                                  </span>
+                                </div>
+                                <div>
+                                  <span className="text-gray-500">Relevance:</span>
+                                  <span className="ml-1 font-medium">
+                                    {(stats.avg_relevance * 100).toFixed(0)}%
+                                  </span>
+                                </div>
+                                <div>
+                                  <span className="text-gray-500">Visits:</span>
+                                  <span className="ml-1 font-medium">{stats.visits}</span>
+                                </div>
+                                <div>
+                                  <span className="text-gray-500">Valuable Paths:</span>
+                                  <span className="ml-1 font-medium">{stats.valuable_paths.length}</span>
+                                </div>
+                              </div>
+                              {stats.valuable_paths.length > 0 && (
+                                <div className="mt-2 pt-2 border-t">
+                                  <p className="text-xs text-gray-500">Top paths:</p>
+                                  <div className="text-xs mt-1">
+                                    {stats.valuable_paths.slice(0, 3).join(', ')}
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          ))}
+                          {Object.keys(siteStats).length === 0 && (
+                            <p className="text-sm text-gray-500 text-center py-4">
+                              No site statistics available yet
+                            </p>
+                          )}
+                        </div>
                       </CardContent>
                     </Card>
                   </TabsContent>
 
-                  <TabsContent value="api" className="space-y-4">
+                  <TabsContent value="llm" className="space-y-4">
+                    {/* Query Interface */}
                     <Card>
                       <CardHeader>
-                        <CardTitle>API/Database</CardTitle>
+                        <CardTitle>LLM Query Service</CardTitle>
+                      </CardHeader>
+                      <CardContent className="space-y-4">
+                        <div className="space-y-3">
+                          <div>
+                            <Label>Query</Label>
+                            <textarea
+                              className="w-full p-2 border rounded-md resize-none"
+                              rows={4}
+                              placeholder="Enter your query here..."
+                              value={llmQuery}
+                              onChange={(e) => setLlmQuery(e.target.value)}
+                              disabled={isQuerying}
+                            />
+                          </div>
+
+                          <div className="grid grid-cols-2 gap-3">
+                            <div>
+                              <Label>Query Type</Label>
+                              <select
+                                className="w-full p-2 border rounded-md"
+                                value={queryType}
+                                onChange={(e) => setQueryType(e.target.value)}
+                                disabled={isQuerying}
+                              >
+                                <option value="question">Question</option>
+                                <option value="analysis">Analysis</option>
+                                <option value="extraction">Extraction</option>
+                                <option value="summary">Summary</option>
+                                <option value="comparison">Comparison</option>
+                                <option value="prediction">Prediction</option>
+                              </select>
+                            </div>
+
+                            <div>
+                              <Label>Provider</Label>
+                              <select
+                                className="w-full p-2 border rounded-md"
+                                value={llmProvider}
+                                onChange={(e) => setLlmProvider(e.target.value)}
+                                disabled={isQuerying}
+                              >
+                                <option value="lm_studio">LM Studio (Local)</option>
+                                <option value="openai">OpenAI</option>
+                                <option value="anthropic">Anthropic</option>
+                              </select>
+                            </div>
+                          </div>
+
+                          <div className="grid grid-cols-2 gap-3">
+                            <div>
+                              <Label className="flex items-center gap-2">
+                                Temperature
+                                <span className="text-xs text-gray-500">{temperature}</span>
+                              </Label>
+                              <input
+                                type="range"
+                                min="0"
+                                max="1"
+                                step="0.1"
+                                value={temperature}
+                                onChange={(e) => setTemperature(parseFloat(e.target.value))}
+                                className="w-full"
+                                disabled={isQuerying}
+                              />
+                            </div>
+
+                            <div>
+                              <Label>Max Tokens</Label>
+                              <Input
+                                type="number"
+                                value={maxTokens}
+                                onChange={(e) => setMaxTokens(parseInt(e.target.value) || 2000)}
+                                min="100"
+                                max="4000"
+                                disabled={isQuerying}
+                              />
+                            </div>
+                          </div>
+
+                          <Button
+                            onClick={executeLLMQuery}
+                            disabled={!llmQuery.trim() || isQuerying}
+                            className="w-full"
+                          >
+                            {isQuerying ? (
+                              <>
+                                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                                Processing...
+                              </>
+                            ) : (
+                              <>
+                                <MessageSquare className="h-4 w-4 mr-2" />
+                                Send Query
+                              </>
+                            )}
+                          </Button>
+                        </div>
+
+                        {/* Query Response */}
+                        {llmResponse && (
+                          <div className="mt-4 p-4 bg-gray-50 rounded-lg">
+                            <div className="flex items-center justify-between mb-2">
+                              <h4 className="font-medium">Response</h4>
+                              <div className="flex items-center gap-2">
+                                <Badge variant="secondary">
+                                  {llmResponse.model}
+                                </Badge>
+                                <span className="text-xs text-gray-500">
+                                  {llmResponse.processing_time.toFixed(2)}s
+                                </span>
+                              </div>
+                            </div>
+                            <div className="text-sm">
+                              {typeof llmResponse.response === 'string' ? (
+                                <p className="whitespace-pre-wrap">{llmResponse.response}</p>
+                              ) : (
+                                <pre className="bg-white p-2 rounded overflow-x-auto">
+                                  {JSON.stringify(llmResponse.response, null, 2)}
+                                </pre>
+                              )}
+                            </div>
+                            {llmResponse.token_usage && (
+                              <div className="mt-2 text-xs text-gray-500">
+                                Tokens: {llmResponse.token_usage.prompt_tokens} prompt + 
+                                {llmResponse.token_usage.completion_tokens} completion = 
+                                {llmResponse.token_usage.total_tokens} total
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </CardContent>
+                    </Card>
+
+                    {/* Data Analysis */}
+                    <Card>
+                      <CardHeader>
+                        <CardTitle>Data Analysis</CardTitle>
+                      </CardHeader>
+                      <CardContent className="space-y-4">
+                        <div className="space-y-3">
+                          <div>
+                            <Label>Analysis Type</Label>
+                            <select
+                              className="w-full p-2 border rounded-md"
+                              value={analysisType}
+                              onChange={(e) => setAnalysisType(e.target.value)}
+                            >
+                              <option value="pattern">Pattern Analysis</option>
+                              <option value="statistical">Statistical Analysis</option>
+                              <option value="comparative">Comparative Analysis</option>
+                              <option value="predictive">Predictive Analysis</option>
+                              <option value="diagnostic">Diagnostic Analysis</option>
+                              <option value="prescriptive">Prescriptive Analysis</option>
+                            </select>
+                          </div>
+
+                          <div>
+                            <Label>Analysis Questions (one per line)</Label>
+                            <textarea
+                              className="w-full p-2 border rounded-md resize-none"
+                              rows={3}
+                              placeholder="What patterns do you see?&#10;What are the main trends?"
+                              value={analysisQuestions}
+                              onChange={(e) => setAnalysisQuestions(e.target.value)}
+                            />
+                          </div>
+
+                          <div className="flex gap-2">
+                            <Button
+                              onClick={analyzeConversations}
+                              disabled={!backendConnected || isAnalyzing}
+                              className="flex-1"
+                            >
+                              {isAnalyzing ? (
+                                <>
+                                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                                  Analyzing...
+                                </>
+                              ) : (
+                                <>
+                                  <TrendingUp className="h-4 w-4 mr-2" />
+                                  Analyze Conversations
+                                </>
+                              )}
+                            </Button>
+                            <Button
+                              onClick={comparePlatforms}
+                              disabled={!backendConnected || isAnalyzing}
+                              variant="outline"
+                            >
+                              Compare Platforms
+                            </Button>
+                          </div>
+                        </div>
+
+                        {/* Analysis Results */}
+                        {analysisResults && (
+                          <div className="mt-4 p-4 bg-blue-50 rounded-lg">
+                            <h4 className="font-medium mb-2">Analysis Results</h4>
+                            <div className="text-sm space-y-2">
+                              {analysisResults.analysis_type && (
+                                <div>
+                                  <span className="font-medium">Type:</span> {analysisResults.analysis_type}
+                                </div>
+                              )}
+                              {analysisResults.conversations_analyzed && (
+                                <div>
+                                  <span className="font-medium">Conversations analyzed:</span> {analysisResults.conversations_analyzed}
+                                </div>
+                              )}
+                              <div className="mt-2">
+                                {typeof analysisResults.results === 'string' ? (
+                                  <p className="whitespace-pre-wrap">{analysisResults.results}</p>
+                                ) : (
+                                  <pre className="bg-white p-2 rounded overflow-x-auto">
+                                    {JSON.stringify(analysisResults.results, null, 2)}
+                                  </pre>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        )}
+                      </CardContent>
+                    </Card>
+
+                    {/* Provider Statistics */}
+                    <Card>
+                      <CardHeader>
+                        <CardTitle className="flex items-center justify-between">
+                          <span>Provider Statistics</span>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={loadProviderStats}
+                            disabled={!isBackendConnected}
+                          >
+                            <RefreshCw className="h-4 w-4" />
+                          </Button>
+                        </CardTitle>
                       </CardHeader>
                       <CardContent>
-                        <p className="text-sm text-gray-500">Coming soon...</p>
+                        <div className="space-y-3">
+                          {Object.entries(providerStats).map(([provider, stats]) => (
+                            <div key={provider} className="border rounded-lg p-3">
+                              <div className="flex items-center justify-between mb-2">
+                                <h5 className="font-medium text-sm capitalize">{provider}</h5>
+                                <Badge variant={stats.success_rate > 90 ? "default" : "secondary"}>
+                                  {stats.success_rate.toFixed(0)}% success
+                                </Badge>
+                              </div>
+                              <div className="grid grid-cols-3 gap-2 text-xs">
+                                <div>
+                                  <span className="text-gray-500">Total:</span>
+                                  <span className="ml-1 font-medium">{stats.total_queries}</span>
+                                </div>
+                                <div>
+                                  <span className="text-gray-500">Success:</span>
+                                  <span className="ml-1 font-medium text-green-600">{stats.successful_queries}</span>
+                                </div>
+                                <div>
+                                  <span className="text-gray-500">Errors:</span>
+                                  <span className="ml-1 font-medium text-red-600">{stats.error_count}</span>
+                                </div>
+                              </div>
+                            </div>
+                          ))}
+                          {Object.keys(providerStats).length === 0 && (
+                            <p className="text-sm text-gray-500 text-center py-4">
+                              No provider statistics available yet
+                            </p>
+                          )}
+                        </div>
+                      </CardContent>
+                    </Card>
+
+                    {/* Query History */}
+                    <Card>
+                      <CardHeader>
+                        <CardTitle className="flex items-center justify-between">
+                          <span>Query History</span>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={loadQueryHistory}
+                            disabled={!isBackendConnected}
+                          >
+                            <RefreshCw className="h-4 w-4" />
+                          </Button>
+                        </CardTitle>
+                      </CardHeader>
+                      <CardContent>
+                        <div className="space-y-2 max-h-64 overflow-y-auto">
+                          {queryHistory.map((entry, idx) => (
+                            <div key={idx} className="text-sm p-2 bg-gray-50 rounded">
+                              <div className="flex items-center justify-between">
+                                <span className="font-medium">{entry.query}</span>
+                                <Badge variant="outline" className="text-xs">
+                                  {entry.query_type}
+                                </Badge>
+                              </div>
+                              <div className="flex items-center gap-4 mt-1 text-xs text-gray-500">
+                                <span>{formatDate(entry.timestamp)}</span>
+                                <span>{entry.provider}</span>
+                                <span>{entry.processing_time.toFixed(2)}s</span>
+                              </div>
+                            </div>
+                          ))}
+                          {queryHistory.length === 0 && (
+                            <p className="text-sm text-gray-500 text-center py-4">
+                              No query history available
+                            </p>
+                          )}
+                        </div>
                       </CardContent>
                     </Card>
                   </TabsContent>
@@ -1815,37 +2300,38 @@ export default function DataCollection() {
                 <div className="space-y-4">
                   <StatCard
                     title="Total Conversations"
-                    value={Object.values(llmConfigs).reduce((sum, c) => sum + (c.todayCount || 0) + (c.yesterdayCount || 0) + (c.dayBeforeCount || 0), 0).toString()}
-                    change={`+${dailyTotals.today}`}
+                    value={systemState.total_conversations.toString()}
+                    change={`+${dailyStats.today}`}
                     trend="up"
                   />
                   <StatCard
                     title="Active Platforms"
-                    value={Object.values(llmConfigs).filter(c => c.enabled).length.toString()}
-                    change="+0"
+                    value={Object.values(platformConfigs).filter(c => c.enabled).length.toString()}
+                    change={systemState.schedule_enabled ? "Scheduled" : "Manual"}
                     trend="up"
                   />
                   <StatCard
                     title="Today's Sync"
-                    value={dailyTotals.today.toString()}
-                    change={dailyTotals.today > dailyTotals.yesterday ? `+${dailyTotals.today - dailyTotals.yesterday}` : `${dailyTotals.today - dailyTotals.yesterday}`}
-                    trend={dailyTotals.today >= dailyTotals.yesterday ? "up" : "down"}
+                    value={dailyStats.today.toString()}
+                    change={dailyStats.today > dailyStats.yesterday ? `+${dailyStats.today - dailyStats.yesterday}` : `${dailyStats.today - dailyStats.yesterday}`}
+                    trend={dailyStats.today >= dailyStats.yesterday ? "up" : "down"}
                   />
                 </div>
               </Section>
 
               <Section title="Active Sources">
                 <div className="space-y-3">
-                  {Object.entries(llmConfigs)
-                    .filter(([_, config]) => config.enabled)
-                    .map(([key, config]) => (
+                  {Object.values(platformConfigs)
+                    .filter(config => config.enabled)
+                    .map(config => (
                       <LLMStats
-                        key={key}
+                        key={config.key}
                         platform={config.name}
                         config={config}
+                        sessionInfo={systemState.sessions[config.key]}
                       />
                     ))}
-                  {Object.values(llmConfigs).filter(c => c.enabled).length === 0 && (
+                  {Object.values(platformConfigs).filter(c => c.enabled).length === 0 && (
                     <Card>
                       <CardContent className="p-4 text-center text-gray-500">
                         No platforms enabled
@@ -1859,26 +2345,69 @@ export default function DataCollection() {
                 <Card>
                   <CardContent className="p-4">
                     <div className="space-y-3">
-                      {Object.entries(llmConfigs)
-                        .filter(([_, config]) => config.lastSync)
-                        .sort(([, a], [, b]) => new Date(b.lastSync!).getTime() - new Date(a.lastSync!).getTime())
+                      {stats?.latest_sync && Object.entries(stats.latest_sync)
+                        .filter(([platform]) => platformConfigs[platform])
+                        .sort(([, a], [, b]) => new Date(b as string).getTime() - new Date(a as string).getTime())
                         .slice(0, 5)
-                        .map(([key, config]) => (
+                        .map(([platform, syncTime]) => (
                           <ActivityItem
-                            key={key}
-                            time={formatDate(config.lastSync)}
+                            key={platform}
+                            time={formatDate(syncTime as string)}
                             action="Sync completed"
-                            source={config.name}
-                            count={`${config.todayCount || 0} conversations`}
+                            source={platformConfigs[platform].name}
+                            count={`${platformConfigs[platform].todayCount || 0} conversations`}
                             type="success"
                           />
                         ))}
-                      {Object.values(llmConfigs).filter(c => c.lastSync).length === 0 && (
+                      {(!stats?.latest_sync || Object.keys(stats.latest_sync).length === 0) && (
                         <div className="text-center text-gray-500 py-4">
                           <Clock className="h-8 w-8 mx-auto mb-2 text-gray-300" />
                           <p className="text-sm">No activity yet</p>
                         </div>
                       )}
+                    </div>
+                  </CardContent>
+                </Card>
+              </Section>
+
+              <Section title="System Status">
+                <Card>
+                  <CardHeader>
+                    <CardTitle>System Status</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="space-y-3">
+                      <div className="flex items-center justify-between text-sm">
+                        <span className="text-gray-600">Firefox</span>
+                        <Badge variant={
+                          systemState.firefox_status === 'ready' ? 'default' : 'secondary'
+                        }>
+                          {systemState.firefox_status}
+                        </Badge>
+                      </div>
+                      <div className="flex items-center justify-between text-sm">
+                        <span className="text-gray-600">Extension</span>
+                        <Badge variant={
+                          systemState.extension_status === 'connected' ? 'default' : 'secondary'
+                        }>
+                          {systemState.extension_status}
+                        </Badge>
+                      </div>
+                      <div className="flex items-center justify-between text-sm">
+                        <span className="text-gray-600">System</span>
+                        <Badge variant={
+                          systemState.system_status === 'idle' ? 'default' : 
+                          systemState.system_status === 'error' ? 'destructive' : 'secondary'
+                        }>
+                          {systemState.system_status}
+                        </Badge>
+                      </div>
+                      <div className="flex items-center justify-between text-sm">
+                        <span className="text-gray-600">Data Sources</span>
+                        <Badge variant="secondary">
+                          {systemState.data_sources_active} active
+                        </Badge>
+                      </div>
                     </div>
                   </CardContent>
                 </Card>
@@ -1917,11 +2446,12 @@ export default function DataCollection() {
                   <div key={platform} className="border rounded-lg p-4">
                     <h4 className="font-medium mb-2 flex items-center gap-2">
                       <div 
-                        className="w-6 h-6 rounded text-white bg-gray-700 flex items-center justify-center text-xs font-bold"
+                        className="w-6 h-6 rounded text-white flex items-center justify-center text-xs font-bold"
+                        style={{ backgroundColor: PLATFORMS[platform]?.color || '#9CA3AF' }}
                       >
-                        {llmConfigs[platform]?.icon || '?'}
+                        {PLATFORMS[platform]?.icon || '?'}
                       </div>
-                      {llmConfigs[platform]?.name || platform}
+                      {PLATFORMS[platform]?.name || platform}
                       <Badge variant="secondary">{files.length} files</Badge>
                     </h4>
                     {files.length === 0 ? (
@@ -1977,19 +2507,20 @@ function Section({ title, children }: SectionProps) {
   );
 }
 
-function LLMStats({ platform, config }: LLMStatsProps) {
+function LLMStats({ platform, config, sessionInfo }: LLMStatsProps) {
   const getStatusIcon = () => {
-    if (config.status === 'syncing') return <RefreshCw className="h-3 w-3 text-gray-500 animate-spin" />;
-    if (config.sessionValid) return <CheckCircle className="h-3 w-3 text-gray-500" />;
-    return <AlertCircle className="h-3 w-3 text-gray-500" />;
+    if (sessionInfo?.valid) return <CheckCircle className="h-3 w-3 text-green-500" />;
+    return <AlertCircle className="h-3 w-3 text-gray-400" />;
   };
   
   const getSessionStatus = () => {
-    if (config.sessionValid && config.sessionExpiresAt) {
-      const expiry = getSessionExpiryDisplay(config.sessionExpiresAt);
+    if (!sessionInfo) return 'Unknown';
+    
+    if (sessionInfo.valid && sessionInfo.expires_at) {
+      const expiry = getSessionExpiryDisplay(sessionInfo.expires_at);
       return expiry ? `Active (${expiry})` : 'Active';
     }
-    return 'Expired';
+    return sessionInfo.valid ? 'Active' : 'Expired';
   };
   
   return (
@@ -2025,15 +2556,13 @@ function LLMStats({ platform, config }: LLMStatsProps) {
 }
 
 function StatCard({ title, value, change, trend }: StatCardProps) {
-  const isPositive = trend === "up";
-  
   return (
     <Card>
       <CardContent className="p-4">
         <p className="text-sm text-gray-600">{title}</p>
         <div className="flex items-baseline justify-between mt-1">
           <span className="text-2xl font-bold">{value}</span>
-          <span className={`text-sm text-gray-600`}>
+          <span className={`text-sm ${trend === 'up' ? 'text-green-600' : 'text-red-600'}`}>
             {change}
           </span>
         </div>
@@ -2045,8 +2574,8 @@ function StatCard({ title, value, change, trend }: StatCardProps) {
 function ActivityItem({ time, action, source, count, type = "normal" }: ActivityItemProps) {
   const getIcon = () => {
     switch (type) {
-      case 'success': return <CheckCircle className="h-3 w-3 text-gray-600" />;
-      case 'error': return <AlertCircle className="h-3 w-3 text-gray-600" />;
+      case 'success': return <CheckCircle className="h-3 w-3 text-green-600" />;
+      case 'error': return <AlertCircle className="h-3 w-3 text-red-600" />;
       default: return <Clock className="h-3 w-3 text-gray-400" />;
     }
   };
