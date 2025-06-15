@@ -41,12 +41,7 @@ except ImportError as e:
 
 # Import shared services (개선사항)
 try:
-    from .shared import (
-        cache_manager,
-        llm_tracker,
-        command_queue,
-        metrics
-    )
+    from .shared import cache_manager, llm_tracker, command_queue, metrics
 except ImportError as e:
     logger.warning(f"[Argosa] Shared services not available (using legacy mode): {e}")
     cache_manager = None

@@ -857,7 +857,7 @@ async def complete_command_endpoint(command_id: str, result: Dict[str, Any]):
 
 # ======================== Native Message Handler ========================
 
-@router.post("/api/argosa/native/handle")
+@router.post("/native/message")
 async def handle_native_message(message: Dict[str, Any]):
     """Native Messaging Bridge로부터 메시지 처리"""
     
