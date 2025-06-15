@@ -1,7 +1,7 @@
 # backend/routers/argosa/data_collection.py - Argosa 핵심 데이터 수집 시스템
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect, HTTPException, BackgroundTasks
-from typing import Dict, List, Optional, Any, Set, Tuple
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, HTTPException
+from typing import Dict, List, Optional, Any, Set
 import asyncio
 import json
 from datetime import datetime, timedelta
@@ -17,7 +17,7 @@ import socket
 import time
 import psutil
 import threading
-from collections import defaultdict
+from enum import Enum
 
 # 설정
 logger = logging.getLogger(__name__)
@@ -34,11 +34,18 @@ STATE_FILE_PATH = DATA_PATH / "system_state.json"
 COMMAND_QUEUE_PATH = DATA_PATH / "command_queue.json"
 SESSION_CACHE_PATH = DATA_PATH / "session_cache.json"
 EXTENSION_HEARTBEAT_PATH = DATA_PATH / "extension_heartbeat.json"
-SCHEDULE_CONFIG_PATH = DATA_PATH / "schedule_config.json"
-SCHEDULE_FAILURE_PATH = DATA_PATH / "schedule_failure.json"
-SYNC_CONFIG_PATH = DATA_PATH / "sync_config.json"
 
 # ======================== Data Models ========================
+
+class MessageType(Enum):
+    """Native Messaging 메시지 타입"""
+    INIT = "init"
+    HEARTBEAT = "heartbeat"
+    SESSION_UPDATE = "session_update"
+    COLLECTION_RESULT = "collection_result"
+    LLM_QUERY_RESULT = "llm_query_result"
+    CRAWL_RESULT = "crawl_result"
+    ERROR = "error"
 
 class CommandPriority:
     NORMAL = 0
@@ -52,11 +59,10 @@ class SystemState(BaseModel):
     firefox_status: str = "closed"  # closed, opening, ready, error
     extension_status: str = "disconnected"  # connected, disconnected
     extension_last_seen: Optional[str] = None
-    schedule_enabled: bool = False
 
 class Command(BaseModel):
     id: str
-    type: str  # sync_now, check_session, update_settings, etc.
+    type: str  # collect_conversations, execute_llm_query, crawl_web, etc.
     priority: int = CommandPriority.NORMAL
     data: Dict[str, Any]
     timestamp: str
@@ -75,52 +81,9 @@ class SessionCache(BaseModel):
     valid: bool
     last_checked: str
     expires_at: Optional[str] = None
-    source: str = "cache"  # cache, extension, firefox
+    source: str = "cache"  # cache, native
     cookies: Optional[List[Dict[str, Any]]] = None
     status: str = "unknown"  # active, expired, checking, unknown
-
-class SyncRequest(BaseModel):
-    platforms: List[Dict[str, Any]]
-    settings: Dict[str, Any]
-
-class SyncProgress(BaseModel):
-    sync_id: str
-    status: str
-    progress: int = 0
-    current_platform: Optional[str] = None
-    collected: int = 0
-    message: str = ""
-
-class ScheduleConfig(BaseModel):
-    enabled: bool
-    startTime: str
-    interval: str
-    platforms: List[str]
-    settings: Dict[str, Any]
-
-class SessionStatus(BaseModel):
-    platform: str
-    valid: bool
-    lastChecked: str
-    expiresAt: Optional[str] = None
-
-class SessionCheckRequest(BaseModel):
-    platforms: List[str]
-
-class SingleSessionCheckRequest(BaseModel):
-    platform: str
-    enabled: bool = True
-
-class OpenLoginRequest(BaseModel):
-    platform: str
-    url: str
-    profileName: str = "llm-collector"
-
-class SessionUpdate(BaseModel):
-    platform: str
-    valid: bool = True
-    cookies: Optional[Dict[str, Any]] = None
-    headers: Optional[Dict[str, str]] = None
 
 # ======================== Enhanced Firefox Session Management ========================
 
@@ -129,7 +92,6 @@ class EnhancedFirefoxSessionManager:
     
     def __init__(self):
         self.extension_port = int(os.getenv("FIREFOX_EXTENSION_PORT", "9292"))
-        self.profile_path = os.getenv("FIREFOX_PROFILE_PATH", "")
         self.extension_available = False
         self._check_extension_availability()
         
@@ -287,6 +249,65 @@ class UnifiedCommandQueue:
 # Global command queue
 command_queue = UnifiedCommandQueue()
 
+# ======================== Native Messaging Support ========================
+
+class NativeCommandManager:
+    """Native Messaging 명령 관리"""
+    
+    def __init__(self):
+        self.pending_commands: Dict[str, asyncio.Future] = {}
+        self.llm_conversation_ids: Set[str] = set()
+        self._lock = asyncio.Lock()
+        
+    async def send_command(self, command_type: str, data: Dict[str, Any]) -> str:
+        """명령 전송 준비"""
+        command_id = str(uuid.uuid4())
+        
+        # Command에 ID 추가
+        data['command_id'] = command_id
+        
+        # LLM 대화 제외 목록 추가
+        if command_type == "collect_conversations":
+            data['exclude_ids'] = list(self.llm_conversation_ids)
+        
+        # 명령 큐에 추가
+        await command_queue.add_command(
+            command_type,
+            data,
+            priority=CommandPriority.HIGH
+        )
+        
+        return command_id
+    
+    async def wait_for_response(self, command_id: str, timeout: int = 30) -> Dict[str, Any]:
+        """응답 대기"""
+        future = asyncio.Future()
+        
+        async with self._lock:
+            self.pending_commands[command_id] = future
+        
+        try:
+            return await asyncio.wait_for(future, timeout)
+        except asyncio.TimeoutError:
+            async with self._lock:
+                self.pending_commands.pop(command_id, None)
+            raise HTTPException(status_code=408, detail="Command timeout")
+    
+    async def complete_command(self, command_id: str, result: Dict[str, Any]):
+        """명령 완료 처리"""
+        async with self._lock:
+            future = self.pending_commands.pop(command_id, None)
+            if future and not future.done():
+                future.set_result(result)
+    
+    def track_llm_conversation(self, conversation_id: str, metadata: Dict[str, Any]):
+        """LLM 대화 추적"""
+        self.llm_conversation_ids.add(conversation_id)
+        logger.info(f"Tracking LLM conversation: {conversation_id}")
+
+# 전역 Native 명령 관리자
+native_command_manager = NativeCommandManager()
+
 # ======================== Session Management ========================
 
 class UnifiedSessionManager:
@@ -317,59 +338,8 @@ class UnifiedSessionManager:
         except Exception as e:
             logger.error(f"Failed to save session cache: {e}")
             
-    async def check_session(self, platform: str, force_fresh: bool = False) -> SessionCache:
-        """Check session with caching"""
-        # Check cache first
-        if not force_fresh and platform in self.cache:
-            cached = self.cache[platform]
-            cache_time = datetime.fromisoformat(cached.last_checked)
-            if (datetime.now() - cache_time).seconds < self.cache_ttl:
-                logger.info(f"Session cache hit for {platform}")
-                return cached
-                
-        # Request fresh check from Extension
-        logger.info(f"Requesting fresh session check for {platform}")
-        cmd_id = await command_queue.add_command(
-            "check_session_now",
-            {"platform": platform},
-            priority=CommandPriority.URGENT
-        )
-        
-        # Wait for response (max 2 seconds)
-        start_time = time.time()
-        while time.time() - start_time < 2.0:
-            await asyncio.sleep(0.1)
-            
-            # Check if command completed
-            async with command_queue.queue_lock:
-                for cmd in command_queue.queue:
-                    if cmd.id == cmd_id and cmd.status == "completed":
-                        if cmd.result:
-                            session_info = SessionCache(
-                                platform=platform,
-                                valid=cmd.result.get("valid", False),
-                                last_checked=datetime.now().isoformat(),
-                                expires_at=cmd.result.get("expires_at"),
-                                source="extension",
-                                cookies=cmd.result.get("cookies"),
-                                status=cmd.result.get("status", "unknown")
-                            )
-                            self.cache[platform] = session_info
-                            await self.save_cache()
-                            return session_info
-                            
-        # Timeout - return invalid session
-        logger.warning(f"Session check timeout for {platform}")
-        return SessionCache(
-            platform=platform,
-            valid=False,
-            last_checked=datetime.now().isoformat(),
-            source="timeout",
-            status="error"
-        )
-        
     async def update_session(self, platform: str, valid: bool, cookies: Optional[List[Dict]] = None, 
-                           session_data: Optional[Dict] = None, reason: str = "manual", source: str = "extension"):
+                           session_data: Optional[Dict] = None, reason: str = "manual", source: str = "native"):
         """Update session cache"""
         expires_at = None
         if valid:
@@ -408,40 +378,6 @@ class UnifiedSessionManager:
 
 # Global session manager
 session_manager = UnifiedSessionManager()
-
-# ======================== Schedule Management ========================
-
-class ScheduleManager:
-    def __init__(self):
-        self.config: Optional[ScheduleConfig] = None
-        self.load_config()
-        
-    def load_config(self):
-        """Load schedule configuration"""
-        try:
-            if SCHEDULE_CONFIG_PATH.exists():
-                with open(SCHEDULE_CONFIG_PATH, 'r') as f:
-                    data = json.load(f)
-                    self.config = ScheduleConfig(**data)
-        except Exception as e:
-            logger.error(f"Failed to load schedule config: {e}")
-            
-    async def save_config(self):
-        """Save schedule configuration"""
-        try:
-            if self.config:
-                SCHEDULE_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-                with open(SCHEDULE_CONFIG_PATH, 'w') as f:
-                    json.dump(self.config.dict(), f, indent=2)
-                    
-                # Update system state
-                await state_manager.update_state("schedule_enabled", self.config.enabled)
-                
-        except Exception as e:
-            logger.error(f"Failed to save schedule config: {e}")
-
-# Global schedule manager
-schedule_manager = ScheduleManager()
 
 # ======================== Firefox Management ========================
 
@@ -680,375 +616,280 @@ async def state_websocket(websocket: WebSocket):
     except WebSocketDisconnect:
         active_websockets.discard(websocket)
 
-# ======================== Session Management Endpoints ========================
+# ======================== Command Queue Endpoints ========================
 
-@router.post("/sessions/check")
-async def check_sessions(request: SessionCheckRequest):
-    """Check multiple platform sessions"""
-    try:
-        sessions = []
-        
-        for platform in request.platforms:
-            session_info = await session_manager.check_session(platform)
-            sessions.append(SessionStatus(
-                platform=platform,
-                valid=session_info.valid,
-                lastChecked=session_info.last_checked,
-                expiresAt=session_info.expires_at
-            ))
-        
-        return {"sessions": sessions}
-        
-    except Exception as e:
-        logger.error(f"Error checking sessions: {e}")
-        return {"sessions": []}
+@router.get("/commands/pending")
+async def get_pending_commands():
+    """Native Host가 가져갈 명령들"""
+    commands = []
+    
+    # 명령 큐에서 대기 중인 것들
+    async with command_queue.queue_lock:
+        for cmd in command_queue.queue:
+            if cmd.status == "pending":
+                commands.append({
+                    'id': cmd.id,
+                    'type': cmd.type,
+                    'data': cmd.data,
+                    'priority': cmd.priority
+                })
+    
+    return {"commands": commands[:5]}  # 최대 5개
 
-@router.post("/sessions/check-single")
-async def check_single_session(request: SingleSessionCheckRequest):
-    """Check single platform session"""
-    logger.info(f"Session Check: Platform: {request.platform}, Enabled: {request.enabled}")
+@router.post("/commands/complete/{command_id}")
+async def complete_command_endpoint(command_id: str, result: Dict[str, Any]):
+    """명령 완료 알림"""
+    await command_queue.complete_command(command_id, result)
+    
+    # Native 명령 관리자에도 알림
+    await native_command_manager.complete_command(command_id, result)
+    
+    return {"status": "completed"}
+
+# ======================== Native Message Handler ========================
+
+@router.post("/native/handle")
+async def handle_native_message(message: Dict[str, Any]):
+    """Native Messaging Bridge로부터 메시지 처리"""
+    
+    msg_type = message.get('type')
+    msg_id = message.get('id')
+    data = message.get('data', {})
+    
+    logger.info(f"Native message received: {msg_type}")
     
     try:
-        session_info = await session_manager.check_session(request.platform)
-        
-        return {
-            "platform": request.platform,
-            "valid": session_info.valid,
-            "lastChecked": session_info.last_checked,
-            "expiresAt": session_info.expires_at,
-            "cookies": bool(session_info.cookies),
-            "status": session_info.status
-        }
-        
-    except Exception as e:
-        logger.error(f"Error checking session: {e}")
-        return {
-            "platform": request.platform,
-            "valid": False,
-            "lastChecked": datetime.now().isoformat(),
-            "expiresAt": None,
-            "cookies": False,
-            "status": "error"
-        }
-
-@router.post("/sessions/open-login")
-async def open_login_page(request: OpenLoginRequest):
-    """Open platform login page"""
-    try:
-        # Launch Firefox with login command
-        command = {
-            "action": "open_login",
-            "platform": request.platform,
-            "url": request.url,
-            "settings": {"profileName": request.profileName}
-        }
-        
-        success = await firefox_manager.launch_firefox_with_command(command)
-        
-        if success:
-            return {
-                "success": True,
-                "message": f"Opening {request.platform} login page",
-                "details": "Please log in and the session will be automatically detected"
-            }
-        else:
-            return {
-                "success": False,
-                "error": "Failed to launch Firefox",
-                "details": "Check Firefox installation and profile"
-            }
+        if msg_type == MessageType.INIT.value:
+            # Extension 초기화
+            await state_manager.update_state("extension_status", "connected")
+            await state_manager.update_state("firefox_status", "ready")
+            return {"status": "initialized"}
             
-    except Exception as e:
-        logger.error(f"Error opening login page: {e}")
-        return {
-            "success": False,
-            "error": str(e),
-            "details": "Unexpected error occurred"
-        }
-
-@router.post("/sessions/update")
-async def update_session_endpoint(update: SessionUpdate):
-    """Update session status from Extension"""
-    logger.info(f"Session Update: Platform: {update.platform}, Valid: {update.valid}")
-    
-    try:
-        # Parse cookies
-        cookies_list = []
-        if update.cookies:
-            for cookie_data in update.cookies.values():
-                if isinstance(cookie_data, dict):
-                    cookies_list.append(cookie_data)
-        
-        # Update session
-        await session_manager.update_session(
-            update.platform,
-            update.valid,
-            cookies=cookies_list,
-            session_data=update.cookies,
-            reason="extension_update"
-        )
-        
-        logger.info(f"Successfully updated {update.platform} session")
-        
-        return {"success": True}
-        
-    except Exception as e:
-        logger.error(f"Error updating session: {e}")
-        return {"success": False, "error": str(e)}
-
-# ======================== Firefox Control Endpoints ========================
-
-@router.post("/firefox/launch")
-async def launch_firefox_sync(request: SyncRequest, background_tasks: BackgroundTasks):
-    """Launch Firefox and trigger Extension sync"""
-    logger.info("Firefox launch request received")
-    
-    try:
-        # Get enabled platforms
-        enabled_platforms = [
-            p["platform"] for p in request.platforms
-            if p.get("enabled", True)
-        ]
-        
-        if not enabled_platforms:
-            return {
-                "success": False,
-                "error": "No platforms enabled for sync",
-                "details": "Please enable at least one platform"
-            }
-        
-        # Update system state
-        await state_manager.update_state("system_status", "preparing")
-        
-        # Create sync command
-        sync_id = str(uuid.uuid4())
-        
-        command = {
-            "action": "sync",
-            "sync_id": sync_id,
-            "platforms": request.platforms,
-            "settings": request.settings,
-            "timestamp": datetime.now().isoformat(),
-            "auto_close": True
-        }
-        
-        # Save sync config for Extension
-        sync_config = {
-            "id": sync_id,
-            "platforms": request.platforms,
-            "settings": request.settings,
-            "status": "pending",
-            "created_at": datetime.now().isoformat(),
-            "auto_close": True
-        }
-        
-        SYNC_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with open(SYNC_CONFIG_PATH, 'w') as f:
-            json.dump(sync_config, f, indent=2)
-        
-        # Launch Firefox
-        firefox_visible = request.settings.get("firefoxVisible", True)
-        success = await firefox_manager.launch_firefox_with_command(command, visible=firefox_visible)
-        
-        if success:
-            await state_manager.update_state("sync_status", {
-                "sync_id": sync_id,
-                "status": "started",
-                "progress": 0,
-                "message": "Firefox launched, waiting for Extension..."
+        elif msg_type == MessageType.HEARTBEAT.value:
+            # Heartbeat 처리
+            await extension_monitor.update_heartbeat(ExtensionHeartbeat(
+                timestamp=datetime.now().isoformat(),
+                status="active",
+                sessions=data.get('sessions', {})
+            ))
+            return {"status": "alive"}
+            
+        elif msg_type == MessageType.SESSION_UPDATE.value:
+            # 세션 업데이트
+            platform = data.get('platform')
+            valid = data.get('valid', False)
+            cookies = data.get('cookies', [])
+            
+            await session_manager.update_session(
+                platform=platform,
+                valid=valid,
+                cookies=cookies,
+                source="native"
+            )
+            return {"status": "updated"}
+            
+        elif msg_type == MessageType.COLLECTION_RESULT.value:
+            # 대화 수집 결과
+            platform = data.get('platform')
+            conversations = data.get('conversations', [])
+            excluded_ids = data.get('excluded_llm_ids', [])
+            command_id = data.get('command_id')
+            
+            # 저장
+            if conversations:
+                save_response = await save_conversations_internal({
+                    "platform": platform,
+                    "conversations": conversations,
+                    "metadata": {
+                        "source": "native_collection",
+                        "excluded_llm_count": len(excluded_ids)
+                    }
+                })
+                
+                logger.info(f"Saved {len(conversations)} conversations from {platform}")
+            
+            # 명령 완료
+            if command_id:
+                await native_command_manager.complete_command(command_id, {
+                    "success": True,
+                    "collected": len(conversations),
+                    "excluded": len(excluded_ids)
+                })
+            
+            return {"status": "saved", "count": len(conversations)}
+            
+        elif msg_type == MessageType.LLM_QUERY_RESULT.value:
+            # LLM 질문 결과
+            conversation_id = data.get('conversation_id')
+            platform = data.get('platform')
+            query = data.get('query')
+            response_text = data.get('response')
+            command_id = data.get('command_id')
+            
+            # LLM 대화로 추적
+            native_command_manager.track_llm_conversation(conversation_id, {
+                'platform': platform,
+                'query': query,
+                'source': 'llm_query',
+                'created_at': datetime.now().isoformat()
             })
             
-            return {
-                "success": True,
-                "sync_id": sync_id,
-                "message": "Firefox launched and sync triggered",
-                "debug_mode": request.settings.get("debug", firefox_visible),
-                "firefox_visible": firefox_visible
-            }
+            # 명령 완료
+            if command_id:
+                await native_command_manager.complete_command(command_id, data)
+            
+            return {"status": "tracked", "conversation_id": conversation_id}
+            
+        elif msg_type == MessageType.CRAWL_RESULT.value:
+            # 웹 크롤링 결과
+            url = data.get('url')
+            content = data.get('content')
+            extracted = data.get('extracted_data', {})
+            command_id = data.get('command_id')
+            
+            # 명령 완료
+            if command_id:
+                await native_command_manager.complete_command(command_id, data)
+            
+            return {"status": "crawled", "url": url}
+            
+        elif msg_type == MessageType.ERROR.value:
+            # 에러 처리
+            error_msg = data.get('error', 'Unknown error')
+            command_id = data.get('command_id')
+            logger.error(f"Native error: {error_msg}")
+            
+            if command_id:
+                await native_command_manager.complete_command(command_id, {
+                    "success": False,
+                    "error": error_msg
+                })
+            
+            return {"status": "error", "message": error_msg}
+            
         else:
-            await state_manager.update_state("system_status", "idle")
-            return {
-                "success": False,
-                "error": "Failed to launch Firefox",
-                "details": "Check Firefox installation"
-            }
+            logger.warning(f"Unknown message type: {msg_type}")
+            return {"status": "unknown", "type": msg_type}
             
     except Exception as e:
-        logger.error(f"Error launching Firefox: {e}")
-        await state_manager.update_state("system_status", "error")
+        logger.error(f"Native message handling error: {e}")
+        return {"status": "error", "message": str(e)}
+
+# ======================== Native Collection Endpoints ========================
+
+@router.post("/collect/start")
+async def start_collection_native(request: Dict[str, Any]):
+    """Native Messaging을 통한 대화 수집"""
+    platforms = request.get('platforms', [])
+    settings = request.get('settings', {})
+    
+    # Firefox 실행 확인
+    if state_manager.state.firefox_status != "ready":
+        # Firefox 시작
+        success = await firefox_manager.launch_firefox_with_command({
+            "action": "start",
+            "native_messaging": True
+        })
+        
+        if not success:
+            raise HTTPException(status_code=500, detail="Failed to start Firefox")
+        
+        # Extension 준비 대기
+        await asyncio.sleep(3)
+    
+    # Native 명령 전송
+    command_id = await native_command_manager.send_command(
+        "collect_conversations",
+        {
+            "platforms": platforms,
+            "exclude_llm": True,
+            "settings": settings
+        }
+    )
+    
+    # 응답 대기
+    try:
+        result = await native_command_manager.wait_for_response(command_id, timeout=60)
+        return {
+            "success": True,
+            "collected": result.get('collected', 0),
+            "excluded_llm": result.get('excluded', 0)
+        }
+    except asyncio.TimeoutError:
         return {
             "success": False,
-            "error": str(e),
-            "details": "Unexpected error occurred"
+            "error": "Collection timeout"
         }
 
-@router.get("/sync/status/{sync_id}")
-async def get_sync_status(sync_id: str):
-    """Get sync progress status"""
+@router.post("/query/llm")
+async def query_llm_native(request: Dict[str, Any]):
+    """Native Messaging을 통한 LLM 질문"""
+    platform = request.get('platform')
+    query = request.get('query')
+    
+    if not platform or not query:
+        raise HTTPException(status_code=400, detail="Platform and query required")
+    
+    # Native 명령 전송
+    command_id = await native_command_manager.send_command(
+        "execute_llm_query",
+        {
+            "platform": platform,
+            "query": query,
+            "mark_as_llm": True
+        }
+    )
+    
+    # 응답 대기 (LLM은 시간이 걸림)
     try:
-        if state_manager.state.sync_status and state_manager.state.sync_status.get("sync_id") == sync_id:
-            return state_manager.state.sync_status
-        
+        result = await native_command_manager.wait_for_response(command_id, timeout=120)
         return {
-            "status": "pending",
-            "progress": 0,
-            "message": "Waiting for extension to start...",
-            "updated_at": datetime.now().isoformat()
+            "success": True,
+            "conversation_id": result.get('conversation_id'),
+            "response": result.get('response'),
+            "metadata": {
+                "source": "llm_query",
+                "platform": platform
+            }
         }
-        
-    except Exception as e:
-        return {"status": "error", "error": str(e)}
+    except asyncio.TimeoutError:
+        return {
+            "success": False,
+            "error": "LLM query timeout"
+        }
 
-@router.post("/sync/cancel/{sync_id}")
-async def cancel_sync(sync_id: str):
-    """Cancel ongoing sync"""
-    if state_manager.state.sync_status and state_manager.state.sync_status.get("sync_id") == sync_id:
-        # Add cancel command
-        await command_queue.add_command(
-            "cancel_sync",
-            {"sync_id": sync_id},
-            priority=CommandPriority.URGENT
-        )
-        
-        # Update state
-        await state_manager.update_state("system_status", "idle")
-        await state_manager.update_state("sync_status", None)
-        
-        # Kill Firefox
-        await firefox_manager.close_firefox()
-        
-        return {"success": True, "message": "Sync cancelled"}
-    else:
-        raise HTTPException(status_code=404, detail="Sync not found")
-
-@router.post("/sync/progress")
-async def update_sync_progress(progress: SyncProgress):
-    """Update sync progress"""
-    sync_status = {
-        "sync_id": progress.sync_id,
-        "status": progress.status,
-        "progress": progress.progress,
-        "current_platform": progress.current_platform,
-        "collected": progress.collected,
-        "message": progress.message
-    }
+@router.post("/crawl/web")
+async def crawl_web_native(request: Dict[str, Any]):
+    """Native Messaging을 통한 웹 크롤링"""
+    url = request.get('url')
+    search_query = request.get('query')
     
-    await state_manager.update_state("sync_status", sync_status)
+    if not url:
+        raise HTTPException(status_code=400, detail="URL required")
     
-    # Auto-close Firefox on completion
-    if progress.status == "completed":
-        await state_manager.update_state("system_status", "idle")
-        
-        # Check if auto-close is enabled
-        if SYNC_CONFIG_PATH.exists():
-            with open(SYNC_CONFIG_PATH, 'r') as f:
-                sync_config = json.load(f)
-                
-            if sync_config.get("auto_close", True):
-                # Close Firefox after 3 seconds
-                async def close_firefox_delayed():
-                    await asyncio.sleep(3)
-                    await firefox_manager.close_firefox()
-                
-                asyncio.create_task(close_firefox_delayed())
+    # Native 명령 전송
+    command_id = await native_command_manager.send_command(
+        "crawl_web",
+        {
+            "url": url,
+            "search_query": search_query,
+            "extract_rules": request.get('extract_rules', {})
+        }
+    )
     
-    return {"success": True}
-
-@router.get("/sync/config")
-async def get_sync_config():
-    """Get sync config for Extension"""
-    if SYNC_CONFIG_PATH.exists():
-        with open(SYNC_CONFIG_PATH, 'r') as f:
-            config = json.load(f)
-            
-        # Check if config is recent (within 1 hour)
-        if config.get("created_at"):
-            created = datetime.fromisoformat(config["created_at"])
-            if (datetime.now() - created).total_seconds() > 3600:
-                return {"status": "no_config"}
-                
-        return config
-    else:
-        return {"status": "no_config"}
-
-# ======================== Schedule Management Endpoints ========================
-
-@router.post("/sync/schedule")
-async def schedule_sync(config: ScheduleConfig):
-    """Configure automatic sync schedule"""
+    # 응답 대기
     try:
-        if not config.platforms:
-            return {"success": False, "error": "No platforms enabled for schedule"}
-        
-        # Save schedule config
-        schedule_manager.config = config
-        await schedule_manager.save_config()
-        
-        logger.info(f"Saved schedule for platforms: {config.platforms}")
-        
-        return {"success": True, "message": "Schedule updated"}
-        
-    except Exception as e:
-        logger.error(f"Error updating schedule: {e}")
-        return {"success": False, "error": str(e)}
-
-@router.post("/sync/trigger-scheduled")
-async def trigger_scheduled_sync(background_tasks: BackgroundTasks):
-    """Trigger scheduled sync"""
-    try:
-        if not schedule_manager.config or not schedule_manager.config.enabled:
-            return {"success": False, "error": "Scheduled sync is disabled"}
-        
-        enabled_platforms = schedule_manager.config.platforms
-        
-        if not enabled_platforms:
-            return {"success": False, "error": "No enabled platforms in schedule"}
-        
-        request = SyncRequest(
-            platforms=[
-                {"platform": p, "enabled": True}
-                for p in enabled_platforms
-            ],
-            settings=schedule_manager.config.settings
-        )
-        
-        result = await launch_firefox_sync(request, background_tasks)
-        return result
-        
-    except Exception as e:
-        return {"success": False, "error": str(e)}
-
-# ======================== Extension Communication Endpoints ========================
-
-@router.post("/extension/heartbeat")
-async def extension_heartbeat(heartbeat: ExtensionHeartbeat):
-    """Receive heartbeat from Extension"""
-    await extension_monitor.update_heartbeat(heartbeat)
-    return {"status": "received"}
-
-@router.get("/commands/next")
-async def get_next_command():
-    """Get next command for Extension"""
-    command = await command_queue.get_next_command()
-    if command:
-        return command.dict()
-    return {"type": "none"}
-
-@router.post("/commands/response/{command_id}")
-async def command_response(command_id: str, response: Dict[str, Any]):
-    """Receive command response from Extension"""
-    await command_queue.complete_command(command_id, response)
-    return {"status": "received"}
-
-@router.get("/settings/current")
-async def get_current_settings():
-    """Get current settings for Extension"""
-    return {
-        "maxConversations": 20,
-        "randomDelay": 5,
-        "minCheckGap": 30000,
-        "heartbeatInterval": 10000
-    }
+        result = await native_command_manager.wait_for_response(command_id, timeout=30)
+        return {
+            "success": True,
+            "content": result.get('content'),
+            "extracted": result.get('extracted_data', {})
+        }
+    except asyncio.TimeoutError:
+        return {
+            "success": False,
+            "error": "Crawl timeout"
+        }
 
 # ======================== Initialization and Shutdown ========================
 
@@ -1082,6 +923,18 @@ async def shutdown():
     await firefox_manager.close_firefox()
     
     logger.info("Argosa core system shutdown complete")
+
+# Internal helper for saving conversations
+async def save_conversations_internal(data: Dict[str, Any]):
+    """내부 대화 저장 함수"""
+    # 기존 llm_conversation_collector의 로직 활용
+    from .collection.llm_conversation_collector import collector
+    
+    return await collector.save_conversations(
+        platform=data['platform'],
+        conversations=data['conversations'],
+        metadata=data.get('metadata', {})
+    )
 
 # Run initialization on import
 asyncio.create_task(initialize())

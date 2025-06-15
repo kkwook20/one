@@ -1,8 +1,8 @@
-// Firefox Extension - background.js (완전 자율 동작 버전)
+// Firefox Extension - background.js (Native Messaging 전용 버전)
 console.log('[LLM Collector] Extension loaded at', new Date().toISOString());
 
 // ======================== Configuration ========================
-const DEFAULT_API_URL = 'http://localhost:8000/api/argosa';
+const NATIVE_HOST_ID = 'com.argosa.native';
 
 // Platform configurations
 const PLATFORMS = {
@@ -78,18 +78,17 @@ const PLATFORMS = {
 };
 
 // ======================== Main Extension Class ========================
-class AutonomousExtension {
+class NativeExtension {
   constructor() {
-    this.mode = 'standalone';  // standalone, connected
-    this.backendUrl = DEFAULT_API_URL;
     this.settings = this.getDefaultSettings();
     this.state = {
       sessions: {},
-      syncStatus: null,
-      lastHeartbeat: null
+      collecting: false
     };
-    this.processedCommands = new Set();
-    this.collectionLock = false;
+    
+    // Native Messaging
+    this.nativePort = null;
+    this.nativeConnected = false;
     
     // Initialize
     this.init();
@@ -99,34 +98,232 @@ class AutonomousExtension {
     return {
       maxConversations: 20,
       randomDelay: 5,
-      minCheckGap: 30000,
-      heartbeatInterval: 10000,
-      backendCheckInterval: 5000
+      delayBetweenPlatforms: 5
     };
   }
   
   async init() {
-    console.log('[Extension] Initializing autonomous extension...');
+    console.log('[Extension] Initializing native extension...');
     
     // Load saved state
     await this.loadState();
     
-    // Start backend connection attempts
-    this.startBackendConnection();
+    // Connect to Native Host
+    this.connectNative();
     
     // Start heartbeat
     this.startHeartbeat();
     
-    // Setup URL command listener
-    this.setupCommandListener();
-    
-    // Setup scheduled collection (3 days)
-    this.setupScheduledCollection();
-    
-    // Start resource management
-    this.startResourceManagement();
-    
     console.log('[Extension] Initialization complete');
+  }
+  
+  // ======================== Native Messaging ========================
+  
+  connectNative() {
+    console.log('[Extension] Connecting to native host...');
+    
+    try {
+      this.nativePort = browser.runtime.connectNative(NATIVE_HOST_ID);
+      
+      this.nativePort.onMessage.addListener((message) => {
+        console.log('[Extension] Native message:', message);
+        this.handleNativeMessage(message);
+      });
+      
+      this.nativePort.onDisconnect.addListener(() => {
+        console.error('[Extension] Native port disconnected');
+        this.nativePort = null;
+        this.nativeConnected = false;
+        
+        // 재연결 시도
+        setTimeout(() => this.connectNative(), 5000);
+      });
+      
+      // 초기화 메시지
+      this.sendNativeMessage({
+        type: 'init',
+        data: {
+          version: '2.0',
+          platform: 'firefox'
+        }
+      });
+      
+      this.nativeConnected = true;
+      
+    } catch (error) {
+      console.error('[Extension] Failed to connect native:', error);
+      this.nativeConnected = false;
+      
+      // 재연결 시도
+      setTimeout(() => this.connectNative(), 5000);
+    }
+  }
+  
+  sendNativeMessage(message) {
+    if (!this.nativePort) {
+      console.error('[Extension] Native port not connected');
+      return false;
+    }
+    
+    // ID 추가
+    if (!message.id) {
+      message.id = `msg_${Date.now()}_${Math.random()}`;
+    }
+    
+    try {
+      this.nativePort.postMessage(message);
+      return true;
+    } catch (error) {
+      console.error('[Extension] Send error:', error);
+      return false;
+    }
+  }
+  
+  async handleNativeMessage(message) {
+    const { id, type, data } = message;
+    
+    switch (type) {
+      case 'collect_conversations':
+        await this.handleCollectCommand(id, data);
+        break;
+        
+      case 'execute_llm_query':
+        await this.handleLLMQueryCommand(id, data);
+        break;
+        
+      case 'check_session':
+        await this.handleSessionCheck(id, data);
+        break;
+        
+      case 'update_settings':
+        this.settings = { ...this.settings, ...data };
+        await this.saveSettings();
+        break;
+        
+      default:
+        console.warn('[Extension] Unknown native command:', type);
+    }
+  }
+  
+  // ======================== Command Handlers ========================
+  
+  // 대화 수집 (LLM 제외)
+  async handleCollectCommand(messageId, data) {
+    if (this.state.collecting) {
+      console.log('[Extension] Collection already in progress');
+      this.sendNativeMessage({
+        type: 'error',
+        id: messageId,
+        data: { error: 'Collection already in progress' }
+      });
+      return;
+    }
+    
+    this.state.collecting = true;
+    const { platforms, exclude_ids = [], settings = {} } = data;
+    
+    console.log(`[Extension] Collecting from ${platforms.length} platforms, excluding ${exclude_ids.length} LLM conversations`);
+    
+    for (const platform of platforms) {
+      try {
+        const result = await this.collectFromPlatform(platform, settings, exclude_ids);
+        
+        // Native로 결과 전송
+        this.sendNativeMessage({
+          type: 'collection_result',
+          id: messageId,
+          data: {
+            platform: platform,
+            conversations: result.conversations,
+            excluded_llm_ids: result.excluded
+          }
+        });
+        
+      } catch (error) {
+        console.error(`[Extension] Error collecting from ${platform}:`, error);
+        
+        this.sendNativeMessage({
+          type: 'error',
+          id: messageId,
+          data: {
+            platform: platform,
+            error: error.message
+          }
+        });
+      }
+      
+      // 플랫폼 간 대기
+      await this.humanDelay(settings.delayBetweenPlatforms || 5);
+    }
+    
+    this.state.collecting = false;
+  }
+  
+  // LLM 질문 실행
+  async handleLLMQueryCommand(messageId, data) {
+    const { platform, query, mark_as_llm = true } = data;
+    
+    console.log(`[Extension] Executing LLM query on ${platform}`);
+    
+    try {
+      // 플랫폼 열기
+      const tab = await browser.tabs.create({
+        url: PLATFORMS[platform].url,
+        active: true  // LLM 질문은 사용자가 볼 수 있게
+      });
+      
+      // 페이지 로드 대기
+      await this.waitForTabLoad(tab.id);
+      await this.humanDelay(2);
+      
+      // 질문 입력 및 전송
+      const conversationId = await this.injectLLMQuery(tab.id, platform, query);
+      
+      // 응답 대기
+      await this.waitForLLMResponse(tab.id, platform);
+      
+      // 결과 전송
+      this.sendNativeMessage({
+        type: 'llm_query_result',
+        id: messageId,
+        data: {
+          platform: platform,
+          conversation_id: conversationId,
+          query: query,
+          response: 'Response captured',
+          metadata: {
+            source: 'llm_query',
+            created_at: new Date().toISOString()
+          }
+        }
+      });
+      
+    } catch (error) {
+      console.error(`[Extension] LLM query error:`, error);
+      
+      this.sendNativeMessage({
+        type: 'error',
+        id: messageId,
+        data: {
+          error: error.message
+        }
+      });
+    }
+  }
+  
+  // 세션 체크
+  async handleSessionCheck(messageId, data) {
+    const isValid = await this.checkSession(data.platform);
+    
+    this.sendNativeMessage({
+      type: 'session_check_result',
+      id: messageId,
+      data: {
+        platform: data.platform,
+        valid: isValid,
+        checked_at: new Date().toISOString()
+      }
+    });
   }
   
   // ======================== State Management ========================
@@ -156,89 +353,29 @@ class AutonomousExtension {
     }
   }
   
-  // ======================== Backend Connection ========================
-  
-  async startBackendConnection() {
-    // Try to connect to backend
-    await this.checkBackendConnection();
-    
-    // Keep trying periodically
-    setInterval(() => {
-      if (this.mode === 'standalone') {
-        this.checkBackendConnection();
-      }
-    }, this.settings.backendCheckInterval);
-  }
-  
-  async checkBackendConnection() {
+  async saveSettings() {
     try {
-      const response = await fetch(`${this.backendUrl}/status`, {
-        method: 'GET',
-        headers: { 'Content-Type': 'application/json' }
-      });
-      
-      if (response.ok) {
-        if (this.mode === 'standalone') {
-          console.log('[Extension] Backend connection established');
-          this.mode = 'connected';
-          await this.onBackendReconnected();
-        }
-        return true;
-      }
+      await browser.storage.local.set({ extensionSettings: this.settings });
     } catch (error) {
-      // Silent fail - backend not available
+      console.error('[Extension] Failed to save settings:', error);
     }
-    
-    if (this.mode === 'connected') {
-      console.log('[Extension] Backend connection lost');
-      this.mode = 'standalone';
-    }
-    return false;
   }
   
-  async onBackendReconnected() {
-    console.log('[Extension] Syncing with backend...');
-    
-    // Update settings
-    await this.updateSettings();
-    
-    // Send current session states
-    await this.reportAllSessions();
-    
-    // Process any pending data
-    await this.processPendingData();
-  }
+  // ======================== Heartbeat ========================
   
-  // ======================== Heartbeat System ========================
-  
-  async startHeartbeat() {
+  startHeartbeat() {
     setInterval(() => {
-      this.sendHeartbeat();
-    }, this.settings.heartbeatInterval);
-  }
-  
-  async sendHeartbeat() {
-    const heartbeat = {
-      timestamp: new Date().toISOString(),
-      status: 'active',
-      firefox_pid: null, // Would need native messaging for real PID
-      sessions: this.getSessionStates(),
-      version: '2.0'
-    };
-    
-    this.state.lastHeartbeat = heartbeat.timestamp;
-    
-    if (this.mode === 'connected') {
-      try {
-        await fetch(`${this.backendUrl}/extension/heartbeat`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(heartbeat)
+      if (this.nativeConnected) {
+        this.sendNativeMessage({
+          type: 'heartbeat',
+          data: {
+            sessions: this.getSessionStates(),
+            timestamp: new Date().toISOString(),
+            collecting: this.state.collecting
+          }
         });
-      } catch (error) {
-        // Silent fail
       }
-    }
+    }, 10000);
   }
   
   getSessionStates() {
@@ -249,133 +386,9 @@ class AutonomousExtension {
     return states;
   }
   
-  // ======================== Command Handling ========================
-  
-  setupCommandListener() {
-    // Listen for URL commands
-    browser.tabs.onCreated.addListener(async (tab) => {
-      if (!tab.url || !tab.url.includes('#llm-sync-')) {
-        return;
-      }
-      
-      try {
-        // Extract and decode command
-        const encodedCommand = tab.url.split('#llm-sync-')[1];
-        const command = JSON.parse(atob(encodedCommand));
-        
-        // Close the tab immediately
-        await browser.tabs.remove(tab.id);
-        
-        // Validate and execute command
-        if (this.validateCommand(command)) {
-          await this.executeCommand(command);
-        }
-      } catch (error) {
-        console.error('[Extension] Invalid command:', error);
-      }
-    });
-    
-    // Also check for commands from backend (fallback)
-    if (this.mode === 'connected') {
-      setInterval(() => this.checkBackendCommands(), 2000);
-    }
-  }
-  
-  validateCommand(command) {
-    // Check timestamp (5 minutes window)
-    const commandTime = new Date(command.timestamp);
-    const now = new Date();
-    if (now - commandTime > 300000) {
-      console.log('[Extension] Command expired');
-      return false;
-    }
-    
-    // Check if already processed
-    const commandKey = `${command.action}-${command.sync_id || command.timestamp}`;
-    if (this.processedCommands.has(commandKey)) {
-      console.log('[Extension] Command already processed');
-      return false;
-    }
-    
-    this.processedCommands.add(commandKey);
-    return true;
-  }
-  
-  async executeCommand(command) {
-    console.log('[Extension] Executing command:', command.action);
-    
-    switch (command.action) {
-      case 'sync':
-        await this.startCollection(command);
-        break;
-        
-      case 'check_session':
-        await this.checkSessionCommand(command.data.platform);
-        break;
-        
-      case 'update_settings':
-        this.settings = { ...this.settings, ...command.data };
-        await this.saveSettings();
-        break;
-        
-      default:
-        console.warn('[Extension] Unknown command:', command.action);
-    }
-  }
-  
-  async checkBackendCommands() {
-    if (this.mode !== 'connected') return;
-    
-    try {
-      const response = await fetch(`${this.backendUrl}/commands/next`);
-      if (response.ok) {
-        const command = await response.json();
-        if (command.type !== 'none') {
-          await this.handleBackendCommand(command);
-        }
-      }
-    } catch (error) {
-      // Silent fail
-    }
-  }
-  
-  async handleBackendCommand(command) {
-    console.log('[Extension] Backend command:', command.type);
-    
-    let result = null;
-    
-    switch (command.type) {
-      case 'check_session_now':
-        const isValid = await this.checkSessionDirect(command.data.platform);
-        result = {
-          valid: isValid,
-          checked_at: new Date().toISOString()
-        };
-        break;
-        
-      case 'cancel_sync':
-        this.collectionLock = false;
-        result = { cancelled: true };
-        break;
-    }
-    
-    // Send response
-    if (result && command.id) {
-      try {
-        await fetch(`${this.backendUrl}/commands/response/${command.id}`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(result)
-        });
-      } catch (error) {
-        // Silent fail
-      }
-    }
-  }
-  
   // ======================== Session Management ========================
   
-  async checkSessionDirect(platform) {
+  async checkSession(platform) {
     const config = PLATFORMS[platform];
     if (!config) return false;
     
@@ -411,120 +424,13 @@ class AutonomousExtension {
     };
     
     this.saveState();
-    
-    // Report to backend if connected
-    if (this.mode === 'connected') {
-      this.reportSessionUpdate(platform, valid);
-    }
-  }
-  
-  async reportSessionUpdate(platform, valid) {
-    try {
-      await fetch(`${this.backendUrl}/sessions/update`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ platform, valid })
-      });
-    } catch (error) {
-      // Silent fail
-    }
-  }
-  
-  async reportAllSessions() {
-    for (const platform of Object.keys(PLATFORMS)) {
-      const session = this.state.sessions[platform];
-      if (session) {
-        await this.reportSessionUpdate(platform, session.valid);
-      }
-    }
   }
   
   // ======================== Data Collection ========================
   
-  async startCollection(command) {
-    if (this.collectionLock) {
-      console.log('[Extension] Collection already in progress');
-      return;
-    }
-    
-    this.collectionLock = true;
-    console.log('[Extension] Starting collection...', command);
-    
-    const syncId = command.sync_id || `manual-${Date.now()}`;
-    const platforms = command.platforms || [];
-    const settings = command.settings || {};
-    
-    try {
-      await this.updateProgress(syncId, {
-        status: 'starting',
-        progress: 0,
-        message: 'Initializing collection...'
-      });
-      
-      let totalCollected = 0;
-      const progressPerPlatform = 100 / platforms.length;
-      
-      for (let i = 0; i < platforms.length; i++) {
-        const platformConfig = platforms[i];
-        const platform = platformConfig.platform || platformConfig;
-        
-        if (!PLATFORMS[platform]) {
-          console.warn(`[Extension] Unknown platform: ${platform}`);
-          continue;
-        }
-        
-        await this.updateProgress(syncId, {
-          status: 'collecting',
-          progress: Math.round(i * progressPerPlatform),
-          current_platform: platform,
-          collected: totalCollected,
-          message: `Collecting from ${PLATFORMS[platform].name}...`
-        });
-        
-        try {
-          const result = await this.collectFromPlatform(platform, settings);
-          totalCollected += result.collected;
-          
-          // Save conversations
-          if (result.collected > 0) {
-            await this.saveConversations(platform, result.conversations);
-          }
-        } catch (error) {
-          console.error(`[Extension] Error collecting from ${platform}:`, error);
-        }
-        
-        // Delay between platforms
-        if (i < platforms.length - 1) {
-          await this.humanDelay(settings.randomDelay || 5);
-        }
-      }
-      
-      await this.updateProgress(syncId, {
-        status: 'completed',
-        progress: 100,
-        collected: totalCollected,
-        message: 'Collection completed successfully'
-      });
-      
-      console.log(`[Extension] Collection completed. Total: ${totalCollected}`);
-      
-    } catch (error) {
-      console.error('[Extension] Collection error:', error);
-      
-      await this.updateProgress(syncId, {
-        status: 'error',
-        progress: 0,
-        message: error.message || 'Collection failed'
-      });
-      
-    } finally {
-      this.collectionLock = false;
-    }
-  }
-  
-  async collectFromPlatform(platform, settings) {
+  async collectFromPlatform(platform, settings, excludeIds = []) {
     const config = PLATFORMS[platform];
-    console.log(`[Extension] Collecting from ${platform}...`);
+    console.log(`[Extension] Collecting from ${platform} with ${excludeIds.length} exclusions...`);
     
     // Open platform in new tab
     const tab = await browser.tabs.create({ 
@@ -542,16 +448,16 @@ class AutonomousExtension {
       
       if (!isLoggedIn) {
         console.log(`[Extension] ${platform} session invalid, skipping...`);
-        return { collected: 0, conversations: [] };
+        return { conversations: [], excluded: [] };
       }
       
-      // Inject collection script
+      // Inject collection script with exclusions
       const results = await browser.tabs.executeScript(tab.id, {
-        code: this.getCollectionCode(platform, config, settings)
+        code: this.getCollectionCode(platform, config, settings, excludeIds)
       });
       
-      const result = results[0] || { collected: 0, conversations: [] };
-      console.log(`[Extension] Collected ${result.collected} from ${platform}`);
+      const result = results[0] || { conversations: [], excluded: [] };
+      console.log(`[Extension] Collected ${result.conversations.length} from ${platform}, excluded ${result.excluded.length}`);
       
       return result;
       
@@ -561,82 +467,91 @@ class AutonomousExtension {
     }
   }
   
-  getCollectionCode(platform, config, settings) {
+  getCollectionCode(platform, config, settings, excludeIds) {
     return `
       (async function() {
-        console.log('[Collector] Starting collection for ${platform}...');
-        
+        const excludeSet = new Set(${JSON.stringify(excludeIds)});
         const conversations = [];
+        const excluded = [];
         const limit = ${settings.maxConversations || 20};
         
         try {
           // Platform-specific collection logic
           if ('${platform}' === 'chatgpt') {
-            // Try API first
-            try {
-              const response = await fetch('${config.conversationListUrl}', {
-                credentials: 'include',
-                headers: { 'Accept': 'application/json' }
-              });
+            const response = await fetch('${config.conversationListUrl}?offset=0&limit=' + limit, {
+              credentials: 'include'
+            });
+            
+            if (response.ok) {
+              const data = await response.json();
               
-              if (response.ok) {
-                const data = await response.json();
-                const items = data.items || [];
-                
-                for (let i = 0; i < Math.min(items.length, limit); i++) {
-                  conversations.push({
-                    id: items[i].id,
-                    title: items[i].title || 'Untitled',
-                    created_at: items[i].create_time || items[i].created_at,
-                    updated_at: items[i].update_time || items[i].updated_at
-                  });
+              for (const item of data.items || []) {
+                if (excludeSet.has(item.id)) {
+                  excluded.push(item.id);
+                  continue;
                 }
+                
+                conversations.push({
+                  id: item.id,
+                  title: item.title || 'Untitled',
+                  created_at: item.create_time,
+                  updated_at: item.update_time
+                });
               }
-            } catch (err) {
-              console.error('[Collector] API fetch failed:', err);
             }
           }
           else if ('${platform}' === 'claude') {
-            try {
-              const response = await fetch('${config.conversationListUrl}', {
-                credentials: 'include',
-                headers: { 'Accept': 'application/json' }
-              });
+            const response = await fetch('${config.conversationListUrl}', {
+              credentials: 'include'
+            });
+            
+            if (response.ok) {
+              const data = await response.json();
               
-              if (response.ok) {
-                const data = await response.json();
-                const items = data.chats || data.conversations || [];
-                
-                for (let i = 0; i < Math.min(items.length, limit); i++) {
-                  conversations.push({
-                    id: items[i].uuid || items[i].id,
-                    title: items[i].name || items[i].title || 'Untitled',
-                    created_at: items[i].created_at,
-                    updated_at: items[i].updated_at
-                  });
+              for (const item of data.chats || data.conversations || []) {
+                const id = item.uuid || item.id;
+                if (excludeSet.has(id)) {
+                  excluded.push(id);
+                  continue;
                 }
+                
+                conversations.push({
+                  id: id,
+                  title: item.name || item.title || 'Untitled',
+                  created_at: item.created_at,
+                  updated_at: item.updated_at
+                });
               }
-            } catch (err) {
-              console.error('[Collector] API fetch failed:', err);
+            }
+          }
+          else if ('${platform}' === 'gemini') {
+            // Gemini specific logic
+            const response = await fetch('${config.conversationListUrl}', {
+              credentials: 'include'
+            });
+            
+            if (response.ok) {
+              const data = await response.json();
+              // Process Gemini data
+            }
+          }
+          else if ('${platform}' === 'deepseek') {
+            const response = await fetch('${config.conversationListUrl}', {
+              credentials: 'include'
+            });
+            
+            if (response.ok) {
+              const data = await response.json();
+              // Process DeepSeek data
             }
           }
           // Add other platforms...
           
-          return {
-            platform: '${platform}',
-            collected: conversations.length,
-            conversations: conversations
-          };
-          
         } catch (error) {
           console.error('[Collector] Error:', error);
-          return {
-            platform: '${platform}',
-            collected: 0,
-            conversations: [],
-            error: error.message
-          };
         }
+        
+        return { conversations, excluded };
       })();
     `;
   }
@@ -683,225 +598,124 @@ class AutonomousExtension {
     }
   }
   
-  // ======================== Progress Reporting ========================
+  // ======================== LLM Query Functions ========================
   
-  async updateProgress(syncId, progressData) {
-    const fullProgress = {
-      sync_id: syncId,
-      ...progressData,
-      timestamp: new Date().toISOString()
-    };
-    
-    this.state.syncStatus = fullProgress;
-    
-    if (this.mode === 'connected') {
-      try {
-        await fetch(`${this.backendUrl}/sync/progress`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(fullProgress)
-        });
-      } catch (error) {
-        // Queue for later
-        await this.queuePendingData('progress', fullProgress);
-      }
-    }
-  }
-  
-  // ======================== Data Storage ========================
-  
-  async saveConversations(platform, conversations) {
-    const data = {
-      platform: platform,
-      conversations: conversations,
-      timestamp: new Date().toISOString()
-    };
-    
-    if (this.mode === 'connected') {
-      try {
-        const response = await fetch(`${this.backendUrl}/llm/conversations/save`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(data)
-        });
-        
-        if (!response.ok) {
-          throw new Error(`Save failed: ${response.status}`);
-        }
-        
-        console.log(`[Extension] Saved ${conversations.length} conversations for ${platform}`);
-        return;
-        
-      } catch (error) {
-        console.error('[Extension] Failed to save to backend:', error);
-      }
-    }
-    
-    // Save locally as fallback
-    await this.saveLocally(data);
-  }
-  
-  async saveLocally(data) {
-    try {
-      const { pendingData = [] } = await browser.storage.local.get('pendingData');
-      pendingData.push({
-        id: `${Date.now()}-${Math.random()}`,
-        type: 'conversations',
-        data: data,
-        timestamp: new Date().toISOString()
-      });
-      
-      // Keep only last 100 items
-      const trimmed = pendingData.slice(-100);
-      await browser.storage.local.set({ pendingData: trimmed });
-      
-      console.log('[Extension] Saved data locally for later sync');
-    } catch (error) {
-      console.error('[Extension] Failed to save locally:', error);
-    }
-  }
-  
-  async queuePendingData(type, data) {
-    try {
-      const { pendingQueue = [] } = await browser.storage.local.get('pendingQueue');
-      pendingQueue.push({
-        type: type,
-        data: data,
-        timestamp: new Date().toISOString()
-      });
-      
-      await browser.storage.local.set({ pendingQueue: pendingQueue.slice(-50) });
-    } catch (error) {
-      console.error('[Extension] Failed to queue data:', error);
-    }
-  }
-  
-  async processPendingData() {
-    try {
-      const { pendingData = [], pendingQueue = [] } = 
-        await browser.storage.local.get(['pendingData', 'pendingQueue']);
-      
-      // Process pending conversations
-      for (const item of pendingData) {
-        if (item.type === 'conversations') {
-          try {
-            await this.saveConversations(item.data.platform, item.data.conversations);
-            // Remove if successful
-            const index = pendingData.indexOf(item);
-            pendingData.splice(index, 1);
-          } catch (error) {
-            console.error('[Extension] Failed to sync pending data:', error);
+  async injectLLMQuery(tabId, platform, query) {
+    const code = `
+      (async function() {
+        // Platform-specific query injection
+        if ('${platform}' === 'chatgpt') {
+          // 새 대화 시작
+          const newChatButton = document.querySelector('[data-testid="new-chat-button"], button[aria-label="New chat"]');
+          if (newChatButton) {
+            newChatButton.click();
+            await new Promise(resolve => setTimeout(resolve, 1000));
+          }
+          
+          // 입력 필드 찾기
+          const textarea = document.querySelector('textarea[data-id="chat-input"], textarea[placeholder*="Message"]');
+          if (textarea) {
+            // 텍스트 입력
+            textarea.value = ${JSON.stringify(query)};
+            textarea.dispatchEvent(new Event('input', { bubbles: true }));
+            
+            // 전송 버튼 클릭
+            const sendButton = document.querySelector('button[data-testid="send-button"], button[aria-label="Send"]');
+            if (sendButton && !sendButton.disabled) {
+              sendButton.click();
+            }
+            
+            // conversation ID 추출 (URL에서)
+            await new Promise(resolve => setTimeout(resolve, 2000));
+            const match = window.location.pathname.match(/\\/c\\/([a-zA-Z0-9-]+)/);
+            return match ? match[1] : 'unknown';
           }
         }
-      }
-      
-      // Process other pending items
-      for (const item of pendingQueue) {
-        // Handle based on type
-      }
-      
-      // Update storage
-      await browser.storage.local.set({ pendingData, pendingQueue: [] });
-      
-    } catch (error) {
-      console.error('[Extension] Error processing pending data:', error);
-    }
-  }
-  
-  // ======================== Scheduled Collection ========================
-  
-  setupScheduledCollection() {
-    // Use browser alarms for scheduling
-    browser.alarms.create('scheduledCollection', {
-      periodInMinutes: 60 * 24 * 3  // 3 days
-    });
-    
-    browser.alarms.onAlarm.addListener(async (alarm) => {
-      if (alarm.name === 'scheduledCollection') {
-        console.log('[Extension] Scheduled collection triggered');
-        
-        // Get enabled platforms from saved settings
-        const enabledPlatforms = await this.getEnabledPlatforms();
-        
-        if (enabledPlatforms.length > 0) {
-          await this.startCollection({
-            action: 'sync',
-            sync_id: `scheduled-${Date.now()}`,
-            platforms: enabledPlatforms,
-            settings: this.settings
-          });
+        else if ('${platform}' === 'claude') {
+          // Claude-specific implementation
+          const newChatBtn = document.querySelector('button[aria-label="New chat"]');
+          if (newChatBtn) {
+            newChatBtn.click();
+            await new Promise(resolve => setTimeout(resolve, 1000));
+          }
+          
+          const input = document.querySelector('div[contenteditable="true"]');
+          if (input) {
+            input.textContent = ${JSON.stringify(query)};
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+            
+            const sendBtn = input.parentElement.querySelector('button[aria-label="Send"]');
+            if (sendBtn) {
+              sendBtn.click();
+            }
+            
+            await new Promise(resolve => setTimeout(resolve, 2000));
+            // Extract conversation ID from URL or DOM
+            return 'claude-conv-' + Date.now();
+          }
         }
-      }
-    });
-  }
-  
-  async getEnabledPlatforms() {
-    // In real implementation, this would come from saved settings
-    return ['chatgpt', 'claude'];  // Default enabled platforms
-  }
-  
-  // ======================== Settings Management ========================
-  
-  async updateSettings() {
-    if (this.mode !== 'connected') return;
+        else if ('${platform}' === 'gemini') {
+          // Gemini-specific implementation
+          // Add appropriate selectors for Gemini
+        }
+        else if ('${platform}' === 'deepseek') {
+          // DeepSeek-specific implementation
+          // Add appropriate selectors for DeepSeek
+        }
+        // Add other platforms...
+        
+        throw new Error('Could not find input field');
+      })();
+    `;
     
-    try {
-      const response = await fetch(`${this.backendUrl}/settings/current`);
-      if (response.ok) {
-        const newSettings = await response.json();
-        this.settings = { ...this.settings, ...newSettings };
-        await this.saveSettings();
-        console.log('[Extension] Settings updated:', this.settings);
-      }
-    } catch (error) {
-      console.error('[Extension] Failed to update settings:', error);
-    }
+    const results = await browser.tabs.executeScript(tabId, { code });
+    return results[0];
   }
   
-  async saveSettings() {
-    try {
-      await browser.storage.local.set({ extensionSettings: this.settings });
-    } catch (error) {
-      console.error('[Extension] Failed to save settings:', error);
-    }
-  }
-  
-  // ======================== Resource Management ========================
-  
-  startResourceManagement() {
-    // Clean up old processed commands periodically
-    setInterval(() => {
-      if (this.processedCommands.size > 1000) {
-        // Keep only last 100 commands
-        const commands = Array.from(this.processedCommands);
-        this.processedCommands = new Set(commands.slice(-100));
-      }
-    }, 3600000); // Every hour
+  async waitForLLMResponse(tabId, platform, timeout = 30000) {
+    const startTime = Date.now();
     
-    // Clean up old data
-    setInterval(() => {
-      this.cleanupOldData();
-    }, 86400000); // Daily
-  }
-  
-  async cleanupOldData() {
-    try {
-      const { pendingData = [] } = await browser.storage.local.get('pendingData');
-      
-      // Remove data older than 7 days
-      const cutoff = Date.now() - (7 * 24 * 60 * 60 * 1000);
-      const filtered = pendingData.filter(item => {
-        const timestamp = new Date(item.timestamp).getTime();
-        return timestamp > cutoff;
-      });
-      
-      if (filtered.length < pendingData.length) {
-        await browser.storage.local.set({ pendingData: filtered });
-        console.log(`[Extension] Cleaned up ${pendingData.length - filtered.length} old items`);
+    while (Date.now() - startTime < timeout) {
+      try {
+        const results = await browser.tabs.executeScript(tabId, {
+          code: `
+            (function() {
+              // Check for response indicators
+              if ('${platform}' === 'chatgpt') {
+                // Check if response is complete
+                const thinking = document.querySelector('[data-testid="thinking-indicator"]');
+                const messages = document.querySelectorAll('[data-message-author-role="assistant"]');
+                return !thinking && messages.length > 0;
+              }
+              else if ('${platform}' === 'claude') {
+                // Claude response check
+                const messages = document.querySelectorAll('[data-testid="assistant-message"]');
+                return messages.length > 0;
+              }
+              else if ('${platform}' === 'gemini') {
+                // Gemini response check
+                // Add appropriate checks
+              }
+              else if ('${platform}' === 'deepseek') {
+                // DeepSeek response check
+                // Add appropriate checks
+              }
+              return false;
+            })();
+          `
+        });
+        
+        if (results[0]) {
+          return true;
+        }
+      } catch (error) {
+        console.error('[Extension] Error checking response:', error);
       }
-    } catch (error) {
-      console.error('[Extension] Cleanup error:', error);
+      
+      await this.humanDelay(1);
     }
+    
+    throw new Error('Response timeout');
   }
   
   // ======================== Helper Functions ========================
@@ -934,7 +748,7 @@ class AutonomousExtension {
 
 // ======================== Initialize Extension ========================
 
-const extension = new AutonomousExtension();
+const extension = new NativeExtension();
 
 // Export for debugging
 window.llmCollectorExtension = extension;
@@ -942,8 +756,8 @@ window.llmCollectorExtension = extension;
 // Status check every 30 seconds
 setInterval(() => {
   console.log('[Extension] Status:', {
-    mode: extension.mode,
+    nativeConnected: extension.nativeConnected,
     sessions: extension.getSessionStates(),
-    collecting: extension.collectionLock
+    collecting: extension.state.collecting
   });
 }, 30000);

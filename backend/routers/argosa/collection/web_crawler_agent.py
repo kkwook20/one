@@ -1,4 +1,4 @@
-# backend/routers/argosa/data_collection/web_crawler_agent.py - 웹 크롤러 에이전트 (개선된 버전)
+# backend/routers/argosa/data_collection/web_crawler_agent.py - Native Messaging 전용 버전
 
 from typing import Dict, Any, List, Optional, TypedDict, Set, Tuple
 from enum import Enum
@@ -10,12 +10,6 @@ from urllib.parse import urlparse, urljoin
 from collections import defaultdict, deque
 import logging
 import aiohttp
-import httpx
-from selenium import webdriver
-from selenium.webdriver.firefox.options import Options
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
 from bs4 import BeautifulSoup
 import pandas as pd
 from langgraph.graph import StateGraph, END
@@ -24,18 +18,10 @@ import os
 import hashlib
 from pathlib import Path
 import aiofiles
-import tempfile
-import shutil
-from contextlib import asynccontextmanager
-from concurrent.futures import ThreadPoolExecutor
-import backoff
 import uuid
 
-# Firefox 통합 관리자
-from backend.services.firefox_manager import firefox_manager, FirefoxMode, managed_firefox
-
-# 프로젝트 내부 imports (RAG 서비스가 있다면)
-# from ...services.rag_service import rag_service, Document
+# Native Command Manager import
+from ..data_collection import native_command_manager
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +37,6 @@ CACHE_PATH = CRAWLER_DATA_PATH / "cache"
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")
 GOOGLE_CSE_ID = os.getenv("GOOGLE_CSE_ID", "")
 NEWS_API_KEY = os.getenv("NEWS_API_KEY", "")
-SERPAPI_KEY = os.getenv("SERPAPI_KEY", "")
 
 # 크롤링 설정
 MAX_CONCURRENT_REQUESTS = 5
@@ -258,7 +243,7 @@ class CrawlerCache:
             except asyncio.CancelledError:
                 pass
 
-# ===== API 클라이언트들 (개선된 버전) =====
+# ===== API 클라이언트들 (Native Messaging 통합) =====
 
 class BaseAPIClient:
     """기본 API 클라이언트"""
@@ -266,55 +251,15 @@ class BaseAPIClient:
     def __init__(self, api_key: str, base_url: str):
         self.api_key = api_key
         self.base_url = base_url
-        self.session: Optional[aiohttp.ClientSession] = None
-        self.rate_limiter = asyncio.Semaphore(5)  # 동시 요청 제한
         self.request_count = 0
         self.error_count = 0
     
-    async def initialize(self):
-        """세션 초기화"""
-        if not self.session:
-            connector = aiohttp.TCPConnector(limit=10, limit_per_host=5)
-            timeout = aiohttp.ClientTimeout(total=REQUEST_TIMEOUT)
-            self.session = aiohttp.ClientSession(connector=connector, timeout=timeout)
-    
-    async def close(self):
-        """세션 종료"""
-        if self.session:
-            await self.session.close()
-            self.session = None
-    
-    @backoff.on_exception(
-        backoff.expo,
-        (aiohttp.ClientError, asyncio.TimeoutError),
-        max_tries=MAX_RETRIES,
-        max_time=BACKOFF_MAX_TIME
-    )
-    async def _make_request(self, method: str, url: str, **kwargs) -> Dict[str, Any]:
-        """HTTP 요청 (재시도 포함)"""
-        async with self.rate_limiter:
-            if not self.session:
-                await self.initialize()
-            
-            self.request_count += 1
-            
-            try:
-                async with self.session.request(method, url, **kwargs) as response:
-                    if response.status == 429:  # Rate limit
-                        retry_after = int(response.headers.get('Retry-After', 60))
-                        await asyncio.sleep(retry_after)
-                        raise aiohttp.ClientError("Rate limit exceeded")
-                    
-                    response.raise_for_status()
-                    return await response.json()
-                    
-            except Exception as e:
-                self.error_count += 1
-                logger.error(f"API request error: {url} - {e}")
-                raise
+    async def search(self, query: str, **kwargs) -> Dict[str, Any]:
+        """기본 검색 메서드 - 서브클래스에서 구현"""
+        raise NotImplementedError
 
 class GoogleSearchAPI(BaseAPIClient):
-    """Google Custom Search API 클라이언트"""
+    """Google Custom Search API - Native를 통해 실행"""
     
     def __init__(self):
         super().__init__(GOOGLE_API_KEY, "https://www.googleapis.com/customsearch/v1")
@@ -323,7 +268,7 @@ class GoogleSearchAPI(BaseAPIClient):
         self.used_today = 0
     
     async def search(self, query: str, num_results: int = 10, **kwargs) -> Dict[str, Any]:
-        """Google 검색 실행"""
+        """Google 검색 실행 - Native 경유"""
         
         if not self.api_key or not self.cse_id:
             return {
@@ -340,25 +285,31 @@ class GoogleSearchAPI(BaseAPIClient):
                 "results": []
             }
         
-        params = {
-            "key": self.api_key,
-            "cx": self.cse_id,
-            "q": query,
-            "num": min(num_results, 10),  # 최대 10개
-            **kwargs
-        }
-        
         try:
-            data = await self._make_request("GET", self.base_url, params=params)
-            self.used_today += 1
+            # Native로 검색 요청
+            command_id = await native_command_manager.send_command(
+                "search_google",
+                {
+                    "query": query,
+                    "api_key": self.api_key,
+                    "cse_id": self.cse_id,
+                    "num_results": min(num_results, 10),
+                    **kwargs
+                }
+            )
             
-            return {
-                "status": "success",
-                "results": data.get("items", []),
-                "query": query,
-                "total_results": data.get("searchInformation", {}).get("totalResults", 0)
-            }
+            result = await native_command_manager.wait_for_response(command_id, timeout=30)
             
+            if result.get("status") == "success":
+                self.used_today += 1
+                return result
+            else:
+                return {
+                    "status": "error",
+                    "error": result.get("error", "Search failed"),
+                    "results": []
+                }
+                
         except Exception as e:
             return {
                 "status": "error",
@@ -368,19 +319,14 @@ class GoogleSearchAPI(BaseAPIClient):
             }
 
 class NewsAPI(BaseAPIClient):
-    """News API 클라이언트"""
+    """News API 클라이언트 - Native 통합"""
     
     def __init__(self):
         super().__init__(NEWS_API_KEY, "https://newsapi.org/v2")
-        self.endpoints = {
-            "everything": "/everything",
-            "top_headlines": "/top-headlines",
-            "sources": "/sources"
-        }
     
     async def search(self, query: str, from_date: str = None, 
                     sort_by: str = "relevancy", page_size: int = 20) -> Dict[str, Any]:
-        """뉴스 검색"""
+        """뉴스 검색 - Native 경유"""
         
         if not self.api_key:
             return {
@@ -393,32 +339,21 @@ class NewsAPI(BaseAPIClient):
         if not from_date:
             from_date = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
         
-        params = {
-            "apiKey": self.api_key,
-            "q": query,
-            "from": from_date,
-            "sortBy": sort_by,
-            "pageSize": page_size,
-            "language": "en"
-        }
-        
         try:
-            url = self.base_url + self.endpoints["everything"]
-            data = await self._make_request("GET", url, params=params)
-            
-            if data.get("status") == "ok":
-                return {
-                    "status": "success",
-                    "results": data.get("articles", []),
+            command_id = await native_command_manager.send_command(
+                "search_news",
+                {
                     "query": query,
-                    "total_results": data.get("totalResults", 0)
+                    "api_key": self.api_key,
+                    "from_date": from_date,
+                    "sort_by": sort_by,
+                    "page_size": page_size,
+                    "language": "en"
                 }
-            else:
-                return {
-                    "status": "error",
-                    "error": data.get("message", "Unknown error"),
-                    "results": []
-                }
+            )
+            
+            result = await native_command_manager.wait_for_response(command_id, timeout=30)
+            return result
                 
         except Exception as e:
             return {
@@ -427,10 +362,10 @@ class NewsAPI(BaseAPIClient):
                 "results": []
             }
 
-# ===== 웹 크롤링 엔진 (개선된 버전) =====
+# ===== 웹 크롤링 엔진 (Native Messaging 전용) =====
 
 class WebCrawlerEngine:
-    """실제 웹 크롤링을 수행하는 엔진"""
+    """Native Messaging을 통한 웹 크롤링 엔진"""
     
     def __init__(self):
         self.cache = CrawlerCache()
@@ -438,27 +373,16 @@ class WebCrawlerEngine:
             "google": GoogleSearchAPI(),
             "newsapi": NewsAPI(),
         }
-        self.selenium_driver = None
-        self.firefox_context = None
         self.llm_model = DEFAULT_LLM_MODEL
         self.lm_studio_url = LM_STUDIO_URL
-        self._executor = ThreadPoolExecutor(max_workers=4)
         self._session: Optional[aiohttp.ClientSession] = None
     
     async def initialize(self):
         """엔진 초기화"""
-        # API 클라이언트 초기화
-        for client in self.api_clients.values():
-            await client.initialize()
-        
-        # HTTP 세션 생성
+        # LLM 세션 생성
         if not self._session:
-            connector = aiohttp.TCPConnector(limit=20, limit_per_host=5)
-            timeout = aiohttp.ClientTimeout(total=REQUEST_TIMEOUT)
             self._session = aiohttp.ClientSession(
-                connector=connector,
-                timeout=timeout,
-                headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+                timeout=aiohttp.ClientTimeout(total=REQUEST_TIMEOUT)
             )
     
     async def search_web(self, query: str, sources: List[str], 
@@ -527,12 +451,8 @@ class WebCrawlerEngine:
             return {api_name: {"error": str(e)}}
     
     async def _crawl_websites(self, query: str, sites: List[str]) -> Dict[str, Any]:
-        """웹사이트 직접 크롤링"""
+        """웹사이트 크롤링 - Native 사용"""
         crawl_results = {}
-        
-        # Selenium driver 확인
-        if not self.selenium_driver and self.firefox_context:
-            self.selenium_driver = self.firefox_context.get("driver")
         
         for site in sites:
             if not SecurityValidator.is_valid_url(site):
@@ -540,42 +460,9 @@ class WebCrawlerEngine:
                 continue
             
             try:
-                # 일반 HTTP 요청으로 시도
-                content = await self._fetch_url_content(site)
-                
-                if content:
-                    # BeautifulSoup으로 파싱
-                    soup = BeautifulSoup(content, 'html.parser')
-                    
-                    # 검색어 관련 콘텐츠 추출
-                    relevant_content = self._extract_relevant_content(soup, query)
-                    
-                    # LLM으로 분석
-                    analysis = await self._process_with_llm(
-                        {
-                            "url": site,
-                            "content": relevant_content,
-                            "query": query
-                        },
-                        "webpage",
-                        site
-                    )
-                    
-                    crawl_results[urlparse(site).netloc] = {
-                        "url": site,
-                        "status": "success",
-                        "content": relevant_content,
-                        "analysis": analysis
-                    }
-                else:
-                    # Selenium 필요한 경우
-                    if self.selenium_driver:
-                        selenium_result = await self._crawl_with_selenium(site, query)
-                        crawl_results[urlparse(site).netloc] = selenium_result
-                    else:
-                        crawl_results[urlparse(site).netloc] = {
-                            "error": "Content fetch failed and Selenium not available"
-                        }
+                # Native로 크롤링 요청
+                result = await self._crawl_with_native(site, query)
+                crawl_results[urlparse(site).netloc] = result
                         
             except Exception as e:
                 logger.error(f"Error crawling {site}: {e}")
@@ -583,122 +470,65 @@ class WebCrawlerEngine:
         
         return {"websites": crawl_results}
     
-    async def _fetch_url_content(self, url: str) -> Optional[str]:
-        """URL 콘텐츠 가져오기"""
-        
-        if not self._session:
-            await self.initialize()
+    async def _crawl_with_native(self, url: str, query: str) -> Dict[str, Any]:
+        """Native Messaging을 사용한 크롤링"""
         
         try:
-            async with self._session.get(url) as response:
-                # 콘텐츠 타입 확인
-                content_type = response.headers.get('Content-Type', '')
-                if not SecurityValidator.is_safe_content_type(content_type):
-                    logger.warning(f"Unsafe content type: {content_type}")
-                    return None
-                
-                # 크기 제한 확인
-                content_length = response.headers.get('Content-Length')
-                if content_length and int(content_length) > MAX_CONTENT_SIZE:
-                    logger.warning(f"Content too large: {content_length} bytes")
-                    return None
-                
-                # 텍스트 인코딩 감지
-                content = await response.read()
-                encoding = response.charset or 'utf-8'
-                
-                return content.decode(encoding, errors='ignore')
-                
-        except Exception as e:
-            logger.error(f"URL fetch error: {e}")
-            return None
-    
-    async def _crawl_with_selenium(self, url: str, query: str) -> Dict[str, Any]:
-        """Selenium을 사용한 크롤링"""
-        
-        loop = asyncio.get_event_loop()
-        
-        def selenium_task():
-            try:
-                self.selenium_driver.get(url)
-                
-                # 페이지 로드 대기
-                WebDriverWait(self.selenium_driver, 10).until(
-                    EC.presence_of_element_located((By.TAG_NAME, "body"))
-                )
-                
-                # JavaScript 실행 대기
-                self.selenium_driver.implicitly_wait(2)
-                
-                # 스크롤하여 동적 콘텐츠 로드
-                self.selenium_driver.execute_script("window.scrollTo(0, document.body.scrollHeight/2);")
-                
-                # 검색 박스 찾기 및 검색
-                search_performed = False
-                for selector in ['input[type="search"]', 'input[name="q"]', 'input[name="search"]']:
-                    try:
-                        search_box = self.selenium_driver.find_element(By.CSS_SELECTOR, selector)
-                        if search_box.is_displayed():
-                            search_box.clear()
-                            search_box.send_keys(query)
-                            search_box.submit()
-                            search_performed = True
-                            break
-                    except:
-                        continue
-                
-                if search_performed:
-                    # 검색 결과 대기
-                    WebDriverWait(self.selenium_driver, 5).until(
-                        lambda d: d.execute_script("return document.readyState") == "complete"
-                    )
-                
-                # 페이지 소스 가져오기
-                page_source = self.selenium_driver.page_source
-                
-                # 스크린샷 캡처
-                screenshot_path = DOWNLOADS_PATH / f"screenshot_{datetime.now().timestamp()}.png"
-                self.selenium_driver.save_screenshot(str(screenshot_path))
-                
-                return {
-                    "page_source": page_source,
-                    "screenshot": str(screenshot_path),
-                    "search_performed": search_performed
+            # Native로 크롤링 명령 전송
+            command_id = await native_command_manager.send_command(
+                "crawl_web",
+                {
+                    "url": url,
+                    "search_query": query,
+                    "wait_for_element": True,
+                    "extract_mode": "smart",  # 스마트 추출 모드
+                    "screenshot": True
                 }
-                
-            except Exception as e:
-                logger.error(f"Selenium error: {e}")
-                return {"error": str(e)}
-        
-        # 별도 스레드에서 실행
-        result = await loop.run_in_executor(self._executor, selenium_task)
-        
-        if "error" not in result:
+            )
+            
+            # 응답 대기
+            result = await native_command_manager.wait_for_response(command_id, timeout=30)
+            
+            if result.get("error"):
+                return {
+                    "url": url,
+                    "status": "error",
+                    "error": result["error"]
+                }
+            
             # 콘텐츠 분석
-            soup = BeautifulSoup(result["page_source"], 'html.parser')
-            relevant_content = self._extract_relevant_content(soup, query)
+            content = result.get("content", "")
+            extracted_data = result.get("extracted_data", {})
             
             # LLM 분석
             analysis = await self._process_with_llm(
                 {
                     "url": url,
-                    "content": relevant_content,
-                    "screenshot": result.get("screenshot"),
-                    "search_performed": result.get("search_performed")
+                    "content": content,
+                    "extracted": extracted_data,
+                    "query": query,
+                    "screenshot": result.get("screenshot_path")
                 },
-                "webpage_dynamic",
+                "webpage_native",
                 url
             )
             
             return {
                 "url": url,
                 "status": "success",
-                "content": relevant_content,
+                "content": content,
+                "extracted_data": extracted_data,
                 "analysis": analysis,
-                "screenshot": result.get("screenshot")
+                "screenshot": result.get("screenshot_path")
             }
-        
-        return result
+            
+        except Exception as e:
+            logger.error(f"Native crawl error: {e}")
+            return {
+                "url": url,
+                "status": "error",
+                "error": str(e)
+            }
     
     def _extract_relevant_content(self, soup: BeautifulSoup, query: str, 
                                  max_length: int = 10000) -> str:
@@ -761,35 +591,14 @@ class WebCrawlerEngine:
                     site_results[path] = cached
                     continue
                 
-                # 크롤링
-                content = await self._fetch_url_content(url)
-                if content:
-                    soup = BeautifulSoup(content, 'html.parser')
-                    relevant_content = self._extract_relevant_content(soup, query)
-                    
-                    # 분석
-                    analysis = await self._process_with_llm(
-                        {
-                            "url": url,
-                            "content": relevant_content,
-                            "query": query,
-                            "site_priority": site_info.get("priority", 0)
-                        },
-                        "focused_content",
-                        domain
-                    )
-                    
-                    result = {
-                        "url": url,
-                        "content": relevant_content,
-                        "analysis": analysis
-                    }
-                    
-                    # 캐시 저장
+                # Native 크롤링
+                result = await self._crawl_with_native(url, query)
+                
+                # 캐시 저장
+                if result.get("status") == "success":
                     await self.cache.set(url, result)
-                    site_results[path] = result
-                else:
-                    site_results[path] = {"error": "Content fetch failed"}
+                
+                site_results[path] = result
             
             focused_results[domain] = site_results
         
@@ -880,13 +689,17 @@ Extract and return as JSON:
     "limitations": ["any limitations or biases"]
 }}"""
         
-        elif content_type == "webpage":
-            return f"""Analyze this webpage content:
+        elif content_type == "webpage_native":
+            return f"""Analyze this webpage content crawled via Native:
 
 URL: {content.get('url', 'Unknown')}
 Query: {content.get('query', '')}
+Has Screenshot: {bool(content.get('screenshot'))}
 Content Extract:
 {content.get('content', '')[:3000]}
+
+Extracted Data:
+{json.dumps(content.get('extracted', {}), indent=2)[:1000]}
 
 Extract and return as JSON:
 {{
@@ -895,26 +708,8 @@ Extract and return as JSON:
     "data_points": ["specific data or facts"],
     "quality_score": 0.0-1.0,
     "relevance_score": 0.0-1.0,
+    "visual_elements": ["if screenshot available, note important visual elements"],
     "recommended_actions": ["next steps or related pages to explore"]
-}}"""
-        
-        elif content_type == "webpage_dynamic":
-            return f"""Analyze this dynamic webpage content:
-
-URL: {content.get('url', 'Unknown')}
-Search Performed: {content.get('search_performed', False)}
-Screenshot Available: {bool(content.get('screenshot'))}
-Content Extract:
-{content.get('content', '')[:3000]}
-
-Extract and return as JSON:
-{{
-    "page_type": "type of dynamic content",
-    "interactive_elements": ["list of interactive features"],
-    "dynamic_content": ["content loaded dynamically"],
-    "search_results": ["if search was performed"],
-    "visual_insights": ["if screenshot available"],
-    "navigation_suggestions": ["how to better navigate this site"]
 }}"""
         
         elif content_type == "focused_content":
@@ -947,7 +742,7 @@ Content: {str(content)[:3000]}
 Extract key information and return as structured JSON."""
     
     async def download_file(self, url: str, filename: str = None) -> Optional[str]:
-        """파일 다운로드"""
+        """파일 다운로드 - Native 사용"""
         
         if not SecurityValidator.is_valid_url(url):
             logger.error(f"Invalid URL for download: {url}")
@@ -958,57 +753,41 @@ Extract key information and return as structured JSON."""
                 url.split('/')[-1] or f"download_{datetime.now().timestamp()}"
             )
         
-        file_path = DOWNLOADS_PATH / filename
-        
         try:
-            if not self._session:
-                await self.initialize()
+            command_id = await native_command_manager.send_command(
+                "download_file",
+                {
+                    "url": url,
+                    "filename": filename,
+                    "save_path": str(DOWNLOADS_PATH)
+                }
+            )
             
-            async with self._session.get(url) as response:
-                # 크기 확인
-                content_length = response.headers.get('Content-Length')
-                if content_length and int(content_length) > MAX_CONTENT_SIZE:
-                    logger.error(f"File too large: {content_length} bytes")
-                    return None
-                
-                # 스트리밍 다운로드
-                async with aiofiles.open(file_path, 'wb') as f:
-                    async for chunk in response.content.iter_chunked(8192):
-                        await f.write(chunk)
-                
+            result = await native_command_manager.wait_for_response(command_id, timeout=60)
+            
+            if result.get("status") == "success":
+                file_path = result.get("file_path")
                 logger.info(f"Downloaded file: {file_path}")
-                return str(file_path)
+                return file_path
+            else:
+                logger.error(f"Download failed: {result.get('error')}")
+                return None
                 
         except Exception as e:
             logger.error(f"Download error: {e}")
-            if file_path.exists():
-                file_path.unlink()
             return None
     
     async def cleanup(self):
         """리소스 정리"""
-        # API 클라이언트 정리
-        for client in self.api_clients.values():
-            await client.close()
-        
-        # HTTP 세션 정리
-        if self._session:
-            await self._session.close()
-            self._session = None
-        
         # 캐시 정리
         await self.cache.shutdown()
         
-        # Executor 정리
-        self._executor.shutdown(wait=True)
-    
-    def set_firefox_context(self, context: Dict[str, Any]):
-        """Firefox 컨텍스트 설정"""
-        self.firefox_context = context
-        if context and context.get("driver"):
-            self.selenium_driver = context["driver"]
+        # LLM 세션 정리
+        if self._session:
+            await self._session.close()
+            self._session = None
 
-# ===== 메인 시스템 클래스 (개선된 버전) =====
+# ===== 메인 시스템 클래스 (Native 통합) =====
 
 class APIQuotaManager:
     """API 한도를 최대한 활용하는 관리자"""
@@ -1017,7 +796,6 @@ class APIQuotaManager:
         self.quotas = {
             "google": {"daily_limit": 100, "used": 0, "reset_time": None},
             "newsapi": {"daily_limit": 500, "used": 0, "reset_time": None},
-            "serpapi": {"monthly_limit": 5000, "used": 0, "reset_time": None},
         }
         self.usage_history = defaultdict(lambda: deque(maxlen=100))
         self._lock = asyncio.Lock()
@@ -1554,10 +1332,6 @@ Return as JSON:
         """실제 크롤링 실행"""
         logger.info(f"[WebCrawler] Executing search for: {state['query']}")
         
-        # Firefox 컨텍스트 전달
-        if hasattr(self, 'firefox_context') and self.firefox_context:
-            self.crawler_engine.set_firefox_context(self.firefox_context)
-        
         # 검색 소스 준비
         sources = []
         if state.get("apis_to_use"):
@@ -1823,11 +1597,6 @@ Provide:
         search_id = f"search_{uuid.uuid4()}"
         logger.info(f"Starting search {search_id}: {query}")
         
-        # Firefox 컨텍스트 설정
-        firefox_context = context.pop("firefox_context", None)
-        if firefox_context:
-            self.firefox_context = firefox_context
-        
         initial_state = WebCrawlerWorkflowState(
             query=query,
             context=context,
@@ -1943,29 +1712,6 @@ Provide:
             await self._session.close()
             self._session = None
 
-# ===== 통합 웹 크롤러 with Firefox =====
-
-async def create_web_crawler_with_firefox(query: str, context: Dict[str, Any] = {}) -> Dict[str, Any]:
-    """Firefox를 사용한 웹 크롤러 실행"""
-    
-    # Firefox 관리자에서 컨텍스트 획득
-    async with managed_firefox("web_crawler", FirefoxMode.CRAWLER) as firefox_ctx:
-        # 웹 크롤러 시스템 생성
-        crawler = WebCrawlerAgentSystem()
-        
-        try:
-            # Firefox 컨텍스트 전달
-            context["firefox_context"] = firefox_ctx
-            
-            # 검색 실행
-            result = await crawler.execute_search(query, context)
-            
-            return result
-            
-        finally:
-            # 정리
-            await crawler.cleanup()
-
 # ===== API 엔드포인트 =====
 
 from fastapi import APIRouter, HTTPException, BackgroundTasks
@@ -1980,7 +1726,6 @@ web_crawler_system = WebCrawlerAgentSystem()
 class WebSearchRequest(BaseModel):
     query: str = Field(..., min_length=1, max_length=500)
     context: Optional[Dict[str, Any]] = {}
-    use_firefox: bool = True
     timeout: int = Field(default=300, ge=30, le=600)  # 5분 기본값
 
 class WebSearchResponse(BaseModel):
@@ -2013,18 +1758,10 @@ async def web_search(request: WebSearchRequest, background_tasks: BackgroundTask
     """웹 검색 API"""
     
     try:
-        if request.use_firefox:
-            # Firefox를 사용한 검색
-            result = await create_web_crawler_with_firefox(
-                request.query,
-                request.context
-            )
-        else:
-            # Firefox 없이 검색
-            result = await web_crawler_system.execute_search(
-                request.query,
-                request.context
-            )
+        result = await web_crawler_system.execute_search(
+            request.query,
+            request.context
+        )
         
         return WebSearchResponse(**result)
         

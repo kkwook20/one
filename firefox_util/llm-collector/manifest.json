@@ -2,7 +2,7 @@
   "manifest_version": 2,
   "name": "LLM Conversation Collector",
   "version": "2.0",
-  "description": "Autonomous AI conversation collector with smart session management",
+  "description": "Autonomous AI conversation collector with Native Messaging",
   
   "browser_specific_settings": {
     "gecko": {
@@ -12,18 +12,20 @@
   },
   
   "permissions": [
+    "nativeMessaging",
     "storage",
     "alarms",
     "tabs",
     "notifications",
     "cookies",
+    "webNavigation",
+    "<all_urls>",
     "*://chat.openai.com/*",
     "*://claude.ai/*",
     "*://gemini.google.com/*",
     "*://chat.deepseek.com/*",
     "*://grok.x.ai/*",
-    "*://www.perplexity.ai/*",
-    "http://localhost:8000/*"
+    "*://www.perplexity.ai/*"
   ],
   
   "background": {
@@ -42,23 +44,24 @@
         "*://www.perplexity.ai/*"
       ],
       "js": ["content.js"],
-      "run_at": "document_idle"
+      "run_at": "document_idle",
+      "all_frames": false
     }
   ],
   
   "browser_action": {
     "default_popup": "popup.html",
     "default_icon": {
-      "16": "icon.png",
-      "48": "icon.png",
-      "128": "icon.png"
+      "16": "icon-16.png",
+      "48": "icon-48.png",
+      "128": "icon-128.png"
     },
     "default_title": "LLM Conversation Collector"
   },
   
   "icons": {
-    "16": "icon.png",
-    "48": "icon.png",
-    "128": "icon.png"
+    "16": "icon-16.png",
+    "48": "icon-48.png",
+    "128": "icon-128.png"
   }
 }

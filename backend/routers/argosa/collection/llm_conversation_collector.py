@@ -1,4 +1,4 @@
-# backend/routers/argosa/data_collection/llm_conversation_collector.py - LLM 플랫폼 대화 수집 모듈
+# backend/routers/argosa/collection/llm_conversation_collector.py - LLM 플랫폼 대화 수집 모듈
 
 from fastapi import APIRouter, HTTPException
 from typing import Dict, List, Optional, Any
@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 # ======================== Configuration ========================
 
 LLM_DATA_PATH = Path("./data/argosa/llm-conversations")
-SUPPORTED_PLATFORMS = ["chatgpt", "claude", "gemini", "deepseek", "grok", "perplexity"]
+SUPPORTED_PLATFORMS = ["chatgpt", "claude", "gemini", "deepseek", "grok", "perplexity", "pplx"]
 
 # ======================== Data Models ========================
 
@@ -53,6 +53,7 @@ class LLMConversationCollector:
     def __init__(self):
         self.platforms = SUPPORTED_PLATFORMS
         self.collection_history = {}
+        self.llm_conversation_ids = set()  # LLM 질의로 생성된 대화 ID 추적
         self._ensure_directories()
         
     def _ensure_directories(self):
@@ -61,12 +62,56 @@ class LLMConversationCollector:
             platform_path = LLM_DATA_PATH / platform
             platform_path.mkdir(parents=True, exist_ok=True)
     
+    def track_llm_conversation(self, conversation_id: str, metadata: Dict[str, Any]):
+        """LLM 질의로 생성된 대화 추적"""
+        self.llm_conversation_ids.add(conversation_id)
+        logger.info(f"Tracking LLM conversation: {conversation_id} - {metadata}")
+    
+    def is_llm_conversation(self, conversation_id: str) -> bool:
+        """LLM 질의로 생성된 대화인지 확인"""
+        return conversation_id in self.llm_conversation_ids
+    
     async def save_conversations(self, platform: str, conversations: List[Dict[str, Any]], 
                                timestamp: str = None, metadata: Dict[str, Any] = {}) -> Dict[str, Any]:
-        """플랫폼별 대화 저장"""
+        """플랫폼별 대화 저장 (LLM 대화 필터링 포함)"""
         
         if platform not in self.platforms:
             raise ValueError(f"Unsupported platform: {platform}")
+        
+        # LLM 대화 필터링
+        filtered_conversations = []
+        excluded_count = 0
+        
+        for conv in conversations:
+            conv_id = conv.get("id", "")
+            conv_metadata = conv.get("metadata", {})
+            
+            # 여러 방법으로 LLM 대화 체크
+            is_llm = (
+                self.is_llm_conversation(conv_id) or
+                conv_metadata.get("source") == "llm_query" or
+                conv_metadata.get("is_llm_query", False)
+            )
+            
+            if is_llm:
+                excluded_count += 1
+                logger.debug(f"Excluding LLM conversation: {conv_id} - {conv.get('title', 'Untitled')}")
+            else:
+                filtered_conversations.append(conv)
+        
+        if excluded_count > 0:
+            logger.info(f"Excluded {excluded_count} LLM-generated conversations")
+        
+        # 필터링된 대화가 없으면 저장하지 않음
+        if not filtered_conversations:
+            logger.info(f"No conversations to save after filtering for {platform}")
+            return {
+                "success": True,
+                "filename": None,
+                "count": 0,
+                "excluded_llm_count": excluded_count,
+                "message": "All conversations were LLM-generated and excluded"
+            }
         
         platform_path = LLM_DATA_PATH / platform
         timestamp = timestamp or datetime.now().isoformat()
@@ -80,9 +125,11 @@ class LLMConversationCollector:
         save_data = {
             "platform": platform,
             "timestamp": timestamp,
-            "conversations": conversations,
+            "conversations": filtered_conversations,
             "metadata": {
-                "count": len(conversations),
+                "count": len(filtered_conversations),
+                "excluded_llm_count": excluded_count,
+                "total_before_filter": len(conversations),
                 "collected_at": datetime.now().isoformat(),
                 **metadata
             }
@@ -93,24 +140,26 @@ class LLMConversationCollector:
         with open(file_path, 'w', encoding='utf-8') as f:
             json.dump(save_data, f, ensure_ascii=False, indent=2)
         
-        logger.info(f"Saved {len(conversations)} conversations to {filename}")
+        logger.info(f"Saved {len(filtered_conversations)} conversations to {filename}")
         
         # 히스토리 업데이트
         self.collection_history[platform] = {
             "last_sync": datetime.now().isoformat(),
             "last_file": filename,
-            "conversation_count": len(conversations)
+            "conversation_count": len(filtered_conversations),
+            "excluded_llm_count": excluded_count
         }
         
         return {
             "success": True,
             "filename": filename,
-            "count": len(conversations),
+            "count": len(filtered_conversations),
+            "excluded_llm_count": excluded_count,
             "path": str(file_path)
         }
     
     async def get_conversations(self, platform: str, date: str = None, 
-                              limit: int = None) -> List[ConversationData]:
+                              limit: int = None, include_llm: bool = False) -> List[ConversationData]:
         """저장된 대화 조회"""
         
         if platform not in self.platforms:
@@ -137,6 +186,12 @@ class LLMConversationCollector:
                     data = json.load(f)
                     
                 for conv in data.get("conversations", []):
+                    # LLM 대화 필터링 (include_llm이 False인 경우)
+                    if not include_llm:
+                        conv_metadata = conv.get("metadata", {})
+                        if conv_metadata.get("source") == "llm_query" or conv_metadata.get("is_llm_query", False):
+                            continue
+                    
                     conversations.append(ConversationData(
                         id=conv.get("id", str(uuid.uuid4())),
                         platform=platform,
@@ -170,6 +225,7 @@ class LLMConversationCollector:
             
             # 파일 수와 대화 수 계산
             total_conversations = 0
+            excluded_llm_count = 0
             file_count = 0
             latest_sync = None
             
@@ -181,6 +237,10 @@ class LLMConversationCollector:
                         data = json.load(f)
                         conv_count = len(data.get("conversations", []))
                         total_conversations += conv_count
+                        
+                        # 메타데이터에서 제외된 LLM 대화 수 확인
+                        metadata = data.get("metadata", {})
+                        excluded_llm_count += metadata.get("excluded_llm_count", 0)
                         
                         # 최신 동기화 시간
                         file_time = datetime.fromtimestamp(file.stat().st_mtime)
@@ -230,7 +290,7 @@ class LLMConversationCollector:
         return deleted_stats
     
     async def search_conversations(self, query: str, platforms: List[str] = None,
-                                 date_range: Dict[str, str] = None) -> List[Dict[str, Any]]:
+                                 date_range: Dict[str, str] = None, include_llm: bool = False) -> List[Dict[str, Any]]:
         """대화 내용 검색"""
         
         platforms = platforms or self.platforms
@@ -264,6 +324,12 @@ class LLMConversationCollector:
                         data = json.load(f)
                         
                     for conv in data.get("conversations", []):
+                        # LLM 대화 필터링
+                        if not include_llm:
+                            conv_metadata = conv.get("metadata", {})
+                            if conv_metadata.get("source") == "llm_query" or conv_metadata.get("is_llm_query", False):
+                                continue
+                        
                         # 제목 검색
                         if query.lower() in conv.get("title", "").lower():
                             results.append({
@@ -295,10 +361,10 @@ class LLMConversationCollector:
         return results
     
     async def export_conversations(self, platform: str, format: str = "json",
-                                 date_range: Dict[str, str] = None) -> Dict[str, Any]:
+                                 date_range: Dict[str, str] = None, include_llm: bool = False) -> Dict[str, Any]:
         """대화 내보내기"""
         
-        conversations = await self.get_conversations(platform)
+        conversations = await self.get_conversations(platform, include_llm=include_llm)
         
         # 날짜 범위 필터링
         if date_range:
@@ -358,10 +424,10 @@ class LLMConversationCollector:
             "format": format
         }
     
-    async def get_conversation_insights(self, platform: str) -> Dict[str, Any]:
+    async def get_conversation_insights(self, platform: str, include_llm: bool = False) -> Dict[str, Any]:
         """대화 인사이트 분석"""
         
-        conversations = await self.get_conversations(platform)
+        conversations = await self.get_conversations(platform, include_llm=include_llm)
         
         # 기본 통계
         total_conversations = len(conversations)
@@ -412,7 +478,7 @@ collector = LLMConversationCollector()
 
 @router.post("/save")
 async def save_conversations(request: ConversationSaveRequest):
-    """대화 저장 API"""
+    """대화 저장 API - LLM 소스 체크 추가"""
     try:
         result = await collector.save_conversations(
             platform=request.platform,
@@ -428,10 +494,11 @@ async def save_conversations(request: ConversationSaveRequest):
         raise HTTPException(status_code=500, detail="Failed to save conversations")
 
 @router.get("/{platform}")
-async def get_conversations(platform: str, date: Optional[str] = None, limit: Optional[int] = None):
+async def get_conversations(platform: str, date: Optional[str] = None, 
+                           limit: Optional[int] = None, include_llm: bool = False):
     """대화 조회 API"""
     try:
-        conversations = await collector.get_conversations(platform, date, limit)
+        conversations = await collector.get_conversations(platform, date, limit, include_llm)
         return {
             "platform": platform,
             "conversations": [conv.dict() for conv in conversations],
@@ -469,10 +536,10 @@ async def get_platform_stats(platform: str):
 
 @router.post("/search")
 async def search_conversations(query: str, platforms: List[str] = None, 
-                             date_range: Dict[str, str] = None):
+                             date_range: Dict[str, str] = None, include_llm: bool = False):
     """대화 검색 API"""
     try:
-        results = await collector.search_conversations(query, platforms, date_range)
+        results = await collector.search_conversations(query, platforms, date_range, include_llm)
         return {
             "query": query,
             "results": results,
@@ -484,10 +551,10 @@ async def search_conversations(query: str, platforms: List[str] = None,
 
 @router.post("/export/{platform}")
 async def export_conversations(platform: str, format: str = "json", 
-                             date_range: Dict[str, str] = None):
+                             date_range: Dict[str, str] = None, include_llm: bool = False):
     """대화 내보내기 API"""
     try:
-        result = await collector.export_conversations(platform, format, date_range)
+        result = await collector.export_conversations(platform, format, date_range, include_llm)
         return result
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -496,10 +563,10 @@ async def export_conversations(platform: str, format: str = "json",
         raise HTTPException(status_code=500, detail="Failed to export conversations")
 
 @router.get("/insights/{platform}")
-async def get_conversation_insights(platform: str):
+async def get_conversation_insights(platform: str, include_llm: bool = False):
     """대화 인사이트 API"""
     try:
-        insights = await collector.get_conversation_insights(platform)
+        insights = await collector.get_conversation_insights(platform, include_llm)
         return insights
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -523,6 +590,12 @@ async def clean_old_data(days_to_keep: int = 30):
     except Exception as e:
         logger.error(f"Error cleaning data: {e}")
         raise HTTPException(status_code=500, detail="Failed to clean old data")
+
+@router.post("/track-llm/{conversation_id}")
+async def track_llm_conversation(conversation_id: str, metadata: Dict[str, Any] = {}):
+    """LLM 대화 추적 API"""
+    collector.track_llm_conversation(conversation_id, metadata)
+    return {"success": True, "conversation_id": conversation_id}
 
 # ======================== Helper Functions ========================
 

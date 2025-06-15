@@ -2,8 +2,8 @@
 
 from fastapi import APIRouter
 
-# Create main router
-router = APIRouter()
+# Create main router with prefix and tags
+router = APIRouter(prefix="/api/argosa", tags=["argosa"])
 
 # Export for main.py
 __all__ = ['router', 'initialize', 'shutdown']
@@ -12,6 +12,26 @@ __all__ = ['router', 'initialize', 'shutdown']
 try:
     from .data_collection import router as collection_router
     router.include_router(collection_router, prefix="/data", tags=["Data Collection"])
+    
+    # Collection 서브모듈들 추가
+    try:
+        from .collection.llm_conversation_collector import router as llm_conv_router
+        router.include_router(llm_conv_router, prefix="/data", tags=["LLM Conversations"])
+    except ImportError:
+        print("[Argosa] llm_conversation_collector module not found")
+    
+    try:
+        from .collection.llm_query_service import router as llm_query_router
+        router.include_router(llm_query_router, prefix="/data", tags=["LLM Query"])
+    except ImportError:
+        print("[Argosa] llm_query_service module not found")
+    
+    try:
+        from .collection.web_crawler_agent import crawler_router
+        router.include_router(crawler_router, prefix="/data", tags=["Web Crawler"])
+    except ImportError:
+        print("[Argosa] web_crawler_agent module not found")
+        
 except ImportError:
     print("[Argosa] data_collection module not found")
 
@@ -60,6 +80,26 @@ async def health_check():
     try:
         from . import data_collection
         modules_status["data_collection"] = "operational"
+        
+        # Check collection submodules
+        try:
+            from .collection import llm_conversation_collector
+            modules_status["llm_conversation_collector"] = "operational"
+        except ImportError:
+            modules_status["llm_conversation_collector"] = "not_available"
+            
+        try:
+            from .collection import llm_query_service
+            modules_status["llm_query_service"] = "operational"
+        except ImportError:
+            modules_status["llm_query_service"] = "not_available"
+            
+        try:
+            from .collection import web_crawler_agent
+            modules_status["web_crawler_agent"] = "operational"
+        except ImportError:
+            modules_status["web_crawler_agent"] = "not_available"
+            
     except ImportError:
         modules_status["data_collection"] = "not_available"
     
@@ -114,6 +154,17 @@ async def initialize():
         from .data_collection import initialize as init_collection
         await init_collection()
         print("[Argosa] data_collection initialized")
+        
+        # Initialize collection submodules
+        try:
+            from .collection.llm_query_service import llm_service
+            await llm_service.initialize()
+            print("[Argosa] llm_query_service initialized")
+        except ImportError:
+            print("[Argosa] llm_query_service module not available for initialization")
+        except Exception as e:
+            print(f"[Argosa] Error initializing llm_query_service: {e}")
+            
     except ImportError:
         print("[Argosa] data_collection module not available for initialization")
     except Exception as e:
@@ -185,6 +236,17 @@ async def shutdown():
         from .data_collection import shutdown as shutdown_collection
         await shutdown_collection()
         print("[Argosa] data_collection shut down")
+        
+        # Shutdown collection submodules
+        try:
+            from .collection.llm_query_service import llm_service
+            await llm_service.shutdown()
+            print("[Argosa] llm_query_service shut down")
+        except ImportError:
+            pass
+        except Exception as e:
+            print(f"[Argosa] Error shutting down llm_query_service: {e}")
+            
     except ImportError:
         pass
     except Exception as e:

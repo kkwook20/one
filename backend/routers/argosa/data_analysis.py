@@ -1,3 +1,4 @@
+# backend/routers/argosa/data_analysis.py 
 """데이터 분석 및 AI 에이전트 시스템 라우터"""
 
 from fastapi import APIRouter, HTTPException, WebSocket, BackgroundTasks
@@ -50,6 +51,11 @@ from .analysis import (
     should_retry_operation,
     determine_next_workflow
 )
+
+# 추가 import - 분산 AI 실행 지원
+from .analysis.lm_studio_manager import lm_studio_manager, TaskType
+from .analysis.network_discovery import network_discovery
+from .analysis.distributed_ai import distributed_executor
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -928,7 +934,54 @@ class EnhancedAgentSystem:
             raise
     
     async def _call_llm(self, model: str, prompt: str) -> Dict[str, Any]:
-        """LLM 호출 (실제 구현 필요)"""
+        """LLM 호출 - 분산 실행 지원"""
+        
+        # 에이전트 타입에서 작업 타입 매핑
+        task_type_map = {
+            "creative": TaskType.CREATIVE_WRITING,
+            "code": TaskType.CODE_GENERATION,
+            "analys": TaskType.ANALYSIS,
+            "reason": TaskType.REASONING,
+            "translat": TaskType.TRANSLATION,
+            "summar": TaskType.SUMMARIZATION
+        }
+        
+        # 프롬프트에서 작업 타입 추론
+        task_type = TaskType.ANALYSIS  # 기본값
+        for key, t_type in task_type_map.items():
+            if key in prompt.lower():
+                task_type = t_type
+                break
+        
+        # 분산 실행
+        task_id = await distributed_executor.submit_task(
+            prompt=prompt,
+            model=model,
+            agent_type="general",  # 실제 에이전트 타입으로 변경 필요
+            task_type=task_type,
+            priority=0
+        )
+        
+        # 결과 대기
+        task = await distributed_executor.wait_for_task(task_id, timeout=60)
+        
+        if task and task.status == "completed":
+            result = task.result
+            if result and "choices" in result:
+                content = result["choices"][0]["message"]["content"]
+                
+                # JSON 추출 시도
+                json_result = extract_json_from_text(content)
+                if json_result:
+                    return json_result
+                
+                return {"result": content}
+        
+        # 폴백: 시뮬레이션
+        return await self._simulate_llm_response(prompt)
+    
+    async def _simulate_llm_response(self, prompt: str) -> Dict[str, Any]:
+        """LLM 응답 시뮬레이션 (폴백용)"""
         
         # 시뮬레이션
         await asyncio.sleep(1)
@@ -1587,6 +1640,108 @@ async def quick_insight(request: Dict[str, Any]):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+# ===== 분산 AI 실행 관련 엔드포인트 =====
+
+@router.post("/lm-studio/discover")
+async def discover_lm_studios(subnet: Optional[str] = None):
+    """네트워크에서 LM Studio 인스턴스 검색"""
+    
+    devices = await network_discovery.scan_network(subnet)
+    
+    # 발견된 인스턴스 자동 추가
+    for device in devices:
+        await lm_studio_manager.add_instance(device.ip, device.port)
+    
+    return {
+        "discovered": len(devices),
+        "devices": [
+            {
+                "ip": device.ip,
+                "hostname": device.hostname,
+                "port": device.port,
+                "response_time": device.response_time
+            }
+            for device in devices
+        ]
+    }
+
+@router.get("/lm-studio/instances")
+async def list_lm_studio_instances():
+    """LM Studio 인스턴스 목록"""
+    
+    instances = []
+    for inst in lm_studio_manager.instances.values():
+        instances.append({
+            "id": inst.id,
+            "host": inst.host,
+            "port": inst.port,
+            "status": inst.status,
+            "is_local": inst.is_local,
+            "models": inst.available_models,
+            "current_model": inst.current_model,
+            "performance_score": inst.performance_score
+        })
+    
+    return {
+        "instances": instances,
+        "total": len(instances)
+    }
+
+@router.post("/lm-studio/add-instance")
+async def add_lm_studio_instance(host: str, port: int = 1234):
+    """LM Studio 인스턴스 수동 추가"""
+    
+    instance = await lm_studio_manager.add_instance(host, port)
+    
+    return {
+        "id": instance.id,
+        "status": instance.status,
+        "models": instance.available_models
+    }
+
+@router.get("/distributed/status")
+async def get_distributed_status():
+    """분산 시스템 상태"""
+    
+    return distributed_executor.get_cluster_status()
+
+@router.post("/distributed/execute")
+async def execute_distributed(request: Dict[str, Any]):
+    """분산 실행 요청"""
+    
+    task_id = await distributed_executor.submit_task(
+        prompt=request["prompt"],
+        model=request["model"],
+        agent_type=request.get("agent_type", "general"),
+        task_type=TaskType(request.get("task_type", "analysis")),
+        priority=request.get("priority", 0)
+    )
+    
+    return {
+        "task_id": task_id,
+        "status": "submitted"
+    }
+
+@router.get("/distributed/task/{task_id}")
+async def get_task_status(task_id: str):
+    """작업 상태 조회"""
+    
+    task = await distributed_executor.get_task_status(task_id)
+    
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    
+    return {
+        "task_id": task.task_id,
+        "status": task.status,
+        "model": task.model,
+        "assigned_instance": task.assigned_instance,
+        "created_at": task.created_at.isoformat(),
+        "completed_at": task.completed_at.isoformat() if task.completed_at else None,
+        "result": task.result if task.status == "completed" else None,
+        "error": task.error if task.status == "failed" else None
+    }
+
 # ===== 헬퍼 함수 =====
 
 async def cleanup_old_workflows():
@@ -1625,6 +1780,10 @@ async def schedule_cleanup():
 async def initialize():
     """Initialize data analysis module"""
     logger.info("Data analysis module initialized")
+    
+    # 분산 실행기 초기화
+    await distributed_executor.initialize(auto_discover=False)
+    
     # 정리 작업 시작
     asyncio.create_task(schedule_cleanup())
     # 실시간 메트릭 전송 시작

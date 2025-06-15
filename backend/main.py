@@ -17,7 +17,10 @@ from storage import ensure_directories
 
 # Router imports
 from routers import oneai, neuronet, projects
-from routers.argosa import router as argosa_router, initialize as argosa_initialize, shutdown as argosa_shutdown
+from backend.routers.argosa import router as argosa_router
+
+# argosa의 initialize와 shutdown 함수는 __init__.py에서 export되었으므로 같이 import
+from backend.routers.argosa import initialize as argosa_initialize, shutdown as argosa_shutdown
 
 # 전역 변수
 shutdown_event = asyncio.Event()
@@ -59,7 +62,7 @@ app.add_middleware(
 
 # Include routers
 app.include_router(oneai.router, prefix="/api/oneai", tags=["One AI"])
-app.include_router(argosa_router, prefix="/api/argosa", tags=["argosa"])
+app.include_router(argosa_router)  # prefix와 tags는 argosa_router 내부에서 이미 설정됨
 app.include_router(neuronet.router, prefix="/api/neuronet", tags=["NeuroNet"])
 app.include_router(projects.router, prefix="/projects", tags=["Projects"])
 print(f"[DEBUG] Argosa router paths: {[r.path for r in argosa_router.routes]}", flush=True)

@@ -1,38 +1,24 @@
-# backend/routers/argosa/data_collection/llm_query_service.py - LLM 직접 질의응답 서비스 (개선된 버전)
+# backend/routers/argosa/collection/llm_query_service.py - LLM 직접 질의응답 서비스 (Native Messaging 통합)
 
-from fastapi import APIRouter, HTTPException, BackgroundTasks
-from typing import Dict, List, Optional, Any, Union, Callable
+from fastapi import APIRouter, HTTPException
+from typing import Dict, List, Optional, Any, Union
 from enum import Enum
 from datetime import datetime, timezone, timedelta
 from pydantic import BaseModel, Field, validator
 import json
 import logging
 import asyncio
-import aiohttp
-import os
 from collections import deque, defaultdict
 import hashlib
-from contextlib import asynccontextmanager
-import backoff
-from concurrent.futures import ThreadPoolExecutor
-
-# Firefox 통합 관리자
-from backend.services.firefox_manager import firefox_manager, FirefoxMode, managed_firefox
+import uuid
 
 logger = logging.getLogger(__name__)
 
 # ======================== Configuration ========================
 
-# 환경변수 기반 설정
-LM_STUDIO_URL = os.getenv("LM_STUDIO_URL", "http://localhost:1234/v1")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
-OPENAI_ORG_ID = os.getenv("OPENAI_ORG_ID", "")
-
 # 타임아웃 설정
 DEFAULT_TIMEOUT = 120  # 2분
 MAX_RETRIES = 3
-BACKOFF_MAX_TIME = 60  # 최대 재시도 대기 시간
 
 # 캐시 설정
 CACHE_TTL = 3600  # 1시간
@@ -40,20 +26,17 @@ MAX_CACHE_SIZE = 1000
 
 # Rate limiting
 RATE_LIMIT_WINDOW = 60  # 1분
-RATE_LIMIT_MAX_REQUESTS = {
-    "lm_studio": 100,
-    "openai": 50,
-    "anthropic": 30
-}
+RATE_LIMIT_MAX_REQUESTS = 30  # Native를 통한 요청이므로 통합 제한
 
-# ======================== Enhanced Data Models ========================
+# ======================== Data Models ========================
 
 class LLMProvider(str, Enum):
     """LLM 제공자"""
+    CHATGPT = "chatgpt"
+    CLAUDE = "claude"
+    GEMINI = "gemini"
+    PPLX = "pplx"
     LM_STUDIO = "lm_studio"
-    OPENAI = "openai"
-    ANTHROPIC = "anthropic"
-    CUSTOM = "custom"
 
 class QueryType(str, Enum):
     """질의 유형"""
@@ -70,7 +53,7 @@ class LLMQueryRequest(BaseModel):
     query_type: QueryType = QueryType.QUESTION
     context: Optional[Dict[str, Any]] = {}
     data: Optional[Any] = None
-    provider: LLMProvider = LLMProvider.LM_STUDIO
+    provider: LLMProvider = LLMProvider.CHATGPT
     model: Optional[str] = None
     temperature: float = Field(default=0.3, ge=0.0, le=2.0)
     max_tokens: int = Field(default=2000, ge=1, le=8000)
@@ -92,7 +75,7 @@ class LLMResponse(BaseModel):
     provider: LLMProvider
     model: str
     processing_time: float
-    token_usage: Optional[Dict[str, int]] = None
+    conversation_id: Optional[str] = None
     metadata: Dict[str, Any] = {}
     cached: bool = False
     error: Optional[str] = None
@@ -103,7 +86,7 @@ class AnalysisRequest(BaseModel):
     analysis_type: str = Field(..., regex="^(pattern|statistical|comparative|predictive|diagnostic|prescriptive)$")
     questions: List[str] = []
     output_format: str = Field(default="structured", regex="^(structured|narrative|visual)$")
-    provider: LLMProvider = LLMProvider.LM_STUDIO
+    provider: LLMProvider = LLMProvider.CHATGPT
     model: Optional[str] = None
     include_recommendations: bool = True
 
@@ -114,64 +97,36 @@ class BatchQueryRequest(BaseModel):
     max_concurrent: int = Field(default=5, ge=1, le=20)
     stop_on_error: bool = False
 
-# ======================== Security and Rate Limiting ========================
-
-class SecurityConfig:
-    """보안 설정 관리"""
-    
-    def __init__(self):
-        self._api_keys = {}
-        self._load_keys()
-    
-    def _load_keys(self):
-        """API 키 로드 (환경변수에서)"""
-        if OPENAI_API_KEY:
-            self._api_keys["openai"] = OPENAI_API_KEY
-        if ANTHROPIC_API_KEY:
-            self._api_keys["anthropic"] = ANTHROPIC_API_KEY
-    
-    def get_api_key(self, provider: str) -> str:
-        """API 키 가져오기"""
-        if provider not in self._api_keys:
-            raise ValueError(f"API key for {provider} not configured")
-        return self._api_keys[provider]
-    
-    def mask_api_key(self, key: str) -> str:
-        """API 키 마스킹"""
-        if len(key) < 8:
-            return "*" * len(key)
-        return key[:4] + "*" * (len(key) - 8) + key[-4:]
+# ======================== Rate Limiting ========================
 
 class RateLimiter:
     """Rate limiting 관리"""
     
     def __init__(self):
-        self.requests: Dict[str, deque] = defaultdict(lambda: deque())
+        self.requests: deque = deque()
         self._lock = asyncio.Lock()
     
-    async def check_rate_limit(self, provider: str) -> bool:
+    async def check_rate_limit(self) -> bool:
         """Rate limit 확인"""
         async with self._lock:
             now = datetime.now(timezone.utc)
             window_start = now - timedelta(seconds=RATE_LIMIT_WINDOW)
             
             # 오래된 요청 제거
-            requests = self.requests[provider]
-            while requests and requests[0] < window_start:
-                requests.popleft()
+            while self.requests and self.requests[0] < window_start:
+                self.requests.popleft()
             
             # 한도 확인
-            limit = RATE_LIMIT_MAX_REQUESTS.get(provider, 100)
-            if len(requests) >= limit:
+            if len(self.requests) >= RATE_LIMIT_MAX_REQUESTS:
                 return False
             
             # 요청 기록
-            requests.append(now)
+            self.requests.append(now)
             return True
     
-    async def wait_if_needed(self, provider: str):
+    async def wait_if_needed(self):
         """필요시 대기"""
-        while not await self.check_rate_limit(provider):
+        while not await self.check_rate_limit():
             await asyncio.sleep(1)
 
 # ======================== Response Cache ========================
@@ -180,7 +135,7 @@ class ResponseCache:
     """응답 캐시 관리"""
     
     def __init__(self):
-        self.cache: Dict[str, Tuple[Any, datetime]] = {}
+        self.cache: Dict[str, tuple[Any, datetime]] = {}
         self.access_times: Dict[str, datetime] = {}
         self._lock = asyncio.Lock()
         self._cleanup_task = asyncio.create_task(self._periodic_cleanup())
@@ -276,23 +231,18 @@ class ResponseCache:
 # ======================== LLM Query Service ========================
 
 class LLMQueryService:
-    """LLM 직접 질의응답 서비스"""
+    """LLM 직접 질의응답 서비스 (Native Messaging 통합)"""
     
     def __init__(self):
-        self.providers = {
-            LLMProvider.LM_STUDIO: self._query_lm_studio,
-            LLMProvider.OPENAI: self._query_openai,
-            LLMProvider.ANTHROPIC: self._query_anthropic,
-        }
-        
         self.default_models = {
-            LLMProvider.LM_STUDIO: "Qwen2.5-VL-7B-Instruct",
-            LLMProvider.OPENAI: "gpt-4",
-            LLMProvider.ANTHROPIC: "claude-3-opus-20240229"
+            LLMProvider.CHATGPT: "gpt-4",
+            LLMProvider.CLAUDE: "claude-3-opus",
+            LLMProvider.GEMINI: "gemini-pro",
+            LLMProvider.PPLX: "pplx-70b",
+            LLMProvider.LM_STUDIO: "local-model"
         }
         
         # 관리 컴포넌트
-        self.security = SecurityConfig()
         self.rate_limiter = RateLimiter()
         self.cache = ResponseCache()
         
@@ -302,20 +252,6 @@ class LLMQueryService:
             provider: {"total": 0, "success": 0, "errors": 0, "avg_time": 0.0} 
             for provider in LLMProvider
         }
-        
-        # HTTP 세션 (연결 재사용)
-        self._sessions: Dict[str, aiohttp.ClientSession] = {}
-        self._executor = ThreadPoolExecutor(max_workers=4)
-    
-    async def initialize(self):
-        """서비스 초기화"""
-        # HTTP 세션 생성
-        for provider in [LLMProvider.LM_STUDIO, LLMProvider.OPENAI, LLMProvider.ANTHROPIC]:
-            connector = aiohttp.TCPConnector(limit=10, limit_per_host=5)
-            self._sessions[provider] = aiohttp.ClientSession(
-                connector=connector,
-                timeout=aiohttp.ClientTimeout(total=DEFAULT_TIMEOUT)
-            )
     
     async def process_query(self, request: LLMQueryRequest) -> LLMResponse:
         """질의 처리"""
@@ -333,18 +269,18 @@ class LLMQueryService:
                     provider=request.provider,
                     model=cached_response.get("model", "unknown"),
                     processing_time=0.0,
-                    token_usage=cached_response.get("usage"),
+                    conversation_id=cached_response.get("conversation_id"),
                     cached=True
                 )
             
             # Rate limiting
-            await self.rate_limiter.wait_if_needed(request.provider.value)
+            await self.rate_limiter.wait_if_needed()
             
             # 프롬프트 생성
             prompt = await self._create_prompt(request)
             
-            # LLM 호출 (재시도 포함)
-            response_data = await self._query_with_retry(request, prompt)
+            # Native Messaging을 통한 LLM 호출
+            response_data = await self._query_with_firefox(prompt, request)
             
             # 응답 처리
             processed_response = await self._process_response(response_data, request)
@@ -357,7 +293,7 @@ class LLMQueryService:
             cache_data = {
                 "response": processed_response,
                 "model": request.model or self.default_models[request.provider],
-                "usage": response_data.get("usage")
+                "conversation_id": response_data.get("conversation_id")
             }
             await self.cache.set(request, cache_data)
             
@@ -369,7 +305,7 @@ class LLMQueryService:
                 provider=request.provider,
                 model=request.model or self.default_models[request.provider],
                 processing_time=processing_time,
-                token_usage=response_data.get("usage"),
+                conversation_id=response_data.get("conversation_id"),
                 metadata={
                     "timestamp": start_time.isoformat(),
                     "context_size": len(str(request.context)) if request.context else 0,
@@ -399,22 +335,40 @@ class LLMQueryService:
                 error=str(e)
             )
     
-    async def _query_with_retry(self, request: LLMQueryRequest, prompt: Dict[str, Any]) -> Dict[str, Any]:
-        """재시도 로직이 포함된 쿼리"""
+    async def _query_with_firefox(self, prompt: Dict[str, Any], request: LLMQueryRequest) -> Dict[str, Any]:
+        """Firefox를 통한 LLM 질의"""
         
-        @backoff.on_exception(
-            backoff.expo,
-            (aiohttp.ClientError, asyncio.TimeoutError),
-            max_tries=MAX_RETRIES,
-            max_time=BACKOFF_MAX_TIME
+        # Native Messaging으로 전달
+        from ..data_collection import native_command_manager
+        
+        # 전체 프롬프트 구성
+        full_prompt = prompt["user_prompt"]
+        if prompt.get("system_prompt"):
+            full_prompt = f"System: {prompt['system_prompt']}\n\nUser: {full_prompt}"
+        
+        command_id = await native_command_manager.send_command(
+            "execute_llm_query",
+            {
+                "platform": request.provider.value,
+                "query": full_prompt,
+                "model": request.model or self.default_models[request.provider],
+                "temperature": prompt.get("temperature", 0.3),
+                "max_tokens": prompt.get("max_tokens", 2000),
+                "mark_as_llm": True
+            }
         )
-        async def query():
-            if request.provider in self.providers:
-                return await self.providers[request.provider](prompt, request)
-            else:
-                raise ValueError(f"Unsupported provider: {request.provider}")
         
-        return await query()
+        # 응답 대기 (LLM은 시간이 걸림)
+        response = await native_command_manager.wait_for_response(command_id, timeout=DEFAULT_TIMEOUT)
+        
+        if not response.get("success", False):
+            raise Exception(response.get("error", "LLM query failed"))
+        
+        return {
+            "content": response.get("response", ""),
+            "model": request.model or self.default_models[request.provider],
+            "conversation_id": response.get("conversation_id")
+        }
     
     async def _create_prompt(self, request: LLMQueryRequest) -> Dict[str, Any]:
         """프롬프트 생성"""
@@ -466,162 +420,6 @@ class LLMQueryService:
             "temperature": request.temperature,
             "max_tokens": request.max_tokens
         }
-    
-    async def _query_lm_studio(self, prompt: Dict[str, Any], request: LLMQueryRequest) -> Dict[str, Any]:
-        """LM Studio 질의"""
-        
-        model = request.model or self.default_models[LLMProvider.LM_STUDIO]
-        session = self._sessions.get(LLMProvider.LM_STUDIO)
-        
-        if not session:
-            raise RuntimeError("LM Studio session not initialized")
-        
-        try:
-            payload = {
-                "model": model,
-                "messages": [
-                    {"role": "system", "content": prompt["system_prompt"]},
-                    {"role": "user", "content": prompt["user_prompt"]}
-                ],
-                "temperature": prompt["temperature"],
-                "max_tokens": prompt["max_tokens"],
-                "stream": False
-            }
-            
-            async with session.post(f"{LM_STUDIO_URL}/chat/completions", json=payload) as response:
-                if response.status != 200:
-                    error_text = await response.text()
-                    raise Exception(f"LM Studio error (status {response.status}): {error_text}")
-                
-                data = await response.json()
-                
-                return {
-                    "content": data["choices"][0]["message"]["content"],
-                    "usage": data.get("usage"),
-                    "model": model
-                }
-                
-        except asyncio.TimeoutError:
-            raise Exception("LM Studio request timeout")
-        except Exception as e:
-            logger.error(f"LM Studio query error: {e}")
-            raise
-    
-    async def _query_openai(self, prompt: Dict[str, Any], request: LLMQueryRequest) -> Dict[str, Any]:
-        """OpenAI API 질의"""
-        
-        try:
-            api_key = self.security.get_api_key("openai")
-        except ValueError as e:
-            raise Exception(f"OpenAI configuration error: {e}")
-        
-        model = request.model or self.default_models[LLMProvider.OPENAI]
-        session = self._sessions.get(LLMProvider.OPENAI)
-        
-        if not session:
-            raise RuntimeError("OpenAI session not initialized")
-        
-        try:
-            headers = {
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json"
-            }
-            
-            if OPENAI_ORG_ID:
-                headers["OpenAI-Organization"] = OPENAI_ORG_ID
-            
-            payload = {
-                "model": model,
-                "messages": [
-                    {"role": "system", "content": prompt["system_prompt"]},
-                    {"role": "user", "content": prompt["user_prompt"]}
-                ],
-                "temperature": prompt["temperature"],
-                "max_tokens": prompt["max_tokens"]
-            }
-            
-            async with session.post(
-                "https://api.openai.com/v1/chat/completions",
-                headers=headers,
-                json=payload
-            ) as response:
-                
-                if response.status == 429:
-                    raise Exception("OpenAI rate limit exceeded")
-                elif response.status != 200:
-                    error_text = await response.text()
-                    raise Exception(f"OpenAI error (status {response.status}): {error_text}")
-                
-                data = await response.json()
-                
-                return {
-                    "content": data["choices"][0]["message"]["content"],
-                    "usage": data.get("usage"),
-                    "model": model
-                }
-                
-        except asyncio.TimeoutError:
-            raise Exception("OpenAI request timeout")
-        except Exception as e:
-            logger.error(f"OpenAI query error: {e}")
-            raise
-    
-    async def _query_anthropic(self, prompt: Dict[str, Any], request: LLMQueryRequest) -> Dict[str, Any]:
-        """Anthropic Claude API 질의"""
-        
-        try:
-            api_key = self.security.get_api_key("anthropic")
-        except ValueError as e:
-            raise Exception(f"Anthropic configuration error: {e}")
-        
-        model = request.model or self.default_models[LLMProvider.ANTHROPIC]
-        session = self._sessions.get(LLMProvider.ANTHROPIC)
-        
-        if not session:
-            raise RuntimeError("Anthropic session not initialized")
-        
-        try:
-            headers = {
-                "x-api-key": api_key,
-                "anthropic-version": "2023-06-01",
-                "content-type": "application/json"
-            }
-            
-            payload = {
-                "model": model,
-                "messages": [
-                    {"role": "user", "content": prompt["user_prompt"]}
-                ],
-                "system": prompt["system_prompt"],
-                "max_tokens": prompt["max_tokens"],
-                "temperature": prompt["temperature"]
-            }
-            
-            async with session.post(
-                "https://api.anthropic.com/v1/messages",
-                headers=headers,
-                json=payload
-            ) as response:
-                
-                if response.status == 429:
-                    raise Exception("Anthropic rate limit exceeded")
-                elif response.status != 200:
-                    error_text = await response.text()
-                    raise Exception(f"Anthropic error (status {response.status}): {error_text}")
-                
-                data = await response.json()
-                
-                return {
-                    "content": data["content"][0]["text"],
-                    "usage": data.get("usage"),
-                    "model": model
-                }
-                
-        except asyncio.TimeoutError:
-            raise Exception("Anthropic request timeout")
-        except Exception as e:
-            logger.error(f"Anthropic query error: {e}")
-            raise
     
     async def _process_response(self, response_data: Dict[str, Any], request: LLMQueryRequest) -> Union[str, Dict[str, Any]]:
         """응답 후처리"""
@@ -678,7 +476,8 @@ class LLMQueryService:
             "model": response.model,
             "processing_time": response.processing_time,
             "cached": response.cached,
-            "success": response.error is None
+            "success": response.error is None,
+            "conversation_id": response.conversation_id
         }
         
         self.query_history.append(history_entry)
@@ -740,7 +539,7 @@ class LLMQueryService:
             "questions_answered": len(request.questions),
             "processing_time": response.processing_time,
             "model_used": response.model,
-            "token_usage": response.token_usage
+            "conversation_id": response.conversation_id
         }
     
     async def batch_process(self, batch_request: BatchQueryRequest) -> List[Dict[str, Any]]:
@@ -813,15 +612,8 @@ class LLMQueryService:
     
     async def shutdown(self):
         """정리"""
-        # HTTP 세션 정리
-        for session in self._sessions.values():
-            await session.close()
-        
         # 캐시 정리
         await self.cache.shutdown()
-        
-        # Executor 정리
-        self._executor.shutdown(wait=True)
 
 # ======================== Specialized Services ========================
 
@@ -900,7 +692,8 @@ Return a structured analysis with these sections: executive_summary, detailed_fi
             "conversations_analyzed": total,
             "sample_size": sample_size,
             "model_used": response.model,
-            "processing_time": response.processing_time
+            "processing_time": response.processing_time,
+            "conversation_id": response.conversation_id
         }
     
     async def compare_platforms(self, platform_data: Dict[str, List[Dict[str, Any]]]) -> Dict[str, Any]:
@@ -968,7 +761,8 @@ Provide a comprehensive comparison with clear criteria and actionable insights."
             "platforms_compared": list(platform_data.keys()),
             "total_conversations": sum(len(data) for data in platform_data.values()),
             "model_used": response.model,
-            "processing_time": response.processing_time
+            "processing_time": response.processing_time,
+            "conversation_id": response.conversation_id
         }
 
 # ======================== API Router ========================
@@ -983,14 +777,13 @@ analysis_service = DataAnalysisService(llm_service)
 @router.on_event("startup")
 async def startup():
     """서비스 시작 시 초기화"""
-    await llm_service.initialize()
-    logger.info("LLM Query Service initialized")
+    logger.info("LLM Query Service (Native) initialized")
 
 @router.on_event("shutdown")
 async def shutdown():
     """서비스 종료 시 정리"""
     await llm_service.shutdown()
-    logger.info("LLM Query Service shutdown")
+    logger.info("LLM Query Service (Native) shutdown")
 
 @router.post("/process", response_model=LLMResponse)
 async def process_query(request: LLMQueryRequest):
@@ -1102,7 +895,8 @@ async def test_provider_connection(provider: LLMProvider):
             "provider": provider.value,
             "model": response.model,
             "response": response.response,
-            "latency": response.processing_time
+            "latency": response.processing_time,
+            "conversation_id": response.conversation_id
         }
     except Exception as e:
         return {
@@ -1113,17 +907,12 @@ async def test_provider_connection(provider: LLMProvider):
 
 # ======================== Helper Functions ========================
 
-import uuid
-
 async def test_all_providers() -> Dict[str, Any]:
     """모든 LLM 제공자 연결 테스트"""
     
     results = {}
     
     for provider in LLMProvider:
-        if provider == LLMProvider.CUSTOM:
-            continue
-        
         try:
             test_result = await test_provider_connection(provider)
             results[provider.value] = test_result
