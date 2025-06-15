@@ -18,7 +18,12 @@ import time
 import psutil
 import threading
 from enum import Enum
-from functools import wraps
+
+# Shared 모듈에서 import
+from .shared.cache_manager import cache_manager
+from .shared.llm_tracker import llm_tracker
+from .shared.command_queue import command_queue
+from .shared.metrics import metrics
 
 # 설정
 logger = logging.getLogger(__name__)
@@ -32,86 +37,8 @@ active_websockets: Set[WebSocket] = set()
 # Configuration paths
 DATA_PATH = Path("./data/argosa")
 STATE_FILE_PATH = DATA_PATH / "system_state.json"
-COMMAND_QUEUE_PATH = DATA_PATH / "command_queue.json"
 SESSION_CACHE_PATH = DATA_PATH / "session_cache.json"
 EXTENSION_HEARTBEAT_PATH = DATA_PATH / "extension_heartbeat.json"
-
-# ======================== Enhanced Error Handling ========================
-
-def with_retry(max_retries: int = 3, delay: float = 1.0):
-    """재시도 데코레이터"""
-    def decorator(func):
-        @wraps(func)
-        async def wrapper(*args, **kwargs):
-            last_error = None
-            for attempt in range(max_retries):
-                try:
-                    return await func(*args, **kwargs)
-                except Exception as e:
-                    last_error = e
-                    if attempt < max_retries - 1:
-                        await asyncio.sleep(delay * (attempt + 1))
-                    logger.warning(f"Retry {attempt + 1}/{max_retries} for {func.__name__}: {e}")
-            raise last_error
-        return wrapper
-    return decorator
-
-def with_fallback(fallback_value=None):
-    """폴백 데코레이터"""
-    def decorator(func):
-        @wraps(func)
-        async def wrapper(*args, **kwargs):
-            try:
-                return await func(*args, **kwargs)
-            except Exception as e:
-                logger.error(f"Fallback for {func.__name__}: {e}")
-                return fallback_value
-        return wrapper
-    return decorator
-
-# ======================== Metrics System ========================
-
-class MetricsCollector:
-    """간단한 메트릭 수집기"""
-    def __init__(self):
-        self.counters: Dict[str, int] = {}
-        self.gauges: Dict[str, float] = {}
-        self.events: List[Dict[str, Any]] = []
-        self._lock = asyncio.Lock()
-        
-    async def increment_counter(self, name: str, value: int = 1):
-        """카운터 증가"""
-        async with self._lock:
-            self.counters[name] = self.counters.get(name, 0) + value
-            
-    async def set_gauge(self, name: str, value: float):
-        """게이지 설정"""
-        async with self._lock:
-            self.gauges[name] = value
-            
-    async def record_event(self, event_type: str, tags: Dict[str, Any] = None):
-        """이벤트 기록"""
-        async with self._lock:
-            self.events.append({
-                "type": event_type,
-                "timestamp": datetime.now().isoformat(),
-                "tags": tags or {}
-            })
-            # 최근 1000개만 유지
-            if len(self.events) > 1000:
-                self.events = self.events[-1000:]
-                
-    async def get_summary(self) -> Dict[str, Any]:
-        """메트릭 요약"""
-        async with self._lock:
-            return {
-                "counters": self.counters.copy(),
-                "gauges": self.gauges.copy(),
-                "recent_events": self.events[-10:]
-            }
-
-# Global metrics collector
-metrics = MetricsCollector()
 
 # ======================== Data Models ========================
 
@@ -125,11 +52,6 @@ class MessageType(Enum):
     CRAWL_RESULT = "crawl_result"
     ERROR = "error"
 
-class CommandPriority:
-    NORMAL = 0
-    HIGH = 1
-    URGENT = 2
-
 class SystemState(BaseModel):
     system_status: str = "idle"  # idle, preparing, collecting, error
     sessions: Dict[str, Dict[str, Any]] = {}
@@ -140,15 +62,6 @@ class SystemState(BaseModel):
     schedule_enabled: bool = False
     data_sources_active: int = 0
     total_conversations: int = 0
-
-class Command(BaseModel):
-    id: str
-    type: str  # collect_conversations, execute_llm_query, crawl_web, etc.
-    priority: int = CommandPriority.NORMAL
-    data: Dict[str, Any]
-    timestamp: str
-    status: str = "pending"  # pending, processing, completed, failed
-    result: Optional[Dict[str, Any]] = None
 
 class ExtensionHeartbeat(BaseModel):
     timestamp: str
@@ -166,82 +79,7 @@ class SessionCache(BaseModel):
     cookies: Optional[List[Dict[str, Any]]] = None
     status: str = "unknown"  # active, expired, checking, unknown
 
-# ======================== LLM Tracker ========================
-
-class LLMTracker:
-    """LLM 대화 추적기"""
-    def __init__(self):
-        self.tracked_ids: Dict[str, Set[str]] = {}
-        self._lock = asyncio.Lock()
-        
-    async def track(self, conversation_id: str, platform: str, metadata: Dict[str, Any]):
-        """대화 추적"""
-        async with self._lock:
-            if platform not in self.tracked_ids:
-                self.tracked_ids[platform] = set()
-            self.tracked_ids[platform].add(conversation_id)
-            
-        await metrics.increment_counter(f"llm_tracked.{platform}")
-        logger.info(f"Tracking LLM conversation: {conversation_id} on {platform}")
-        
-    async def get_tracked_ids(self, platform: str) -> List[str]:
-        """추적 중인 ID 목록"""
-        async with self._lock:
-            return list(self.tracked_ids.get(platform, set()))
-            
-    async def filter_conversations(self, conversations: List[Dict], platform: str) -> Dict[str, Any]:
-        """LLM 대화 필터링"""
-        tracked = await self.get_tracked_ids(platform)
-        filtered = []
-        excluded = 0
-        
-        for conv in conversations:
-            if conv.get('id') not in tracked:
-                filtered.append(conv)
-            else:
-                excluded += 1
-                
-        return {
-            "conversations": filtered,
-            "excluded_count": excluded,
-            "filter_stats": {
-                "total": len(conversations),
-                "filtered": len(filtered),
-                "excluded": excluded
-            }
-        }
-
-# Global LLM tracker
-llm_tracker = LLMTracker()
-
-# ======================== Enhanced Firefox Session Management ========================
-
-class EnhancedFirefoxSessionManager:
-    """Firefox Extension과 통신하는 세션 관리자"""
-    
-    def __init__(self):
-        self.extension_port = int(os.getenv("FIREFOX_EXTENSION_PORT", "9292"))
-        self.extension_available = False
-        self._check_extension_availability()
-        
-    def _check_extension_availability(self):
-        """Extension 사용 가능 여부 확인"""
-        try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            result = sock.connect_ex(('localhost', self.extension_port))
-            sock.close()
-            self.extension_available = (result == 0)
-            
-            if self.extension_available:
-                logger.info(f"Firefox extension available on port {self.extension_port}")
-            else:
-                logger.warning(f"Firefox extension not available on port {self.extension_port}")
-                
-        except Exception as e:
-            logger.error(f"Error checking Firefox extension: {e}")
-            self.extension_available = False
-
-# ======================== Improved State Management ========================
+# ======================== State Management ========================
 
 class SystemStateManager:
     def __init__(self):
@@ -259,7 +97,6 @@ class SystemStateManager:
         except Exception as e:
             logger.error(f"Failed to load state: {e}")
             
-    @with_retry(max_retries=3, delay=0.5)
     async def save_state(self):
         """Save state to file with retry"""
         async with self.state_lock:
@@ -281,9 +118,8 @@ class SystemStateManager:
         await self.broadcast_state()
         
         # 메트릭 기록
-        await metrics.record_event("state_update", {"field": key})
+        await metrics.record_event("state_update", tags={"field": key})
             
-    @with_fallback(fallback_value=None)
     async def broadcast_state(self):
         """Broadcast state to all connected WebSocket clients"""
         if active_websockets:
@@ -305,109 +141,6 @@ class SystemStateManager:
 
 # Global state manager
 state_manager = SystemStateManager()
-
-# ======================== Command Queue ========================
-
-class UnifiedCommandQueue:
-    def __init__(self):
-        self.queue: List[Command] = []
-        self.queue_lock = asyncio.Lock()
-        self.handlers: Dict[str, Any] = {}
-        self.load_queue()
-        
-    def load_queue(self):
-        """Load queue from file"""
-        try:
-            if COMMAND_QUEUE_PATH.exists():
-                with open(COMMAND_QUEUE_PATH, 'r') as f:
-                    data = json.load(f)
-                    self.queue = [Command(**cmd) for cmd in data]
-        except Exception as e:
-            logger.error(f"Failed to load command queue: {e}")
-            
-    @with_retry(max_retries=3, delay=0.5)
-    async def save_queue(self):
-        """Save queue to file with retry"""
-        async with self.queue_lock:
-            try:
-                COMMAND_QUEUE_PATH.parent.mkdir(parents=True, exist_ok=True)
-                with open(COMMAND_QUEUE_PATH, 'w') as f:
-                    json.dump([cmd.dict() for cmd in self.queue], f, indent=2)
-            except Exception as e:
-                logger.error(f"Failed to save command queue: {e}")
-                raise
-                
-    async def add_command(self, command_type: str, data: Dict[str, Any], priority: int = CommandPriority.NORMAL) -> str:
-        """Add command to queue"""
-        async with self.queue_lock:
-            command = Command(
-                id=str(uuid.uuid4()),
-                type=command_type,
-                priority=priority,
-                data=data,
-                timestamp=datetime.now().isoformat(),
-                status="pending"
-            )
-            self.queue.append(command)
-            
-        await self.save_queue()
-        await metrics.increment_counter(f"command_added.{command_type}")
-        return command.id
-            
-    async def get_next_command(self) -> Optional[Command]:
-        """Get next command by priority"""
-        async with self.queue_lock:
-            # Sort by priority (descending) and timestamp (ascending)
-            self.queue.sort(key=lambda x: (-x.priority, x.timestamp))
-            
-            for cmd in self.queue:
-                if cmd.status == "pending":
-                    cmd.status = "processing"
-                    await self.save_queue()
-                    return cmd
-            return None
-            
-    async def complete_command(self, command_id: str, result: Dict[str, Any] = None):
-        """Mark command as completed"""
-        async with self.queue_lock:
-            for cmd in self.queue:
-                if cmd.id == command_id:
-                    cmd.status = "completed"
-                    cmd.result = result
-                    break
-                    
-        await self.save_queue()
-        await metrics.increment_counter("command_completed")
-            
-    async def fail_command(self, command_id: str, error: str):
-        """Mark command as failed"""
-        async with self.queue_lock:
-            for cmd in self.queue:
-                if cmd.id == command_id:
-                    cmd.status = "failed"
-                    cmd.result = {"error": error}
-                    break
-                    
-        await self.save_queue()
-        await metrics.increment_counter("command_failed")
-        
-    def register_handler(self, command_type: str, handler):
-        """핸들러 등록"""
-        self.handlers[command_type] = handler
-        
-    async def get_stats(self) -> Dict[str, Any]:
-        """큐 통계"""
-        async with self.queue_lock:
-            return {
-                "total": len(self.queue),
-                "pending": sum(1 for cmd in self.queue if cmd.status == "pending"),
-                "processing": sum(1 for cmd in self.queue if cmd.status == "processing"),
-                "completed": sum(1 for cmd in self.queue if cmd.status == "completed"),
-                "failed": sum(1 for cmd in self.queue if cmd.status == "failed")
-            }
-
-# Global command queue
-command_queue = UnifiedCommandQueue()
 
 # ======================== Native Messaging Support ========================
 
@@ -434,10 +167,10 @@ class NativeCommandManager:
             data['exclude_ids'] = exclude_ids
         
         # 명령 큐에 추가
-        await command_queue.add_command(
+        await command_queue.enqueue(
             command_type,
             data,
-            priority=CommandPriority.HIGH
+            priority=2  # HIGH priority
         )
         
         return command_id
@@ -472,7 +205,6 @@ class UnifiedSessionManager:
     def __init__(self):
         self.cache: Dict[str, SessionCache] = {}
         self.cache_ttl = 300  # 5 minutes
-        self.firefox_session_manager = EnhancedFirefoxSessionManager()
         self.load_cache()
         
     def load_cache(self):
@@ -486,7 +218,6 @@ class UnifiedSessionManager:
         except Exception as e:
             logger.error(f"Failed to load session cache: {e}")
             
-    @with_retry(max_retries=3, delay=0.5)
     async def save_cache(self):
         """Save session cache to file with retry"""
         try:
@@ -574,148 +305,6 @@ class UnifiedSessionManager:
 # Global session manager
 session_manager = UnifiedSessionManager()
 
-# ======================== Firefox Management ========================
-
-class ImprovedFirefoxManager:
-    def __init__(self):
-        self.process: Optional[subprocess.Popen] = None
-        self.monitor_thread: Optional[threading.Thread] = None
-        
-    def get_firefox_command(self, profile_name: str = "llm-collector", headless: bool = False) -> List[str]:
-        """Get Firefox launch command based on OS"""
-        system = platform.system()
-        base_args = ["--no-remote", "-P", profile_name]
-        
-        if headless and system in ["Linux", "Darwin"]:
-            base_args.append("--headless")
-        
-        if system == "Windows":
-            firefox_paths = [
-                r"C:\Program Files\Firefox Developer Edition\firefox.exe",
-                r"C:\Program Files\Mozilla Firefox\firefox.exe",
-                r"C:\Program Files (x86)\Mozilla Firefox\firefox.exe",
-            ]
-            
-            for path in firefox_paths:
-                if os.path.exists(path):
-                    logger.info(f"Found Firefox at: {path}")
-                    return [path] + base_args
-                    
-            firefox_in_path = shutil.which("firefox")
-            if firefox_in_path:
-                return [firefox_in_path] + base_args
-                
-            raise Exception("Firefox not found. Please install Firefox.")
-            
-        elif system == "Darwin":  # macOS
-            firefox_paths = [
-                "/Applications/Firefox.app/Contents/MacOS/firefox",
-                "/Applications/Firefox Developer Edition.app/Contents/MacOS/firefox",
-            ]
-            
-            for path in firefox_paths:
-                if os.path.exists(path):
-                    return [path] + base_args
-                    
-            raise Exception("Firefox not found on macOS. Please install Firefox.")
-            
-        else:  # Linux
-            firefox_in_path = shutil.which("firefox")
-            if firefox_in_path:
-                return [firefox_in_path] + base_args
-                
-            raise Exception("Firefox not found. Please install Firefox: sudo apt install firefox")
-            
-    async def check_firefox_running(self) -> bool:
-        """Check if Firefox is running"""
-        for proc in psutil.process_iter(['pid', 'name']):
-            try:
-                if 'firefox' in proc.info['name'].lower():
-                    return True
-            except:
-                pass
-        return False
-            
-    async def kill_existing_firefox(self):
-        """Kill any existing Firefox processes"""
-        for proc in psutil.process_iter(['pid', 'name']):
-            try:
-                if 'firefox' in proc.info['name'].lower():
-                    logger.info(f"Killing existing Firefox process: {proc.info['pid']}")
-                    proc.terminate()
-                    proc.wait(timeout=5)
-            except:
-                pass
-                
-    def monitor_firefox_process(self):
-        """Monitor Firefox process in background thread"""
-        while self.process and self.process.poll() is None:
-            time.sleep(2)
-            
-        # Firefox exited
-        logger.warning("Firefox process exited")
-        asyncio.create_task(state_manager.update_state("firefox_status", "closed"))
-        
-    async def launch_firefox_with_command(self, command: Dict[str, Any], visible: bool = True) -> bool:
-        """Launch Firefox with URL command"""
-        try:
-            # Kill existing Firefox
-            await self.kill_existing_firefox()
-            await asyncio.sleep(1)
-            
-            # Get Firefox command
-            profile_name = command.get("settings", {}).get("profileName", "llm-collector")
-            use_headless = not visible and platform.system() in ["Linux", "Darwin"]
-            firefox_cmd = self.get_firefox_command(profile_name, headless=use_headless)
-            
-            # Launch Firefox
-            logger.info(f"Launching Firefox with command: {command['action']}")
-            
-            if platform.system() == "Windows" and not visible:
-                startupinfo = subprocess.STARTUPINFO()
-                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-                startupinfo.wShowWindow = subprocess.SW_MINIMIZE
-                
-                self.process = subprocess.Popen(
-                    firefox_cmd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    startupinfo=startupinfo
-                )
-            else:
-                self.process = subprocess.Popen(
-                    firefox_cmd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE
-                )
-            
-            # Start monitoring thread
-            self.monitor_thread = threading.Thread(target=self.monitor_firefox_process)
-            self.monitor_thread.start()
-            
-            # Update state
-            await state_manager.update_state("firefox_status", "opening")
-            
-            return True
-            
-        except Exception as e:
-            logger.error(f"Failed to launch Firefox: {e}")
-            await state_manager.update_state("firefox_status", "error")
-            return False
-            
-    async def close_firefox(self):
-        """Close Firefox gracefully"""
-        if self.process:
-            try:
-                self.process.terminate()
-                self.process.wait(timeout=5)
-            except:
-                self.process.kill()
-            self.process = None
-
-# Global Firefox manager
-firefox_manager = ImprovedFirefoxManager()
-
 # ======================== Extension Communication ========================
 
 class ExtensionMonitor:
@@ -773,25 +362,19 @@ class ExtensionMonitor:
 # Global Extension monitor
 extension_monitor = ExtensionMonitor()
 
-# ======================== API Endpoints (기존 경로 유지) ========================
+# ======================== API Endpoints ========================
 
 @router.get("/status")
 async def get_system_status():
     """Get system status"""
-    firefox_status = {
-        "available": session_manager.firefox_session_manager.extension_available,
-        "port": session_manager.firefox_session_manager.extension_port
-    }
-    
     session_health = await session_manager.check_session_health()
     queue_stats = await command_queue.get_stats()
-    metrics_summary = await metrics.get_summary()
+    metrics_summary = await metrics.get_metrics_summary()
     
     return {
         "status": "operational",
         "system": "argosa",
         "state": state_manager.state.dict(),
-        "firefox_extension": firefox_status,
         "sessions": session_health,
         "command_queue": queue_stats,
         "metrics": metrics_summary,
@@ -830,27 +413,13 @@ async def state_websocket(websocket: WebSocket):
 @router.get("/commands/pending")
 async def get_pending_commands():
     """Native Host가 가져갈 명령들"""
-    commands = []
-    
-    # 명령 큐에서 대기 중인 것들
-    async with command_queue.queue_lock:
-        for cmd in command_queue.queue:
-            if cmd.status == "pending":
-                commands.append({
-                    'id': cmd.id,
-                    'type': cmd.type,
-                    'data': cmd.data,
-                    'priority': cmd.priority
-                })
-    
-    return {"commands": commands[:5]}  # 최대 5개
+    commands = await command_queue.get_pending_commands(limit=5)
+    return {"commands": commands}
 
 @router.post("/commands/complete/{command_id}")
 async def complete_command_endpoint(command_id: str, result: Dict[str, Any]):
     """명령 완료 알림"""
-    await command_queue.complete_command(command_id, result)
-    
-    # Native 명령 관리자에도 알림
+    # Native 명령 관리자에 알림
     await native_command_manager.complete_command(command_id, result)
     
     return {"status": "completed"}
@@ -998,20 +567,6 @@ async def start_collection_native(request: Dict[str, Any]):
     platforms = request.get('platforms', [])
     settings = request.get('settings', {})
     
-    # Firefox 실행 확인
-    if state_manager.state.firefox_status != "ready":
-        # Firefox 시작
-        success = await firefox_manager.launch_firefox_with_command({
-            "action": "start",
-            "native_messaging": True
-        })
-        
-        if not success:
-            raise HTTPException(status_code=500, detail="Failed to start Firefox")
-        
-        # Extension 준비 대기
-        await asyncio.sleep(3)
-    
     # Native 명령 전송
     command_id = await native_command_manager.send_command(
         "collect_conversations",
@@ -1111,7 +666,7 @@ async def crawl_web_native(request: Dict[str, Any]):
 @router.get("/metrics/summary")
 async def get_metrics_summary():
     """메트릭 요약"""
-    return await metrics.get_summary()
+    return await metrics.get_metrics_summary()
 
 # ======================== Initialization and Shutdown ========================
 
@@ -1121,6 +676,16 @@ async def initialize():
     
     # Create directories
     DATA_PATH.mkdir(parents=True, exist_ok=True)
+    
+    # Initialize shared services
+    await cache_manager.initialize()
+    await command_queue.initialize()
+    await metrics.initialize()
+    
+    # Command handlers 등록
+    command_queue.register_handler("collect_conversations", handle_collect_command)
+    command_queue.register_handler("execute_llm_query", handle_llm_query_command)
+    command_queue.register_handler("crawl_web", handle_crawl_command)
     
     # Initialize state
     await state_manager.update_state("system_status", "idle")
@@ -1141,10 +706,26 @@ async def shutdown():
             pass
     active_websockets.clear()
     
-    # Kill Firefox if running
-    await firefox_manager.close_firefox()
+    # Shutdown shared services
+    await command_queue.shutdown()
+    await metrics.shutdown()
+    await cache_manager.cleanup()
     
     logger.info("Argosa core system shutdown complete")
+
+# Command handlers
+async def handle_collect_command(command):
+    """대화 수집 명령 처리"""
+    # Native Host로 전달될 명령
+    return {"status": "processed", "command_id": command.id}
+
+async def handle_llm_query_command(command):
+    """LLM 질의 명령 처리"""
+    return {"status": "processed", "command_id": command.id}
+
+async def handle_crawl_command(command):
+    """웹 크롤링 명령 처리"""
+    return {"status": "processed", "command_id": command.id}
 
 # Internal helper for saving conversations
 async def save_conversations_internal(data: Dict[str, Any]):

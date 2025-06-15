@@ -108,6 +108,9 @@ class NativeExtension {
     // Load saved state
     await this.loadState();
     
+    // Load settings
+    await this.loadSettings();
+    
     // Connect to Native Host
     this.connectNative();
     
@@ -117,6 +120,25 @@ class NativeExtension {
     console.log('[Extension] Initialization complete');
   }
   
+  async loadSettings() {
+    try {
+      const settings = await browser.storage.local.get([
+        'maxConversations',
+        'delayBetweenPlatforms',
+        'syncInterval'
+      ]);
+      
+      if (settings.maxConversations) {
+        this.settings.maxConversations = settings.maxConversations;
+      }
+      if (settings.delayBetweenPlatforms) {
+        this.settings.randomDelay = settings.delayBetweenPlatforms;
+        this.settings.delayBetweenPlatforms = settings.delayBetweenPlatforms;
+      }
+    } catch (error) {
+      console.error('[Extension] Failed to load settings:', error);
+    }
+  }
   // ======================== Native Messaging ========================
   
   connectNative() {

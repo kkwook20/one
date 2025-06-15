@@ -1,44 +1,23 @@
-// options.js - LLM Collector Settings Page
+// options.js - LLM Collector Settings Page (Native Messaging Version)
 
 document.addEventListener('DOMContentLoaded', async () => {
   await loadSettings();
   setupEventListeners();
-  // Add API status check
-  await checkAPIConnection();
 });
 
 // Load settings from storage
 async function loadSettings() {
   const settings = await browser.storage.local.get([
-    'dataFolder',
     'syncInterval',
     'platforms',
     'maxConversations',
-    'delayBetweenActions',
-    'useAPI',  // Add this
-    'apiUrl'   // Add this
+    'delayBetweenPlatforms'
   ]);
   
   // Set form values
-  document.getElementById('dataFolder').value = settings.dataFolder || '/home/user/llm-conversations';
   document.getElementById('syncInterval').value = settings.syncInterval || 1440;
-  document.getElementById('maxConversations').value = settings.maxConversations || 1000;
-  document.getElementById('delayBetweenActions').value = settings.delayBetweenActions || 3;
-  
-  // API settings
-  if (settings.useAPI !== undefined) {
-    const apiToggle = document.getElementById('apiToggle');
-    const apiSettings = document.getElementById('apiSettings');
-    
-    if (settings.useAPI) {
-      apiToggle.classList.add('active');
-      apiSettings.style.display = 'block';
-    }
-  }
-  
-  if (settings.apiUrl) {
-    document.getElementById('apiUrl').value = settings.apiUrl;
-  }
+  document.getElementById('maxConversations').value = settings.maxConversations || 20;
+  document.getElementById('delayBetweenPlatforms').value = settings.delayBetweenPlatforms || 5;
   
   // Load platform settings
   if (settings.platforms) {
@@ -74,12 +53,6 @@ function setupEventListeners() {
     });
   });
   
-  // API toggle
-  document.getElementById('apiToggle').addEventListener('click', toggleAPI);
-  
-  // Test API button
-  document.getElementById('testApiBtn').addEventListener('click', testAPIConnection);
-  
   // Save button
   document.getElementById('saveBtn').addEventListener('click', saveSettings);
   
@@ -95,93 +68,12 @@ function setupEventListeners() {
   document.getElementById('importFile').addEventListener('change', importData);
 }
 
-// Toggle API mode
-async function toggleAPI() {
-  const toggle = document.getElementById('apiToggle');
-  const apiSettings = document.getElementById('apiSettings');
-  const isActive = toggle.classList.contains('active');
-  
-  if (!isActive) {
-    toggle.classList.add('active');
-    apiSettings.style.display = 'block';
-    
-    // Animate in
-    apiSettings.style.opacity = '0';
-    apiSettings.style.transform = 'translateY(-10px)';
-    setTimeout(() => {
-      apiSettings.style.transition = 'all 0.3s ease';
-      apiSettings.style.opacity = '1';
-      apiSettings.style.transform = 'translateY(0)';
-    }, 10);
-    
-    // Check connection
-    await checkAPIConnection();
-  } else {
-    toggle.classList.remove('active');
-    apiSettings.style.transition = 'all 0.3s ease';
-    apiSettings.style.opacity = '0';
-    setTimeout(() => {
-      apiSettings.style.display = 'none';
-    }, 300);
-  }
-}
-
-// Check API connection
-async function checkAPIConnection() {
-  const statusDot = document.getElementById('apiStatusDot');
-  const statusText = document.getElementById('apiStatusText');
-  const apiUrl = document.getElementById('apiUrl').value;
-  
-  if (!document.getElementById('apiToggle').classList.contains('active')) {
-    return;
-  }
-  
-  statusText.textContent = 'Checking connection...';
-  statusDot.classList.remove('connected');
-  
-  try {
-    // Extract base URL and check status endpoint
-    const baseUrl = apiUrl.replace('/llm', '');
-    const response = await fetch(baseUrl.replace('/argosa', '/argosa/status'));
-    
-    if (response.ok) {
-      const data = await response.json();
-      statusDot.classList.add('connected');
-      statusText.textContent = 'Connected to Argosa backend';
-      statusText.style.color = '#059669';
-    } else {
-      statusDot.classList.remove('connected');
-      statusText.textContent = 'Backend not responding';
-      statusText.style.color = '#dc2626';
-    }
-  } catch (error) {
-    statusDot.classList.remove('connected');
-    statusText.textContent = 'Cannot connect to backend';
-    statusText.style.color = '#dc2626';
-  }
-}
-
-// Test API connection
-async function testAPIConnection() {
-  await checkAPIConnection();
-  
-  const statusText = document.getElementById('apiStatusText').textContent;
-  if (statusText.includes('Connected')) {
-    showAlert('✅ API connection successful!', 'success');
-  } else {
-    showAlert('❌ API connection failed. Make sure the backend is running.', 'error');
-  }
-}
-
 // Save settings
 async function saveSettings() {
   const settings = {
-    dataFolder: document.getElementById('dataFolder').value,
     syncInterval: parseInt(document.getElementById('syncInterval').value),
     maxConversations: parseInt(document.getElementById('maxConversations').value),
-    delayBetweenActions: parseInt(document.getElementById('delayBetweenActions').value),
-    useAPI: document.getElementById('apiToggle').classList.contains('active'),
-    apiUrl: document.getElementById('apiUrl').value,
+    delayBetweenPlatforms: parseInt(document.getElementById('delayBetweenPlatforms').value),
     platforms: {}
   };
   
@@ -203,13 +95,11 @@ async function saveSettings() {
   // Save to storage
   await browser.storage.local.set(settings);
   
-  // Notify background script about API mode change
-  if (settings.useAPI) {
-    browser.runtime.sendMessage({ 
-      action: 'enableAPIMode', 
-      apiUrl: settings.apiUrl 
-    });
-  }
+  // Notify background script about settings change
+  browser.runtime.sendMessage({ 
+    action: 'settingsUpdated', 
+    settings: settings 
+  });
   
   // Show success message
   showAlert('Settings saved successfully!', 'success');
@@ -223,12 +113,9 @@ async function exportData() {
   const exportData = {
     exportDate: new Date().toISOString(),
     settings: {
-      dataFolder: data.dataFolder,
       syncInterval: data.syncInterval,
       maxConversations: data.maxConversations,
-      delayBetweenActions: data.delayBetweenActions,
-      useAPI: data.useAPI,
-      apiUrl: data.apiUrl
+      delayBetweenPlatforms: data.delayBetweenPlatforms
     },
     platforms: {}
   };
@@ -271,35 +158,14 @@ async function importData(event) {
     }
     
     // Update form fields
-    if (data.settings.dataFolder) {
-      document.getElementById('dataFolder').value = data.settings.dataFolder;
-    }
     if (data.settings.syncInterval) {
       document.getElementById('syncInterval').value = data.settings.syncInterval;
     }
     if (data.settings.maxConversations) {
       document.getElementById('maxConversations').value = data.settings.maxConversations;
     }
-    if (data.settings.delayBetweenActions) {
-      document.getElementById('delayBetweenActions').value = data.settings.delayBetweenActions;
-    }
-    
-    // Update API settings
-    if (data.settings.useAPI !== undefined) {
-      const apiToggle = document.getElementById('apiToggle');
-      const apiSettings = document.getElementById('apiSettings');
-      
-      if (data.settings.useAPI) {
-        apiToggle.classList.add('active');
-        apiSettings.style.display = 'block';
-      } else {
-        apiToggle.classList.remove('active');
-        apiSettings.style.display = 'none';
-      }
-    }
-    
-    if (data.settings.apiUrl) {
-      document.getElementById('apiUrl').value = data.settings.apiUrl;
+    if (data.settings.delayBetweenPlatforms) {
+      document.getElementById('delayBetweenPlatforms').value = data.settings.delayBetweenPlatforms;
     }
     
     // Update platform settings

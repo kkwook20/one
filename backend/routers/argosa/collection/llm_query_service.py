@@ -12,6 +12,17 @@ from collections import deque, defaultdict
 import hashlib
 import uuid
 
+# Shared services import
+try:
+    from ..shared.cache_manager import cache_manager
+    from ..shared.metrics import metrics
+    HAS_SHARED_SERVICES = True
+except ImportError as e:
+    logger.warning(f"[LLM Query] Shared services not available (using legacy mode): {e}")
+    cache_manager = None
+    metrics = None
+    HAS_SHARED_SERVICES = False
+
 logger = logging.getLogger(__name__)
 
 # ======================== Configuration ========================
@@ -20,13 +31,14 @@ logger = logging.getLogger(__name__)
 DEFAULT_TIMEOUT = 120  # 2분
 MAX_RETRIES = 3
 
-# 캐시 설정
-CACHE_TTL = 3600  # 1시간
-MAX_CACHE_SIZE = 1000
-
 # Rate limiting
 RATE_LIMIT_WINDOW = 60  # 1분
 RATE_LIMIT_MAX_REQUESTS = 30  # Native를 통한 요청이므로 통합 제한
+
+# Legacy mode 캐시 설정 (shared services 없을 때만 사용)
+if not HAS_SHARED_SERVICES:
+    CACHE_TTL = 3600  # 1시간
+    MAX_CACHE_SIZE = 1000
 
 # ======================== Data Models ========================
 
@@ -129,104 +141,105 @@ class RateLimiter:
         while not await self.check_rate_limit():
             await asyncio.sleep(1)
 
-# ======================== Response Cache ========================
+# ======================== Legacy Response Cache (Shared Services 없을 때만) ========================
 
-class ResponseCache:
-    """응답 캐시 관리"""
-    
-    def __init__(self):
-        self.cache: Dict[str, tuple[Any, datetime]] = {}
-        self.access_times: Dict[str, datetime] = {}
-        self._lock = asyncio.Lock()
-        self._cleanup_task = asyncio.create_task(self._periodic_cleanup())
-    
-    def _generate_key(self, request: LLMQueryRequest) -> str:
-        """캐시 키 생성"""
-        key_data = {
-            "query": request.query,
-            "query_type": request.query_type,
-            "provider": request.provider,
-            "model": request.model,
-            "temperature": request.temperature,
-            "system_prompt": request.system_prompt
-        }
-        key_str = json.dumps(key_data, sort_keys=True)
-        return hashlib.sha256(key_str.encode()).hexdigest()
-    
-    async def get(self, request: LLMQueryRequest) -> Optional[Any]:
-        """캐시에서 가져오기"""
-        if not request.cache_enabled:
+if not HAS_SHARED_SERVICES:
+    class ResponseCache:
+        """응답 캐시 관리 (Legacy)"""
+        
+        def __init__(self):
+            self.cache: Dict[str, tuple[Any, datetime]] = {}
+            self.access_times: Dict[str, datetime] = {}
+            self._lock = asyncio.Lock()
+            self._cleanup_task = asyncio.create_task(self._periodic_cleanup())
+        
+        def _generate_key(self, request: LLMQueryRequest) -> str:
+            """캐시 키 생성"""
+            key_data = {
+                "query": request.query,
+                "query_type": request.query_type,
+                "provider": request.provider,
+                "model": request.model,
+                "temperature": request.temperature,
+                "system_prompt": request.system_prompt
+            }
+            key_str = json.dumps(key_data, sort_keys=True)
+            return hashlib.sha256(key_str.encode()).hexdigest()
+        
+        async def get(self, request: LLMQueryRequest) -> Optional[Any]:
+            """캐시에서 가져오기"""
+            if not request.cache_enabled:
+                return None
+            
+            key = self._generate_key(request)
+            async with self._lock:
+                if key in self.cache:
+                    response, cached_time = self.cache[key]
+                    
+                    # TTL 확인
+                    if (datetime.now(timezone.utc) - cached_time).total_seconds() < CACHE_TTL:
+                        self.access_times[key] = datetime.now(timezone.utc)
+                        logger.info(f"Cache hit for query: {request.query[:50]}...")
+                        return response
+                    else:
+                        # 만료된 항목 제거
+                        del self.cache[key]
+                        del self.access_times[key]
+            
             return None
         
-        key = self._generate_key(request)
-        async with self._lock:
-            if key in self.cache:
-                response, cached_time = self.cache[key]
-                
-                # TTL 확인
-                if (datetime.now(timezone.utc) - cached_time).total_seconds() < CACHE_TTL:
-                    self.access_times[key] = datetime.now(timezone.utc)
-                    logger.info(f"Cache hit for query: {request.query[:50]}...")
-                    return response
-                else:
-                    # 만료된 항목 제거
-                    del self.cache[key]
-                    del self.access_times[key]
-        
-        return None
-    
-    async def set(self, request: LLMQueryRequest, response: Any):
-        """캐시에 저장"""
-        if not request.cache_enabled:
-            return
-        
-        key = self._generate_key(request)
-        async with self._lock:
-            # 크기 제한 확인
-            if len(self.cache) >= MAX_CACHE_SIZE:
-                await self._evict_lru()
+        async def set(self, request: LLMQueryRequest, response: Any):
+            """캐시에 저장"""
+            if not request.cache_enabled:
+                return
             
-            self.cache[key] = (response, datetime.now(timezone.utc))
-            self.access_times[key] = datetime.now(timezone.utc)
-    
-    async def _evict_lru(self):
-        """LRU 항목 제거"""
-        if not self.access_times:
-            return
-        
-        # 가장 오래된 항목 찾기
-        lru_key = min(self.access_times.items(), key=lambda x: x[1])[0]
-        del self.cache[lru_key]
-        del self.access_times[lru_key]
-    
-    async def _periodic_cleanup(self):
-        """주기적 정리"""
-        while True:
-            await asyncio.sleep(300)  # 5분마다
-            
+            key = self._generate_key(request)
             async with self._lock:
-                now = datetime.now(timezone.utc)
-                expired_keys = []
+                # 크기 제한 확인
+                if len(self.cache) >= MAX_CACHE_SIZE:
+                    await self._evict_lru()
                 
-                for key, (_, cached_time) in self.cache.items():
-                    if (now - cached_time).total_seconds() > CACHE_TTL:
-                        expired_keys.append(key)
+                self.cache[key] = (response, datetime.now(timezone.utc))
+                self.access_times[key] = datetime.now(timezone.utc)
+        
+        async def _evict_lru(self):
+            """LRU 항목 제거"""
+            if not self.access_times:
+                return
+            
+            # 가장 오래된 항목 찾기
+            lru_key = min(self.access_times.items(), key=lambda x: x[1])[0]
+            del self.cache[lru_key]
+            del self.access_times[lru_key]
+        
+        async def _periodic_cleanup(self):
+            """주기적 정리"""
+            while True:
+                await asyncio.sleep(300)  # 5분마다
                 
-                for key in expired_keys:
-                    del self.cache[key]
-                    self.access_times.pop(key, None)
-                
-                if expired_keys:
-                    logger.info(f"Cleaned up {len(expired_keys)} expired cache entries")
-    
-    async def shutdown(self):
-        """정리"""
-        if self._cleanup_task:
-            self._cleanup_task.cancel()
-            try:
-                await self._cleanup_task
-            except asyncio.CancelledError:
-                pass
+                async with self._lock:
+                    now = datetime.now(timezone.utc)
+                    expired_keys = []
+                    
+                    for key, (_, cached_time) in self.cache.items():
+                        if (now - cached_time).total_seconds() > CACHE_TTL:
+                            expired_keys.append(key)
+                    
+                    for key in expired_keys:
+                        del self.cache[key]
+                        self.access_times.pop(key, None)
+                    
+                    if expired_keys:
+                        logger.info(f"Cleaned up {len(expired_keys)} expired cache entries")
+        
+        async def shutdown(self):
+            """정리"""
+            if self._cleanup_task:
+                self._cleanup_task.cancel()
+                try:
+                    await self._cleanup_task
+                except asyncio.CancelledError:
+                    pass
 
 # ======================== LLM Query Service ========================
 
@@ -244,14 +257,36 @@ class LLMQueryService:
         
         # 관리 컴포넌트
         self.rate_limiter = RateLimiter()
-        self.cache = ResponseCache()
         
-        # 통계
+        # 캐시 설정 (Shared services 우선, 없으면 legacy)
+        if HAS_SHARED_SERVICES and cache_manager:
+            self.cache = cache_manager
+            self._using_shared_cache = True
+        else:
+            self.cache = ResponseCache()
+            self._using_shared_cache = False
+            logger.info("Using legacy cache system")
+        
+        # 통계 (Shared services 사용 시 metrics로 대체)
         self.query_history = deque(maxlen=1000)
-        self.provider_stats = {
-            provider: {"total": 0, "success": 0, "errors": 0, "avg_time": 0.0} 
-            for provider in LLMProvider
+        if not HAS_SHARED_SERVICES:
+            self.provider_stats = {
+                provider: {"total": 0, "success": 0, "errors": 0, "avg_time": 0.0} 
+                for provider in LLMProvider
+            }
+    
+    def _generate_cache_key(self, request: LLMQueryRequest) -> str:
+        """캐시 키 생성 (shared cache용)"""
+        key_data = {
+            "query": request.query,
+            "query_type": request.query_type,
+            "provider": request.provider,
+            "model": request.model,
+            "temperature": request.temperature,
+            "system_prompt": request.system_prompt
         }
+        key_str = json.dumps(key_data, sort_keys=True)
+        return f"llm_query:{hashlib.sha256(key_str.encode()).hexdigest()}"
     
     async def process_query(self, request: LLMQueryRequest) -> LLMResponse:
         """질의 처리"""
@@ -260,7 +295,13 @@ class LLMQueryService:
         
         try:
             # 캐시 확인
-            cached_response = await self.cache.get(request)
+            cached_response = None
+            if self._using_shared_cache and request.cache_enabled:
+                cache_key = self._generate_cache_key(request)
+                cached_response = await self.cache.get(cache_key)
+            else:
+                cached_response = await self.cache.get(request)
+            
             if cached_response:
                 return LLMResponse(
                     query_id=request.request_id,
@@ -295,7 +336,12 @@ class LLMQueryService:
                 "model": request.model or self.default_models[request.provider],
                 "conversation_id": response_data.get("conversation_id")
             }
-            await self.cache.set(request, cache_data)
+            
+            if self._using_shared_cache and request.cache_enabled:
+                cache_key = self._generate_cache_key(request)
+                await self.cache.set(cache_key, cache_data, ttl=3600)
+            else:
+                await self.cache.set(request, cache_data)
             
             # 응답 생성
             response = LLMResponse(
@@ -454,15 +500,25 @@ class LLMQueryService:
     
     async def _update_stats(self, provider: LLMProvider, success: bool, time: float):
         """통계 업데이트"""
-        stats = self.provider_stats[provider]
-        stats["total"] += 1
-        
-        if success:
-            stats["success"] += 1
-            # 이동평균 계산
-            stats["avg_time"] = (stats["avg_time"] * (stats["success"] - 1) + time) / stats["success"]
+        if HAS_SHARED_SERVICES and metrics:
+            # Shared metrics 사용
+            await metrics.increment(f"llm_query.{provider.value}.total")
+            if success:
+                await metrics.increment(f"llm_query.{provider.value}.success")
+                await metrics.observe(f"llm_query.{provider.value}.response_time", time)
+            else:
+                await metrics.increment(f"llm_query.{provider.value}.errors")
         else:
-            stats["errors"] += 1
+            # Legacy 통계
+            stats = self.provider_stats[provider]
+            stats["total"] += 1
+            
+            if success:
+                stats["success"] += 1
+                # 이동평균 계산
+                stats["avg_time"] = (stats["avg_time"] * (stats["success"] - 1) + time) / stats["success"]
+            else:
+                stats["errors"] += 1
     
     def _save_to_history(self, request: LLMQueryRequest, response: LLMResponse):
         """질의 히스토리 저장"""
@@ -594,16 +650,34 @@ class LLMQueryService:
     async def get_provider_stats(self) -> Dict[str, Any]:
         """제공자별 통계"""
         
-        return {
-            provider.value: {
-                "total_queries": stats["total"],
-                "successful_queries": stats["success"],
-                "error_count": stats["errors"],
-                "success_rate": (stats["success"] / stats["total"] * 100) if stats["total"] > 0 else 0,
-                "average_response_time": round(stats["avg_time"], 2)
+        if HAS_SHARED_SERVICES and metrics:
+            # Shared metrics에서 가져오기
+            stats = {}
+            for provider in LLMProvider:
+                provider_name = provider.value
+                stats[provider_name] = {
+                    "total_queries": await metrics.get(f"llm_query.{provider_name}.total") or 0,
+                    "successful_queries": await metrics.get(f"llm_query.{provider_name}.success") or 0,
+                    "error_count": await metrics.get(f"llm_query.{provider_name}.errors") or 0,
+                    "average_response_time": await metrics.get_average(f"llm_query.{provider_name}.response_time") or 0
+                }
+                total = stats[provider_name]["total_queries"]
+                success = stats[provider_name]["successful_queries"]
+                stats[provider_name]["success_rate"] = (success / total * 100) if total > 0 else 0
+            
+            return stats
+        else:
+            # Legacy 통계
+            return {
+                provider.value: {
+                    "total_queries": stats["total"],
+                    "successful_queries": stats["success"],
+                    "error_count": stats["errors"],
+                    "success_rate": (stats["success"] / stats["total"] * 100) if stats["total"] > 0 else 0,
+                    "average_response_time": round(stats["avg_time"], 2)
+                }
+                for provider, stats in self.provider_stats.items()
             }
-            for provider, stats in self.provider_stats.items()
-        }
     
     async def get_query_history(self, limit: int = 100) -> List[Dict[str, Any]]:
         """질의 히스토리 조회"""
@@ -612,8 +686,9 @@ class LLMQueryService:
     
     async def shutdown(self):
         """정리"""
-        # 캐시 정리
-        await self.cache.shutdown()
+        # 캐시 정리 (legacy mode일 때만)
+        if not self._using_shared_cache and hasattr(self.cache, 'shutdown'):
+            await self.cache.shutdown()
 
 # ======================== Specialized Services ========================
 
@@ -778,6 +853,10 @@ analysis_service = DataAnalysisService(llm_service)
 async def startup():
     """서비스 시작 시 초기화"""
     logger.info("LLM Query Service (Native) initialized")
+    if HAS_SHARED_SERVICES:
+        logger.info("Using shared services (cache_manager, metrics)")
+    else:
+        logger.info("Using legacy mode (no shared services)")
 
 @router.on_event("shutdown")
 async def shutdown():
@@ -858,15 +937,20 @@ async def batch_queries(batch_request: BatchQueryRequest):
 @router.get("/cache/stats")
 async def get_cache_statistics():
     """캐시 통계"""
-    cache = llm_service.cache
-    
-    return {
-        "total_entries": len(cache.cache),
-        "cache_size_limit": MAX_CACHE_SIZE,
-        "ttl_seconds": CACHE_TTL,
-        "oldest_entry": min(cache.access_times.values()).isoformat() if cache.access_times else None,
-        "newest_entry": max(cache.access_times.values()).isoformat() if cache.access_times else None
-    }
+    if HAS_SHARED_SERVICES and cache_manager:
+        # Shared cache 통계
+        return await cache_manager.get_stats("llm_query")
+    else:
+        # Legacy cache 통계
+        cache = llm_service.cache
+        
+        return {
+            "total_entries": len(cache.cache),
+            "cache_size_limit": MAX_CACHE_SIZE,
+            "ttl_seconds": CACHE_TTL,
+            "oldest_entry": min(cache.access_times.values()).isoformat() if cache.access_times else None,
+            "newest_entry": max(cache.access_times.values()).isoformat() if cache.access_times else None
+        }
 
 @router.post("/test/{provider}")
 async def test_provider_connection(provider: LLMProvider):

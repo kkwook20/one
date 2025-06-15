@@ -12,8 +12,8 @@ def get_python_path():
 def install():
     # Native Host 스크립트 경로 설정
     # native_messaging.py 또는 native_host.py 중 존재하는 파일 사용
-    possible_names = ["native_messaging.py", "native_host.py"]
-    native_host_path = None
+    possible_names = ["native_host.py"]
+    native_host_path = os.path.abspath("backend/routers/argosa/collection/native_host.py")
     
     for name in possible_names:
         path = os.path.abspath(f"backend/routers/argosa/collection/{name}")
@@ -23,8 +23,7 @@ def install():
     
     if not native_host_path:
         # 파일이 없어도 기본 경로 설정
-        native_host_path = os.path.abspath("backend/routers/argosa/collection/native_messaging.py")
-        print(f"⚠️  Warning: Native host script not found. Expected at: {native_host_path}")
+         print(f"⚠️  Warning: Native host script not found. Expected at: {native_host_path}")
     
     # 1. manifest.json 생성
     manifest = {

@@ -274,12 +274,6 @@
       <h2 class="section-title">Storage Configuration</h2>
       
       <div class="form-group">
-        <label for="dataFolder">Data Storage Folder</label>
-        <input type="text" id="dataFolder" placeholder="/home/user/llm-conversations">
-        <p class="help-text">Local folder where conversations will be saved (API mode overrides this)</p>
-      </div>
-
-      <div class="form-group">
         <label for="syncInterval">Automatic Sync Interval</label>
         <select id="syncInterval">
           <option value="60">Every hour</option>
@@ -291,45 +285,20 @@
         </select>
         <p class="help-text">How often to automatically collect conversations</p>
       </div>
-    </div>
-
-    <!-- API Configuration -->
-    <div class="section">
-      <h2 class="section-title">Backend API Configuration</h2>
-      
-      <div class="info-box" style="background: #f0f9ff; border-color: #bae6fd; color: #0369a1;">
-        🔗 Connect to Argosa backend for centralized data management and real-time sync with the dashboard.
-      </div>
       
       <div class="form-group">
-        <div style="display: flex; align-items: center; justify-content: space-between;">
-          <div>
-            <label style="margin-bottom: 4px;">Use Backend API</label>
-            <p class="help-text" style="margin: 0;">Send conversations to Argosa backend instead of local storage</p>
-          </div>
-          <div class="toggle-switch" id="apiToggle"></div>
-        </div>
+        <label for="maxConversations">Maximum Conversations per Sync</label>
+        <input type="number" id="maxConversations" value="20" min="10" max="100">
+        <p class="help-text">Limit the number of conversations collected in each sync</p>
       </div>
-      
-      <div id="apiSettings" style="display: none; margin-top: 20px;">
-        <div class="form-group">
-          <label for="apiUrl">API Endpoint</label>
-          <input type="text" id="apiUrl" value="http://localhost:8000/api/argosa/llm" readonly>
-          <p class="help-text">Backend API endpoint (read-only)</p>
-        </div>
-        
-        <div class="form-group">
-          <div style="display: flex; align-items: center; gap: 12px; padding: 12px; background: #f9fafb; border-radius: 8px;">
-            <div id="apiStatusDot"></div>
-            <span id="apiStatusText" style="font-size: 14px; color: #6b7280;">Not connected</span>
-            <button class="btn btn-secondary" id="testApiBtn" style="margin-left: auto;">
-              Test Connection
-            </button>
-          </div>
-        </div>
+
+      <div class="form-group">
+        <label for="delayBetweenPlatforms">Delay Between Platforms (seconds)</label>
+        <input type="number" id="delayBetweenPlatforms" value="5" min="1" max="10">
+        <p class="help-text">Wait time between platform visits to avoid rate limiting</p>
       </div>
     </div>
-
+    
     <!-- Platform Configuration -->
     <div class="section">
       <h2 class="section-title">Platform Configuration</h2>

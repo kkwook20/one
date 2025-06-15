@@ -1,5 +1,3 @@
-# backend/routers/argosa/data_collection/web_crawler_agent.py - Native Messaging 전용 버전
-
 from typing import Dict, Any, List, Optional, TypedDict, Set, Tuple
 from enum import Enum
 import asyncio
@@ -20,10 +18,18 @@ from pathlib import Path
 import aiofiles
 import uuid
 
-# Native Command Manager import
-from backend.routers.argosa.data_collection import native_command_manager
-
 logger = logging.getLogger(__name__)
+
+# Native Command Manager는 초기화 시점에 import
+native_command_manager = None
+
+async def get_native_command_manager():
+    """Native Command Manager를 동적으로 가져오기"""
+    global native_command_manager
+    if native_command_manager is None:
+        from backend.routers.argosa.data_collection import native_command_manager as ncm
+        native_command_manager = ncm
+    return native_command_manager
 
 # ======================== Configuration ========================
 
@@ -286,8 +292,11 @@ class GoogleSearchAPI(BaseAPIClient):
             }
         
         try:
+            # Native Command Manager 가져오기
+            ncm = await get_native_command_manager()
+            
             # Native로 검색 요청
-            command_id = await native_command_manager.send_command(
+            command_id = await ncm.send_command(
                 "search_google",
                 {
                     "query": query,
@@ -298,7 +307,7 @@ class GoogleSearchAPI(BaseAPIClient):
                 }
             )
             
-            result = await native_command_manager.wait_for_response(command_id, timeout=30)
+            result = await ncm.wait_for_response(command_id, timeout=30)
             
             if result.get("status") == "success":
                 self.used_today += 1
@@ -340,7 +349,10 @@ class NewsAPI(BaseAPIClient):
             from_date = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
         
         try:
-            command_id = await native_command_manager.send_command(
+            # Native Command Manager 가져오기
+            ncm = await get_native_command_manager()
+            
+            command_id = await ncm.send_command(
                 "search_news",
                 {
                     "query": query,
@@ -352,7 +364,7 @@ class NewsAPI(BaseAPIClient):
                 }
             )
             
-            result = await native_command_manager.wait_for_response(command_id, timeout=30)
+            result = await ncm.wait_for_response(command_id, timeout=30)
             return result
                 
         except Exception as e:
@@ -474,8 +486,11 @@ class WebCrawlerEngine:
         """Native Messaging을 사용한 크롤링"""
         
         try:
+            # Native Command Manager 가져오기
+            ncm = await get_native_command_manager()
+            
             # Native로 크롤링 명령 전송
-            command_id = await native_command_manager.send_command(
+            command_id = await ncm.send_command(
                 "crawl_web",
                 {
                     "url": url,
@@ -487,7 +502,7 @@ class WebCrawlerEngine:
             )
             
             # 응답 대기
-            result = await native_command_manager.wait_for_response(command_id, timeout=30)
+            result = await ncm.wait_for_response(command_id, timeout=30)
             
             if result.get("error"):
                 return {
@@ -754,7 +769,10 @@ Extract key information and return as structured JSON."""
             )
         
         try:
-            command_id = await native_command_manager.send_command(
+            # Native Command Manager 가져오기
+            ncm = await get_native_command_manager()
+            
+            command_id = await ncm.send_command(
                 "download_file",
                 {
                     "url": url,
@@ -763,7 +781,7 @@ Extract key information and return as structured JSON."""
                 }
             )
             
-            result = await native_command_manager.wait_for_response(command_id, timeout=60)
+            result = await ncm.wait_for_response(command_id, timeout=60)
             
             if result.get("status") == "success":
                 file_path = result.get("file_path")
