@@ -213,30 +213,35 @@ class CrawlerCache:
     
     async def _periodic_cleanup(self):
         """주기적 캐시 정리"""
-        while True:
-            await asyncio.sleep(3600)  # 1시간마다
-            
-            # 메모리 캐시 정리
-            async with self._lock:
-                now = datetime.now(timezone.utc)
-                expired_keys = [
-                    key for key, (_, cached_time) in self.memory_cache.items()
-                    if (now - cached_time).total_seconds() > CACHE_TTL
-                ]
-                for key in expired_keys:
-                    del self.memory_cache[key]
-            
-            # 파일 캐시 정리
-            for cache_file in CACHE_PATH.glob("*.json"):
-                try:
-                    async with aiofiles.open(cache_file, 'r') as f:
-                        cache_data = json.loads(await f.read())
-                        cached_time = datetime.fromisoformat(cache_data['timestamp'])
-                        
-                        if (now - cached_time).total_seconds() > CACHE_TTL:
-                            cache_file.unlink()
-                except:
-                    pass
+        try:
+            while True:
+                await asyncio.sleep(3600)  # 1시간마다
+                
+                # 메모리 캐시 정리
+                async with self._lock:
+                    now = datetime.now(timezone.utc)
+                    expired_keys = [
+                        key for key, (_, cached_time) in self.memory_cache.items()
+                        if (now - cached_time).total_seconds() > CACHE_TTL
+                    ]
+                    for key in expired_keys:
+                        del self.memory_cache[key]
+                
+                # 파일 캐시 정리
+                for cache_file in CACHE_PATH.glob("*.json"):
+                    try:
+                        async with aiofiles.open(cache_file, 'r') as f:
+                            cache_data = json.loads(await f.read())
+                            cached_time = datetime.fromisoformat(cache_data['timestamp'])
+                            
+                            if (now - cached_time).total_seconds() > CACHE_TTL:
+                                cache_file.unlink()
+                    except:
+                        pass
+        except asyncio.CancelledError:
+            # 정상적인 종료
+            logger.info("Cache cleanup task cancelled")
+            raise
     
     async def shutdown(self):
         """정리"""

@@ -439,15 +439,15 @@
       <h2 class="section-title">Advanced Settings</h2>
       
       <div class="form-group">
-        <label for="maxConversations">Maximum Conversations per Sync</label>
-        <input type="number" id="maxConversations" value="1000" min="10" max="10000">
-        <p class="help-text">Limit the number of conversations collected in each sync</p>
+        <label for="retryAttempts">Max Retry Attempts</label>
+        <input type="number" id="retryAttempts" value="3" min="1" max="5">
+        <p class="help-text">Number of retry attempts for failed operations</p>
       </div>
 
       <div class="form-group">
-        <label for="delayBetweenActions">Delay Between Actions (seconds)</label>
-        <input type="number" id="delayBetweenActions" value="3" min="1" max="10">
-        <p class="help-text">Wait time between platform visits to avoid rate limiting</p>
+        <label for="requestTimeout">Request Timeout (seconds)</label>
+        <input type="number" id="requestTimeout" value="30" min="10" max="120">
+        <p class="help-text">Timeout for API requests and page loads</p>
       </div>
     </div>
 

@@ -24,6 +24,7 @@ from .shared.cache_manager import cache_manager
 from .shared.llm_tracker import llm_tracker
 from .shared.command_queue import command_queue
 from .shared.metrics import metrics
+from .shared.conversation_saver import conversation_saver
 
 # 설정
 logger = logging.getLogger(__name__)
@@ -730,14 +731,8 @@ async def handle_crawl_command(command):
 # Internal helper for saving conversations
 async def save_conversations_internal(data: Dict[str, Any]):
     """내부 대화 저장 함수"""
-    # 기존 llm_conversation_collector의 로직 활용
-    from .collection.llm_conversation_collector import collector
-    
-    return await collector.save_conversations(
+    return await conversation_saver.save_conversations(
         platform=data['platform'],
         conversations=data['conversations'],
         metadata=data.get('metadata', {})
     )
-
-# Run initialization on import
-asyncio.create_task(initialize())

@@ -495,6 +495,13 @@ router = APIRouter(prefix="/llm/conversations", tags=["llm_conversations"])
 # 전역 컬렉터 인스턴스
 collector = LLMConversationCollector()
 
+# conversation_saver에 컬렉터 등록
+try:
+    from ..shared.conversation_saver import conversation_saver
+    conversation_saver.set_collector(collector)
+except ImportError:
+    logger.warning("Failed to register with conversation_saver")
+    
 @router.post("/save")
 async def save_conversations(request: ConversationSaveRequest):
     """대화 저장 API - LLM 소스 체크 추가"""
