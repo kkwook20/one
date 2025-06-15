@@ -137,8 +137,17 @@ class LLMConversationCollector:
         
         # 파일 저장
         file_path = platform_path / filename
-        with open(file_path, 'w', encoding='utf-8') as f:
-            json.dump(save_data, f, ensure_ascii=False, indent=2)
+        temp_path = file_path.with_suffix('.tmp')
+
+        try:
+            with open(temp_path, 'w', encoding='utf-8') as f:
+                json.dump(save_data, f, ensure_ascii=False, indent=2)
+            
+            temp_path.replace(file_path)
+        except Exception as e:
+            if temp_path.exists():
+                temp_path.unlink()
+            raise e
         
         logger.info(f"Saved {len(filtered_conversations)} conversations to {filename}")
         

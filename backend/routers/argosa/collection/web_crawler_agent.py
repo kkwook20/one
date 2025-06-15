@@ -23,12 +23,15 @@ logger = logging.getLogger(__name__)
 # Native Command Manager는 초기화 시점에 import
 native_command_manager = None
 
-async def get_native_command_manager():
-    """Native Command Manager를 동적으로 가져오기"""
+def set_native_command_manager(ncm):
+    """Native Command Manager 설정"""
     global native_command_manager
+    native_command_manager = ncm
+
+async def get_native_command_manager():
+    """Native Command Manager 가져오기"""
     if native_command_manager is None:
-        from backend.routers.argosa.data_collection import native_command_manager as ncm
-        native_command_manager = ncm
+        raise RuntimeError("Native Command Manager not initialized")
     return native_command_manager
 
 # ======================== Configuration ========================

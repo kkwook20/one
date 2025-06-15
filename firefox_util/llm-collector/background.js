@@ -89,6 +89,7 @@ class NativeExtension {
     // Native Messaging
     this.nativePort = null;
     this.nativeConnected = false;
+    this.reconnectDelay = 1000; 
     
     // Initialize
     this.init();
@@ -158,7 +159,8 @@ class NativeExtension {
         this.nativeConnected = false;
         
         // 재연결 시도
-        setTimeout(() => this.connectNative(), 5000);
+        this.reconnectDelay = Math.min(this.reconnectDelay * 2, 60000);
+        setTimeout(() => this.connectNative(), this.reconnectDelay);
       });
       
       // 초기화 메시지
@@ -177,7 +179,8 @@ class NativeExtension {
       this.nativeConnected = false;
       
       // 재연결 시도
-      setTimeout(() => this.connectNative(), 5000);
+      this.reconnectDelay = Math.min(this.reconnectDelay * 2, 60000);
+      setTimeout(() => this.connectNative(), this.reconnectDelay);
     }
   }
   
@@ -547,15 +550,28 @@ class NativeExtension {
             }
           }
           else if ('${platform}' === 'gemini') {
-            // Gemini specific logic
-            const response = await fetch('${config.conversationListUrl}', {
-              credentials: 'include'
-            });
-            
-            if (response.ok) {
-              const data = await response.json();
-              // Process Gemini data
-            }
+              const response = await fetch('${config.conversationListUrl}', {
+                  credentials: 'include'
+              });
+              
+              if (response.ok) {
+                  const data = await response.json();
+                  
+                  // 이 부분 추가
+                  for (const item of data.conversations || data.threads || []) {
+                      if (excludeSet.has(item.id)) {
+                          excluded.push(item.id);
+                          continue;
+                      }
+                      
+                      conversations.push({
+                          id: item.id,
+                          title: item.title || item.name || 'Untitled',
+                          created_at: item.created_at || item.created_time,
+                          updated_at: item.updated_at || item.modified_time
+                      });
+                  }
+              }
           }
           else if ('${platform}' === 'deepseek') {
             const response = await fetch('${config.conversationListUrl}', {

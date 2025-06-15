@@ -296,7 +296,7 @@ class UnifiedSessionManager:
         
         try:
             timestamp = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
-            now = datetime.now(timezone.utc) if timestamp.tzinfo else datetime.now()
+            now = datetime.now() if timestamp.tzinfo else datetime.now()
             age = now - timestamp
             return age.total_seconds() / 60
         except:
@@ -693,6 +693,11 @@ async def initialize():
     await state_manager.update_state("extension_status", "disconnected")
     
     logger.info("Argosa core system initialized")
+    try:
+        from .collection.web_crawler_agent import set_native_command_manager
+        set_native_command_manager(native_command_manager)
+    except ImportError:
+        logger.warning("web_crawler_agent not available")
 
 async def shutdown():
     """Shutdown Argosa core system"""

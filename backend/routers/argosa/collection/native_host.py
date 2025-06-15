@@ -74,7 +74,6 @@ class ImprovedNativeHost:
         self.session: Optional[aiohttp.ClientSession] = None
         self.handler = MessageHandler()
         self.running = True
-        self.llm_tracking = LLMConversationTracker()
         
         # 핸들러 등록
         self._register_handlers()
@@ -113,10 +112,14 @@ class ImprovedNativeHost:
             data = message.get('data', {})
             
             # LLM 대화 필터링
-            filtered_data = self.llm_tracking.filter_conversations(
-                data.get('conversations', []),
-                data.get('platform')
-            )
+            result = await self._send_to_backend('/native/collection', {
+                'platform': data.get('platform'),
+                'conversations': data.get('conversations', []),
+                'metadata': {
+                    'source': 'native_collection',
+                    'timestamp': datetime.now().isoformat()
+                }
+            })
             
             # 백엔드로 전송
             result = await self._send_to_backend('/native/collection', filtered_data)
@@ -286,57 +289,6 @@ class ImprovedNativeHost:
                         
             except Exception as e:
                 logger.error(f"Message processing error: {e}")
-
-class LLMConversationTracker:
-    """LLM 대화 추적 전용 클래스"""
-    
-    def __init__(self):
-        self._tracked_ids: Set[str] = set()
-        self._metadata: Dict[str, Dict[str, Any]] = {}
-    
-    def track(self, conversation_id: str, platform: str, metadata: Dict[str, Any]):
-        """LLM 대화 추적"""
-        self._tracked_ids.add(conversation_id)
-        self._metadata[conversation_id] = {
-            'platform': platform,
-            'tracked_at': datetime.now().isoformat(),
-            **metadata
-        }
-        logger.info(f"Tracked LLM conversation: {conversation_id} on {platform}")
-    
-    def is_tracked(self, conversation_id: str) -> bool:
-        """추적된 대화인지 확인"""
-        return conversation_id in self._tracked_ids
-    
-    def get_tracked_ids(self) -> List[str]:
-        """추적된 ID 목록 반환"""
-        return list(self._tracked_ids)
-    
-    def filter_conversations(self, conversations: List[Dict[str, Any]], platform: str) -> Dict[str, Any]:
-        """LLM 대화 필터링"""
-        filtered = []
-        excluded_count = 0
-        
-        for conv in conversations:
-            conv_id = conv.get('id')
-            
-            if self.is_tracked(conv_id):
-                excluded_count += 1
-                logger.debug(f"Excluding tracked LLM conversation: {conv_id}")
-            else:
-                # 추가 체크: 메타데이터에서 LLM 표시 확인
-                if conv.get('metadata', {}).get('source') == 'llm_query':
-                    excluded_count += 1
-                    self.track(conv_id, platform, conv.get('metadata', {}))
-                else:
-                    filtered.append(conv)
-        
-        return {
-            'platform': platform,
-            'conversations': filtered,
-            'excluded_count': excluded_count,
-            'total_before_filter': len(conversations)
-        }
 
 if __name__ == "__main__":
     # Windows 바이너리 모드 설정

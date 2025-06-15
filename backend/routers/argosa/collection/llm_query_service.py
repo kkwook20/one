@@ -141,106 +141,6 @@ class RateLimiter:
         while not await self.check_rate_limit():
             await asyncio.sleep(1)
 
-# ======================== Legacy Response Cache (Shared Services 없을 때만) ========================
-
-if not HAS_SHARED_SERVICES:
-    class ResponseCache:
-        """응답 캐시 관리 (Legacy)"""
-        
-        def __init__(self):
-            self.cache: Dict[str, tuple[Any, datetime]] = {}
-            self.access_times: Dict[str, datetime] = {}
-            self._lock = asyncio.Lock()
-            self._cleanup_task = asyncio.create_task(self._periodic_cleanup())
-        
-        def _generate_key(self, request: LLMQueryRequest) -> str:
-            """캐시 키 생성"""
-            key_data = {
-                "query": request.query,
-                "query_type": request.query_type,
-                "provider": request.provider,
-                "model": request.model,
-                "temperature": request.temperature,
-                "system_prompt": request.system_prompt
-            }
-            key_str = json.dumps(key_data, sort_keys=True)
-            return hashlib.sha256(key_str.encode()).hexdigest()
-        
-        async def get(self, request: LLMQueryRequest) -> Optional[Any]:
-            """캐시에서 가져오기"""
-            if not request.cache_enabled:
-                return None
-            
-            key = self._generate_key(request)
-            async with self._lock:
-                if key in self.cache:
-                    response, cached_time = self.cache[key]
-                    
-                    # TTL 확인
-                    if (datetime.now(timezone.utc) - cached_time).total_seconds() < CACHE_TTL:
-                        self.access_times[key] = datetime.now(timezone.utc)
-                        logger.info(f"Cache hit for query: {request.query[:50]}...")
-                        return response
-                    else:
-                        # 만료된 항목 제거
-                        del self.cache[key]
-                        del self.access_times[key]
-            
-            return None
-        
-        async def set(self, request: LLMQueryRequest, response: Any):
-            """캐시에 저장"""
-            if not request.cache_enabled:
-                return
-            
-            key = self._generate_key(request)
-            async with self._lock:
-                # 크기 제한 확인
-                if len(self.cache) >= MAX_CACHE_SIZE:
-                    await self._evict_lru()
-                
-                self.cache[key] = (response, datetime.now(timezone.utc))
-                self.access_times[key] = datetime.now(timezone.utc)
-        
-        async def _evict_lru(self):
-            """LRU 항목 제거"""
-            if not self.access_times:
-                return
-            
-            # 가장 오래된 항목 찾기
-            lru_key = min(self.access_times.items(), key=lambda x: x[1])[0]
-            del self.cache[lru_key]
-            del self.access_times[lru_key]
-        
-        async def _periodic_cleanup(self):
-            """주기적 정리"""
-            while True:
-                await asyncio.sleep(300)  # 5분마다
-                
-                async with self._lock:
-                    now = datetime.now(timezone.utc)
-                    expired_keys = []
-                    
-                    for key, (_, cached_time) in self.cache.items():
-                        if (now - cached_time).total_seconds() > CACHE_TTL:
-                            expired_keys.append(key)
-                    
-                    for key in expired_keys:
-                        del self.cache[key]
-                        self.access_times.pop(key, None)
-                    
-                    if expired_keys:
-                        logger.info(f"Cleaned up {len(expired_keys)} expired cache entries")
-        
-        async def shutdown(self):
-            """정리"""
-            if self._cleanup_task:
-                self._cleanup_task.cancel()
-                try:
-                    await self._cleanup_task
-                except asyncio.CancelledError:
-                    pass
-
 # ======================== LLM Query Service ========================
 
 class LLMQueryService:
@@ -262,10 +162,10 @@ class LLMQueryService:
         if HAS_SHARED_SERVICES and cache_manager:
             self.cache = cache_manager
             self._using_shared_cache = True
+            logger.info("Using shared cache system")
         else:
-            self.cache = ResponseCache()
-            self._using_shared_cache = False
-            logger.info("Using legacy cache system")
+            logger.error("Shared cache_manager not available")
+            raise ImportError("Required shared services not available")
         
         # 통계 (Shared services 사용 시 metrics로 대체)
         self.query_history = deque(maxlen=1000)
