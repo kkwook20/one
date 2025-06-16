@@ -18,7 +18,7 @@ if ($profileFolder) {
 
 # 변수 설정
 $extensionSourcePath = "F:\ONE_AI\firefox_util\llm-collector"
-$profilePath = "F:\ONE_AI\firefox-profile"  # profiles.ini에서 확인한 경로
+$profilePath = "F:\ONE_AI\firefox-profile"
 
 # 프로필 폴더 존재 확인
 if (Test-Path $profilePath) {
@@ -30,18 +30,11 @@ if (Test-Path $profilePath) {
     # extensions 폴더 생성
     if (!(Test-Path $extensionsPath)) {
         New-Item -ItemType Directory -Path $extensionsPath -Force
-        Write-Host "Created extensions folder"
     }
     
     # Extension 대상 경로 (ID를 폴더명으로 사용)
-    $extensionDestPath = Join-Path $extensionsPath "llm-collector@example.com"
-    
-    # 기존 Extension 삭제
-    if (Test-Path $extensionDestPath) {
-        Remove-Item $extensionDestPath -Recurse -Force
-        Write-Host "Removed existing extension"
-    }
-    
+    $extensionDestPath = Join-Path $extensionsPath "llm-collector@argosa.ai"
+
     # Extension 복사
     Copy-Item -Path $extensionSourcePath -Destination $extensionDestPath -Recurse -Force
     Write-Host "Extension copied successfully!"

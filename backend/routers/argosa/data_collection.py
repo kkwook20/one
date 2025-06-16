@@ -144,6 +144,34 @@ class SystemStateManager:
 # Global state manager
 state_manager = SystemStateManager()
 
+# ======================== Firefox Runnning ========================
+@router.post("/sessions/ensure_firefox")
+async def ensure_firefox_running(request: Dict[str, Any]):
+    """Firefox가 실행 중인지 확인하고, 아니면 실행"""
+    
+    # Firefox 프로세스 확인
+    firefox_running = any(p.name().lower().startswith('firefox') for p in psutil.process_iter())
+    
+    if not firefox_running:
+        # Firefox 실행
+        profile_path = request.get('profile_path', 'F:\\ONE_AI\\firefox-profile')
+        subprocess.Popen([
+            r"C:\Program Files\Mozilla Firefox\firefox.exe",
+            '-profile', profile_path
+        ])
+        
+        # Extension 로드 대기
+        await asyncio.sleep(5)
+    
+    # 이제 Native Messaging으로 로그인 페이지 열기
+    platform = request.get('platform')
+    command_id = await native_command_manager.send_command(
+        "open_login_page",
+        {"platform": platform}
+    )
+    
+    return {"success": True, "command_id": command_id}
+
 # ======================== Native Messaging Support ========================
 
 class NativeCommandManager:

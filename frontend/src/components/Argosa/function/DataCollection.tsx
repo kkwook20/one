@@ -187,6 +187,31 @@ export default function DataCollection() {
     }
   }, []);
   
+  const handleLogin = async (platform: string) => {
+    try {
+      const response = await fetch(`${API_BASE_URL}/sessions/ensure_firefox`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          platform,
+          profile_path: 'F:\\ONE_AI\\firefox-profile'
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to open Firefox');
+      }
+
+      // checkSessionStatus 대신 성공 메시지만 표시
+      setSuccessMessage(`Opening Firefox for ${platform} login. Session will be detected automatically.`);
+      
+      // WebSocket이 자동으로 상태를 업데이트할 것임
+      
+    } catch (error) {
+      console.error('Failed to open Firefox:', error);
+      setSessionCheckError('Failed to open Firefox. Please make sure Firefox is installed.');
+    }
+  };
   // ==================== Effects ====================
   
   useEffect(() => {
@@ -382,6 +407,7 @@ export default function DataCollection() {
                 onError={setSessionCheckError}
                 apiBaseUrl={API_BASE_URL}
                 wsRef={wsRef}
+                handleLogin={handleLogin} 
               />
             </TabsContent>
 

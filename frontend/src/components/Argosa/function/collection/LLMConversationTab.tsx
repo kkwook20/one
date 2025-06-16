@@ -50,6 +50,7 @@ interface LLMConversationTabProps {
   onError: (error: string) => void;
   apiBaseUrl: string;
   wsRef?: React.MutableRefObject<WebSocket | null>;
+  handleLogin?: (platform: string) => Promise<void>;
 }
 
 interface LLMConfig {
@@ -205,7 +206,8 @@ export default function LLMConversationTab({
   onSuccess,
   onError,
   apiBaseUrl,
-  wsRef
+  wsRef,
+  handleLogin
 }: LLMConversationTabProps) {
   // ==================== State Management ====================
   
@@ -405,9 +407,15 @@ export default function LLMConversationTab({
     setOpeningLoginPlatform(platform);
     
     try {
-      // 브라우저에서 직접 열기
-      window.open(config.url, '_blank');
-      console.log(`✅ Opening ${config.name} login page in new tab`);
+      // handleLogin prop이 있으면 사용, 없으면 기존 방식
+      if (handleLogin) {
+        await handleLogin(platform);
+        console.log(`✅ Firefox opening for ${config.name} login`);
+      } else {
+        // Fallback: 브라우저에서 직접 열기
+        window.open(config.url, '_blank');
+        console.log(`✅ Opening ${config.name} login page in new tab`);
+      }
       
       // 로그인 성공 확인을 위한 주기적 체크
       let checkCount = 0;
