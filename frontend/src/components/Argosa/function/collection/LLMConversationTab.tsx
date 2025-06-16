@@ -50,7 +50,6 @@ interface LLMConversationTabProps {
   onError: (error: string) => void;
   apiBaseUrl: string;
   wsRef?: React.MutableRefObject<WebSocket | null>;
-  handleLogin?: (platform: string) => Promise<void>;
 }
 
 interface LLMConfig {
@@ -206,8 +205,7 @@ export default function LLMConversationTab({
   onSuccess,
   onError,
   apiBaseUrl,
-  wsRef,
-  handleLogin
+  wsRef
 }: LLMConversationTabProps) {
   // ==================== State Management ====================
   
@@ -407,15 +405,25 @@ export default function LLMConversationTab({
     setOpeningLoginPlatform(platform);
     
     try {
-      // handleLogin prop이 있으면 사용, 없으면 기존 방식
-      if (handleLogin) {
-        await handleLogin(platform);
-        console.log(`✅ Firefox opening for ${config.name} login`);
-      } else {
-        // Fallback: 브라우저에서 직접 열기
-        window.open(config.url, '_blank');
-        console.log(`✅ Opening ${config.name} login page in new tab`);
+      // Native Messaging을 통해 Firefox에서 열기
+      const response = await fetch(`${apiBaseUrl}/native/message`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          type: 'open_login_page',
+          data: {
+            platform: platform,
+            url: config.url
+          }
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to send native message');
       }
+
+      console.log(`✅ Sent open_login_page command for ${platform}`);
+      onSuccess(`Opening ${config.name} in Firefox...`);
       
       // 로그인 성공 확인을 위한 주기적 체크
       let checkCount = 0;
@@ -453,9 +461,10 @@ export default function LLMConversationTab({
     } catch (error) {
       console.error(`❌ Failed to open login page: ${error}`);
       setOpeningLoginPlatform(null);
+      onError(`Failed to open Firefox for ${config.name} login`);
     }
   };
-  
+    
   const cleanData = async () => {
     if (!window.confirm(
       'Delete all collected data?\n\n' +

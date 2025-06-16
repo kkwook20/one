@@ -821,3 +821,5 @@ async def save_conversations_internal(data: Dict[str, Any]):
         conversations=data['conversations'],
         metadata=data.get('metadata', {})
     )
+
+router.include_router(llm_conv_router)

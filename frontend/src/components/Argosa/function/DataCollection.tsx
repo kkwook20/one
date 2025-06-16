@@ -1,5 +1,5 @@
 /**
- * DataCollection.tsx - 메인 파일 (백엔드 변경사항 반영 버전)
+ * DataCollection.tsx - 메인 파일 (Native Messaging 활용 버전)
  * 
  * 모든 state와 함수는 여기서 관리하고,
  * 각 탭은 단순히 UI 렌더링만 담당
@@ -129,8 +129,12 @@ export default function DataCollection() {
       ws.onmessage = (event) => {
         try {
           const message = JSON.parse(event.data);
+          
           if (message.type === 'state_update') {
             setSystemState(message.data);
+          } else if (message.type === 'ping') {
+            // Respond to ping with pong
+            ws.send(JSON.stringify({ type: 'pong' }));
           }
         } catch (error) {
           console.error('WebSocket message error:', error);
@@ -162,7 +166,7 @@ export default function DataCollection() {
   
   const loadStats = useCallback(async () => {
     try {
-      const response = await fetch(`${API_BASE_URL}/llm/conversations/stats/all`);
+      const response = await fetch(`${API_BASE_URL}/data/llm/conversations/stats/all`);
       if (response.ok) {
         const data = await response.json();
         setStats(data);
@@ -187,31 +191,6 @@ export default function DataCollection() {
     }
   }, []);
   
-  const handleLogin = async (platform: string) => {
-    try {
-      const response = await fetch(`${API_BASE_URL}/sessions/ensure_firefox`, {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({
-          platform,
-          profile_path: 'F:\\ONE_AI\\firefox-profile'
-        }),
-      });
-
-      if (!response.ok) {
-        throw new Error('Failed to open Firefox');
-      }
-
-      // checkSessionStatus 대신 성공 메시지만 표시
-      setSuccessMessage(`Opening Firefox for ${platform} login. Session will be detected automatically.`);
-      
-      // WebSocket이 자동으로 상태를 업데이트할 것임
-      
-    } catch (error) {
-      console.error('Failed to open Firefox:', error);
-      setSessionCheckError('Failed to open Firefox. Please make sure Firefox is installed.');
-    }
-  };
   // ==================== Effects ====================
   
   useEffect(() => {
@@ -407,7 +386,7 @@ export default function DataCollection() {
                 onError={setSessionCheckError}
                 apiBaseUrl={API_BASE_URL}
                 wsRef={wsRef}
-                handleLogin={handleLogin} 
+                // handleLogin prop을 제거 - LLMConversationTab이 알아서 처리
               />
             </TabsContent>
 
