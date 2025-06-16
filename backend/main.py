@@ -1,6 +1,6 @@
 # backend/main.py - 모듈화된 3개 시스템 지원 버전 (디버깅 로그 추가)
 
-from fastapi import FastAPI
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 import signal
 import sys
@@ -8,6 +8,8 @@ import asyncio
 import os
 import threading
 import traceback
+from typing import Dict
+from datetime import datetime
 
 # 버퍼링 비활성화 - 로그 즉시 출력
 sys.stdout = sys.stderr = sys.__stdout__
@@ -25,6 +27,7 @@ from routers.argosa import initialize as argosa_initialize, shutdown as argosa_s
 # 전역 변수
 shutdown_event = asyncio.Event()
 background_tasks = []
+connected_clients: Dict[str, WebSocket] = {}
 
 # Create FastAPI app
 app = FastAPI(
@@ -94,6 +97,39 @@ async def health_check():
         }
     }
 
+@app.websocket("/ws/{client_id}")
+async def websocket_endpoint(websocket: WebSocket, client_id: str):
+    """범용 WebSocket 엔드포인트"""
+    await websocket.accept()
+    connected_clients[client_id] = websocket
+    
+    try:
+        print(f"[WebSocket] Client {client_id} connected", flush=True)
+        
+        # 초기 메시지 전송
+        await websocket.send_json({
+            "type": "connection",
+            "status": "connected",
+            "client_id": client_id,
+            "message": "Successfully connected to server"
+        })
+        
+        # 메시지 수신 대기
+        while True:
+            data = await websocket.receive_json()
+            
+            # Echo back 또는 다른 처리
+            await websocket.send_json({
+                "type": "echo",
+                "data": data
+            })
+                
+    except WebSocketDisconnect:
+        print(f"[WebSocket] Client {client_id} disconnected", flush=True)
+    finally:
+        if client_id in connected_clients:
+            del connected_clients[client_id]
+            
 # Shutdown 핸들러
 def handle_shutdown(sig, frame):
     """Ctrl+C 시 즉시 종료"""

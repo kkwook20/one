@@ -29,7 +29,7 @@ import LLMConversationTab from "./collection/LLMConversationTab";
 
 // ======================== Constants ========================
 const API_BASE_URL = 'http://localhost:8000/api/argosa';
-const WS_URL = 'ws://localhost:8000/api/argosa/ws/state';
+const WS_URL = 'ws://localhost:8000/api/argosa/data/ws/state';
 
 // ======================== Type Definitions ========================
 // 공통으로 사용되는 타입들만 정의

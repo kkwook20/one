@@ -95,9 +95,9 @@ class LLMResponse(BaseModel):
 class AnalysisRequest(BaseModel):
     """데이터 분석 요청"""
     data: Any
-    analysis_type: str = Field(..., regex="^(pattern|statistical|comparative|predictive|diagnostic|prescriptive)$")
+    analysis_type: str = Field(..., pattern="^(pattern|statistical|comparative|predictive|diagnostic|prescriptive)$")  # regex를 pattern으로 변경
     questions: List[str] = []
-    output_format: str = Field(default="structured", regex="^(structured|narrative|visual)$")
+    output_format: str = Field(default="structured", pattern="^(structured|narrative|visual)$")  # regex를 pattern으로 변경
     provider: LLMProvider = LLMProvider.CHATGPT
     model: Optional[str] = None
     include_recommendations: bool = True

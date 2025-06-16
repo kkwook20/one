@@ -105,7 +105,7 @@ except ImportError:
 
 try:
     from .user_input import router as user_router
-    router.include_router(user_input, prefix="/user", tags=["User Input"])
+    router.include_router(user_router, prefix="/user", tags=["User Input"])
 except ImportError:
     logger.info("[Argosa] user_input module not found")
 
