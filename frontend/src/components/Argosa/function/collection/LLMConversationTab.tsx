@@ -398,70 +398,74 @@ export default function LLMConversationTab({
   };
   
   const openLoginPage = async (platform: string) => {
-    const config = PLATFORMS[platform];
-    if (!config || openingLoginPlatform) return;
-    
-    console.log(`🔐 Opening login for ${platform}`);
-    setOpeningLoginPlatform(platform);
-    
-    try {
-      // ensure_firefox 엔드포인트 사용으로 변경!
-      const response = await fetch(`${apiBaseUrl}/data/sessions/ensure_firefox`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          platform: platform,
-          profile_path: 'F:\\ONE_AI\\firefox-profile'  // 필요시 경로 수정
-        })
-      });
+      const config = PLATFORMS[platform];
+      if (!config || openingLoginPlatform) return;
+      
+      console.log(`🔐 Opening login for ${platform}`);
+      setOpeningLoginPlatform(platform);
+      
+      try {
+        // ensure_firefox 엔드포인트 사용으로 변경!
+        const response = await fetch(`${apiBaseUrl}/data/sessions/ensure_firefox`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            platform: platform,
+            profile_path: 'F:\\ONE_AI\\firefox-profile'  // 필요시 경로 수정
+          })
+        });
 
-      if (!response.ok) {
-        throw new Error('Failed to ensure Firefox');
+        if (!response.ok) {
+          throw new Error('Failed to ensure Firefox');
+        }
+
+        const result = await response.json();
+        console.log(`✅ Firefox ensured, command_id: ${result.command_id}`);
+        onSuccess(`Opening ${config.name} in Firefox Developer Edition...`);
+        
+        // 로그인 성공 확인을 위한 주기적 체크
+        let checkCount = 0;
+        const maxChecks = 36; // 3 minutes (5초 * 36 = 180초)
+        
+        loginCheckIntervalRef.current = setInterval(async () => {
+          checkCount++;
+          
+          // WebSocket을 통해 업데이트된 세션 정보 확인
+          const sessionInfo = systemState.sessions[platform];
+          const isValid = sessionInfo?.valid || false;
+          
+          if (isValid) {
+            console.log(`✅ ${platform} login detected!`);
+            
+            setOpeningLoginPlatform(null);
+            if (loginCheckIntervalRef.current) {
+              clearInterval(loginCheckIntervalRef.current);
+              loginCheckIntervalRef.current = null;
+            }
+            
+            onSuccess(`${config.name} login successful!`);
+            return;
+          }
+          
+          if (checkCount >= maxChecks) {
+            console.log(`⏱️ Login monitoring timeout for ${platform}`);
+            setOpeningLoginPlatform(null);
+            if (loginCheckIntervalRef.current) {
+              clearInterval(loginCheckIntervalRef.current);
+              loginCheckIntervalRef.current = null;
+            }
+            
+            // 타임아웃 메시지 표시
+            onError(`Login timeout for ${config.name}. Please try again.`);
+          }
+        }, 5000);
+        
+      } catch (error) {
+        console.error(`❌ Failed to open login page: ${error}`);
+        setOpeningLoginPlatform(null);
+        onError(`Failed to open Firefox for ${config.name} login`);
       }
-
-      const result = await response.json();
-      console.log(`✅ Firefox ensured, command_id: ${result.command_id}`);
-      onSuccess(`Opening ${config.name} in Firefox Developer Edition...`);
-      
-      // 로그인 성공 확인을 위한 주기적 체크
-      let checkCount = 0;
-      const maxChecks = 60; // 5 minutes
-      
-      loginCheckIntervalRef.current = setInterval(async () => {
-        checkCount++;
-        
-        // WebSocket을 통해 업데이트된 세션 정보 확인
-        const sessionInfo = systemState.sessions[platform];
-        const isValid = sessionInfo?.valid || false;
-        
-        if (isValid) {
-          console.log(`✅ ${platform} login detected!`);
-          
-          setOpeningLoginPlatform(null);
-          if (loginCheckIntervalRef.current) {
-            clearInterval(loginCheckIntervalRef.current);
-            loginCheckIntervalRef.current = null;
-          }
-          
-          onSuccess(`${config.name} login successful!`);
-        }
-        
-        if (checkCount >= maxChecks) {
-          console.log(`⏱️ Login monitoring timeout for ${platform}`);
-          setOpeningLoginPlatform(null);
-          if (loginCheckIntervalRef.current) {
-            clearInterval(loginCheckIntervalRef.current);
-            loginCheckIntervalRef.current = null;
-          }
-        }
-      }, 5000);
-      
-    } catch (error) {
-      console.error(`❌ Failed to open login page: ${error}`);
-      setOpeningLoginPlatform(null);
-      onError(`Failed to open Firefox for ${config.name} login`);
-    }
-  };
+    };
     
   const cleanData = async () => {
     if (!window.confirm(

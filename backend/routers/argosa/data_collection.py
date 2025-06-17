@@ -492,6 +492,12 @@ async def complete_command_endpoint(command_id: str, result: Dict[str, Any]):
 
 # ======================== Native Message Handler ========================
 
+@router.post("/native/status")
+async def update_native_status(status: Dict[str, Any]):
+    """Native Host 상태 업데이트"""
+    logger.info(f"Native status update: {status}")
+    return {"status": "ok"}
+
 @router.post("/native/message")
 @with_retry(max_retries=3)  # 데코레이터 추가
 async def handle_native_message(message: Dict[str, Any]):
@@ -826,7 +832,6 @@ async def handle_open_login_command(command):
     """로그인 페이지 열기 명령 처리"""
     platform = command.data.get('platform')
     
-    # 플랫폼 URL 매핑
     platform_urls = {
         'chatgpt': 'https://chat.openai.com',
         'claude': 'https://claude.ai',
@@ -838,8 +843,14 @@ async def handle_open_login_command(command):
     
     url = platform_urls.get(platform)
     if url:
-        # Firefox가 이미 열려있으므로 새 탭에서 URL 열기
-        import webbrowser
-        webbrowser.open(url)
-        
-    return {"status": "processed", "command_id": command.id, "url": url}
+        # webbrowser.open(url) 삭제!
+        # 대신 명령이 Native Host로 전달되도록 함
+        return {
+            "status": "processed", 
+            "command_id": command.id, 
+            "url": url,
+            "platform": platform,
+            "action": "open_tab"  # Extension이 처리할 수 있도록
+        }
+    
+    return {"status": "error", "command_id": command.id}

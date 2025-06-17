@@ -1,4 +1,4 @@
-# backend/routers/argosa/collection/native_host_improved.py
+# backend/routers/argosa/collection/native_host.py
 
 import sys
 import json
@@ -152,6 +152,7 @@ class ImprovedNativeHost:
         """백엔드로 데이터 전송"""
         if not self.session:
             self.session = aiohttp.ClientSession()
+        url = f"{self.backend_url}/data{endpoint}" if not endpoint.startswith('/data') else f"{self.backend_url}{endpoint}"
         
         try:
             async with self.session.post(

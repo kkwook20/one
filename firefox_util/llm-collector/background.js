@@ -205,31 +205,105 @@ class NativeExtension {
   }
   
   async handleNativeMessage(message) {
-    const { id, type, data } = message;
-    
-    switch (type) {
-      case 'collect_conversations':
-        await this.handleCollectCommand(id, data);
-        break;
-        
-      case 'execute_llm_query':
-        await this.handleLLMQueryCommand(id, data);
-        break;
-        
-      case 'check_session':
-        await this.handleSessionCheck(id, data);
-        break;
-        
-      case 'update_settings':
-        this.settings = { ...this.settings, ...data };
-        await this.saveSettings();
-        break;
-        
-      default:
-        console.warn('[Extension] Unknown native command:', type);
-    }
+      const { id, type, data } = message;
+
+      console.log('[Extension] Received native message:', type, data); 
+
+      switch (type) {
+        case 'collect_conversations':
+          await this.handleCollectCommand(id, data);
+          break;
+          
+        case 'execute_llm_query':
+          await this.handleLLMQueryCommand(id, data);
+          break;
+          
+        case 'check_session':
+          await this.handleSessionCheck(id, data);
+          break;
+          
+        case 'update_settings':
+          this.settings = { ...this.settings, ...data };
+          await this.saveSettings();
+          break;
+          
+        case 'open_login_page':
+          console.log('[Extension] Opening login page for:', data.platform);
+          const config = PLATFORMS[data.platform];
+          if (config) {
+            await browser.tabs.create({
+              url: config.url,
+              active: true
+            });
+          }
+        default:
+          console.warn('[Extension] Unknown native command:', type);
+      }
   }
-  
+
+  async handleOpenLoginPage(messageId, data) {
+      const { platform } = data;
+      const config = PLATFORMS[platform];
+      
+      if (!config) {
+          console.error(`[Extension] Unknown platform: ${platform}`);
+          return;
+      }
+      
+      console.log(`[Extension] Opening login page for ${platform}`);
+      
+      try {
+          // Firefox에서 새 탭 열기
+          const tab = await browser.tabs.create({
+              url: config.url,
+              active: true
+          });
+          
+          console.log(`[Extension] Opened ${platform} in tab ${tab.id}`);
+          
+          // 로그인 감지 시작
+          let checkCount = 0;
+          const maxChecks = 60; // 5분
+          
+          const checkInterval = setInterval(async () => {
+              checkCount++;
+              
+              // 세션 체크
+              const isValid = await this.checkSession(platform);
+              
+              if (isValid) {
+                  console.log(`✅ [Extension] ${platform} login detected!`);
+                  
+                  clearInterval(checkInterval);
+                  
+                  // Native Host로 세션 업데이트 전송
+                  this.sendNativeMessage({
+                      type: 'session_update',
+                      id: messageId,
+                      data: {
+                          platform: platform,
+                          valid: true,
+                          source: 'login_detection'
+                      }
+                  });
+              }
+              
+              if (checkCount >= maxChecks) {
+                  console.log(`⏱️ [Extension] Login timeout for ${platform}`);
+                  clearInterval(checkInterval);
+              }
+          }, 5000);
+          
+      } catch (error) {
+          console.error(`[Extension] Failed to open login page:`, error);
+          
+          this.sendNativeMessage({
+              type: 'error',
+              id: messageId,
+              data: { error: error.message }
+          });
+      }
+  }
   // ======================== Command Handlers ========================
   
   // 대화 수집 (LLM 제외)
