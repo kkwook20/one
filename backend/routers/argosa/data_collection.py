@@ -156,7 +156,7 @@ async def ensure_firefox_running(request: Dict[str, Any]):
         # Firefox 실행
         profile_path = request.get('profile_path', 'F:\\ONE_AI\\firefox-profile')
         subprocess.Popen([
-            r"C:\Program Files\Mozilla Firefox\firefox.exe",
+            r"C:\Program Files\Firefox Developer Edition\firefox.exe",
             '-profile', profile_path
         ])
         
@@ -769,6 +769,7 @@ async def initialize():
     command_queue.register_handler("collect_conversations", handle_collect_command)
     command_queue.register_handler("execute_llm_query", handle_llm_query_command)
     command_queue.register_handler("crawl_web", handle_crawl_command)
+    command_queue.register_handler("open_login_page", handle_open_login_command) 
     
     # Initialize state
     await state_manager.update_state("system_status", "idle")
@@ -821,5 +822,24 @@ async def save_conversations_internal(data: Dict[str, Any]):
         conversations=data['conversations'],
         metadata=data.get('metadata', {})
     )
-
-router.include_router(llm_conv_router)
+async def handle_open_login_command(command):
+    """로그인 페이지 열기 명령 처리"""
+    platform = command.data.get('platform')
+    
+    # 플랫폼 URL 매핑
+    platform_urls = {
+        'chatgpt': 'https://chat.openai.com',
+        'claude': 'https://claude.ai',
+        'gemini': 'https://gemini.google.com',
+        'deepseek': 'https://chat.deepseek.com',
+        'grok': 'https://grok.x.ai',
+        'perplexity': 'https://www.perplexity.ai'
+    }
+    
+    url = platform_urls.get(platform)
+    if url:
+        # Firefox가 이미 열려있으므로 새 탭에서 URL 열기
+        import webbrowser
+        webbrowser.open(url)
+        
+    return {"status": "processed", "command_id": command.id, "url": url}

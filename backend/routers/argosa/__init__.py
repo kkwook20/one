@@ -40,6 +40,14 @@ except ImportError as e:
     session_manager = None
     state_manager = None
 
+try:
+    from .collection.llm_conversation_collector import router as llm_conv_router
+    router.include_router(llm_conv_router, prefix="/data", tags=["LLM Conversations"])
+    logger.info("[Argosa] llm_conversation_collector router loaded successfully")
+except ImportError as e:
+    logger.error(f"[Argosa] Failed to import llm_conversation_collector: {e}")
+
+
 # Import shared services (개선사항)
 try:
     from .shared import cache_manager, llm_tracker, command_queue, metrics

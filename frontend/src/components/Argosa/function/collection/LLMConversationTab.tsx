@@ -354,7 +354,7 @@ export default function LLMConversationTab({
     
     try {
       // Native Messaging을 통한 수집
-      const response = await fetch(`${apiBaseUrl}/collect/start`, {
+      const response = await fetch(`${apiBaseUrl}/data/collect/start`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -405,25 +405,23 @@ export default function LLMConversationTab({
     setOpeningLoginPlatform(platform);
     
     try {
-      // Native Messaging을 통해 Firefox에서 열기
-      const response = await fetch(`${apiBaseUrl}/native/message`, {
+      // ensure_firefox 엔드포인트 사용으로 변경!
+      const response = await fetch(`${apiBaseUrl}/data/sessions/ensure_firefox`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          type: 'open_login_page',
-          data: {
-            platform: platform,
-            url: config.url
-          }
+          platform: platform,
+          profile_path: 'F:\\ONE_AI\\firefox-profile'  // 필요시 경로 수정
         })
       });
 
       if (!response.ok) {
-        throw new Error('Failed to send native message');
+        throw new Error('Failed to ensure Firefox');
       }
 
-      console.log(`✅ Sent open_login_page command for ${platform}`);
-      onSuccess(`Opening ${config.name} in Firefox...`);
+      const result = await response.json();
+      console.log(`✅ Firefox ensured, command_id: ${result.command_id}`);
+      onSuccess(`Opening ${config.name} in Firefox Developer Edition...`);
       
       // 로그인 성공 확인을 위한 주기적 체크
       let checkCount = 0;
@@ -473,7 +471,7 @@ export default function LLMConversationTab({
     )) return;
     
     try {
-      const response = await fetch(`${apiBaseUrl}/llm/conversations/clean`, {
+      const response = await fetch(`${apiBaseUrl}/data/llm/conversations/clean`, {
         method: 'DELETE'
       });
       

@@ -178,7 +178,7 @@ export default function DataCollection() {
   
   const loadSystemStatus = useCallback(async () => {
     try {
-      const response = await fetch(`${API_BASE_URL}/status`);
+      const response = await fetch(`${API_BASE_URL}/data/status`);
       if (response.ok) {
         const data = await response.json();
         // Update state with backend status
