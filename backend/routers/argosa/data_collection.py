@@ -1,4 +1,4 @@
-# backend/routers/argosa/data_collection.py - Argosa 핵심 데이터 수집 시스템 (개선된 버전)
+# backend/routers/argosa/data_collection.py - 전체 코드
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, HTTPException
 from typing import Dict, List, Optional, Any, Set
@@ -144,33 +144,65 @@ class SystemStateManager:
 # Global state manager
 state_manager = SystemStateManager()
 
-# ======================== Firefox Runnning ========================
+# ======================== Firefox Running ========================
 @router.post("/sessions/ensure_firefox")
 async def ensure_firefox_running(request: Dict[str, Any]):
     """Firefox가 실행 중인지 확인하고, 아니면 실행"""
+    
+    platform = request.get('platform')
+    if not platform:
+        raise HTTPException(status_code=400, detail="Platform is required")
+    
+    logger.info(f"🔐 Ensuring Firefox for {platform} login")
     
     # Firefox 프로세스 확인
     firefox_running = any(p.name().lower().startswith('firefox') for p in psutil.process_iter())
     
     if not firefox_running:
+        logger.info("Firefox not running, starting...")
         # Firefox 실행
         profile_path = request.get('profile_path', 'F:\\ONE_AI\\firefox-profile')
-        subprocess.Popen([
-            r"C:\Program Files\Firefox Developer Edition\firefox.exe",
-            '-profile', profile_path
-        ])
+        try:
+            subprocess.Popen([
+                r"C:\Program Files\Firefox Developer Edition\firefox.exe",
+                '-profile', profile_path
+            ])
+            
+            # Firefox 상태 업데이트
+            await state_manager.update_state("firefox_status", "opening")
+            
+            # Extension 로드 대기
+            await asyncio.sleep(5)
+            
+            # Firefox 상태 업데이트
+            await state_manager.update_state("firefox_status", "ready")
+            
+        except Exception as e:
+            logger.error(f"Failed to start Firefox: {e}")
+            await state_manager.update_state("firefox_status", "error")
+            raise HTTPException(status_code=500, detail=f"Failed to start Firefox: {str(e)}")
+    else:
+        logger.info("Firefox already running")
+        await state_manager.update_state("firefox_status", "ready")
+    
+    # Native Messaging으로 로그인 페이지 열기 명령 전송
+    try:
+        command_id = await native_command_manager.send_command(
+            "open_login_page",
+            {"platform": platform}
+        )
         
-        # Extension 로드 대기
-        await asyncio.sleep(5)
-    
-    # 이제 Native Messaging으로 로그인 페이지 열기
-    platform = request.get('platform')
-    command_id = await native_command_manager.send_command(
-        "open_login_page",
-        {"platform": platform}
-    )
-    
-    return {"success": True, "command_id": command_id}
+        logger.info(f"✅ Sent open_login_page command: {command_id}")
+        
+        return {
+            "success": True, 
+            "command_id": command_id,
+            "firefox_status": state_manager.state.firefox_status
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to send open_login_page command: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to open login page: {str(e)}")
 
 # ======================== Native Messaging Support ========================
 
@@ -428,6 +460,7 @@ async def get_system_status():
 
 @router.websocket("/ws/state")
 async def state_websocket(websocket: WebSocket):
+    """WebSocket endpoint - ping/pong 제거"""
     await websocket.accept()
     active_websockets.add(websocket)
     
@@ -438,30 +471,24 @@ async def state_websocket(websocket: WebSocket):
             "data": state_manager.state.dict()
         })
         
-        # Keep connection alive with ping/pong
+        # Keep connection alive - 메시지 대기만
         while True:
             try:
-                await websocket.send_json({"type": "ping"})
-                # 클라이언트 응답 대기 (타임아웃 설정)
-                pong_msg = await asyncio.wait_for(
-                    websocket.receive_json(), 
-                    timeout=60  # 60초 타임아웃
-                )
+                # 클라이언트 메시지 대기 (ping/pong 제거)
+                message = await websocket.receive_json()
                 
-                # pong 메시지 확인
-                if pong_msg.get("type") != "pong":
-                    logger.warning("Expected pong message, got: {}", pong_msg)
+                # 필요시 메시지 처리
+                if message.get("type") == "request_update":
+                    await websocket.send_json({
+                        "type": "state_update",
+                        "data": state_manager.state.dict()
+                    })
                     
-            except asyncio.TimeoutError:
-                logger.warning("WebSocket client timeout")
-                break
             except WebSocketDisconnect:
                 break
             except Exception as e:
                 logger.error(f"WebSocket error: {e}")
                 break
-            
-            await asyncio.sleep(30)
                 
     except WebSocketDisconnect:
         logger.info("WebSocket client disconnected")
@@ -537,7 +564,7 @@ async def handle_native_message(message: Dict[str, Any]):
             source = data.get('source', 'unknown')
             error = data.get('error')
             
-            logger.info(f"Session update for {platform}: valid={valid}, source={source}")
+            logger.info(f"Session update for {platform}: valid={valid}, source={source}, error={error}")
             
             # 세션 매니저 업데이트
             await session_manager.update_session(
@@ -553,24 +580,29 @@ async def handle_native_message(message: Dict[str, Any]):
             )
             
             # 특별한 source 처리
-            if source == 'tab_closed':
-                logger.info(f"Tab closed for {platform}")
-                # systemState 업데이트 - source 정보 포함
+            if source in ['tab_closed', 'firefox_closed']:
+                logger.info(f"Browser closed for {platform}: {source}")
+                # systemState 업데이트
                 current_sessions = state_manager.state.sessions.copy()
                 current_sessions[platform] = {
                     'platform': platform,
                     'valid': False,
                     'last_checked': datetime.now().isoformat(),
                     'expires_at': None,
-                    'source': 'tab_closed',
-                    'status': 'tab_closed',
-                    'error': error
+                    'source': source,
+                    'status': source,
+                    'error': error or 'Browser closed'
                 }
                 await state_manager.update_state("sessions", current_sessions)
                 
+                # Firefox가 완전히 종료된 경우
+                if source == 'firefox_closed':
+                    await state_manager.update_state("firefox_status", "closed")
+                    await state_manager.update_state("extension_status", "disconnected")
+                
             elif source == 'timeout':
                 logger.info(f"Login timeout for {platform}")
-                # systemState 업데이트 - timeout 정보 포함
+                # systemState 업데이트
                 current_sessions = state_manager.state.sessions.copy()
                 current_sessions[platform] = {
                     'platform': platform,
@@ -599,6 +631,15 @@ async def handle_native_message(message: Dict[str, Any]):
             
             # WebSocket을 통해 즉시 브로드캐스트
             await state_manager.broadcast_state()
+            
+            # 명령 완료 처리 (msg_id로)
+            if msg_id and msg_id.startswith('msg_'):  # Extension에서 온 메시지인 경우만
+                await native_command_manager.complete_command(msg_id, {
+                    "success": True,
+                    "platform": platform,
+                    "source": source,
+                    "valid": valid
+                })
             
             return {"status": "updated"}
             
@@ -834,7 +875,7 @@ async def get_metrics_summary():
 
 async def initialize():
     """Initialize Argosa core system"""
-    logger.info("Initializing Argosa core system with improvements...")
+    logger.info("Initializing Argosa core system...")
     
     # Create directories
     DATA_PATH.mkdir(parents=True, exist_ok=True)
@@ -896,14 +937,6 @@ async def handle_crawl_command(command):
     """웹 크롤링 명령 처리"""
     return {"status": "processed", "command_id": command.id}
 
-# Internal helper for saving conversations
-async def save_conversations_internal(data: Dict[str, Any]):
-    """내부 대화 저장 함수"""
-    return await conversation_saver.save_conversations(
-        platform=data['platform'],
-        conversations=data['conversations'],
-        metadata=data.get('metadata', {})
-    )
 async def handle_open_login_command(command):
     """로그인 페이지 열기 명령 처리"""
     platform = command.data.get('platform')
@@ -919,14 +952,21 @@ async def handle_open_login_command(command):
     
     url = platform_urls.get(platform)
     if url:
-        # webbrowser.open(url) 삭제!
-        # 대신 명령이 Native Host로 전달되도록 함
         return {
             "status": "processed", 
             "command_id": command.id, 
             "url": url,
             "platform": platform,
-            "action": "open_tab"  # Extension이 처리할 수 있도록
+            "action": "open_tab"
         }
     
     return {"status": "error", "command_id": command.id}
+
+# Internal helper for saving conversations
+async def save_conversations_internal(data: Dict[str, Any]):
+    """내부 대화 저장 함수"""
+    return await conversation_saver.save_conversations(
+        platform=data['platform'],
+        conversations=data['conversations'],
+        metadata=data.get('metadata', {})
+    )

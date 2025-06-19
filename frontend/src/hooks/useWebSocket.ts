@@ -1,4 +1,4 @@
-// frontend/src/hooks/useWebSocket.ts - 결합된 버전
+// frontend/src/hooks/useWebSocket.ts - ping/pong 제거 버전
 
 import { useEffect, useRef, useCallback } from 'react';
 
@@ -102,11 +102,7 @@ export function useWebSocket(
         try {
           const data: WebSocketMessage = JSON.parse(event.data);
           
-          // Handle heartbeat
-          if (data.type === 'ping') {
-            ws.send('pong');
-            return;
-          }
+          // ping/pong 처리 제거됨
           
           // *** 중요: 모든 메시지를 window 이벤트로 전달 ***
           const customEvent = new CustomEvent('websocket_message', {
@@ -191,11 +187,15 @@ export function useWebSocket(
             case 'ai_thinking':
             case 'processing':
             case 'ai_working':
-            case 'heartbeat':
-            case 'heartbeat_ack':
             case 'keep_alive':
               // 이미 window 이벤트로 전달했으므로 추가 처리 불필요
               console.debug(`[WebSocket] Message type '${data.type}' dispatched to window`);
+              break;
+              
+            // Argosa 관련 메시지 (ping/pong 제거)
+            case 'state_update':
+              // Argosa state update는 window 이벤트로만 처리
+              console.debug(`[WebSocket] State update dispatched to window`);
               break;
               
             default:

@@ -1,8 +1,7 @@
 /**
- * DataCollection.tsx - 메인 파일 (Native Messaging 활용 버전)
+ * DataCollection.tsx - 메인 파일 (전체 코드)
  * 
- * 모든 state와 함수는 여기서 관리하고,
- * 각 탭은 단순히 UI 렌더링만 담당
+ * WebSocket ping/pong 제거 버전
  */
 
 import { useState, useEffect, useCallback, useRef } from "react";
@@ -32,7 +31,6 @@ const API_BASE_URL = 'http://localhost:8000/api/argosa';
 const WS_URL = 'ws://localhost:8000/api/argosa/data/ws/state';
 
 // ======================== Type Definitions ========================
-// 공통으로 사용되는 타입들만 정의
 
 export interface SystemState {
   system_status: 'idle' | 'preparing' | 'collecting' | 'error';
@@ -51,10 +49,10 @@ export interface SessionInfo {
   valid: boolean;
   last_checked: string;
   expires_at: string | null;
-  source: 'cache' | 'extension' | 'firefox' | 'timeout' | 'tab_closed' | 'login_detection' | 'heartbeat' | 'manual';
+  source: 'cache' | 'extension' | 'firefox' | 'timeout' | 'tab_closed' | 'firefox_closed' | 'login_detection' | 'heartbeat' | 'manual' | 'error';
   status: string;
-  error?: string;  // 에러 메시지를 위한 선택적 필드 추가
-  cookies?: any[];  // 쿠키 정보를 위한 선택적 필드 추가
+  error?: string;
+  cookies?: any[];
 }
 
 export interface SyncStatus {
@@ -131,13 +129,13 @@ export default function DataCollection() {
       ws.onmessage = (event) => {
         try {
           const message = JSON.parse(event.data);
+          console.log('[WebSocket] Message received:', message.type);
           
           if (message.type === 'state_update') {
+            console.log('[WebSocket] State update:', message.data);
             setSystemState(message.data);
-          } else if (message.type === 'ping') {
-            // Respond to ping with pong
-            ws.send(JSON.stringify({ type: 'pong' }));
           }
+          // ping/pong 제거됨
         } catch (error) {
           console.error('WebSocket message error:', error);
         }
@@ -206,9 +204,10 @@ export default function DataCollection() {
     // Set up periodic refresh
     statsIntervalRef.current = setInterval(() => {
       loadStats();
-    }, 30000);
+    }, 30000); // 30초마다 통계 갱신
     
     return () => {
+      // Cleanup
       if (wsRef.current) {
         wsRef.current.close();
       }
@@ -388,7 +387,6 @@ export default function DataCollection() {
                 onError={setSessionCheckError}
                 apiBaseUrl={API_BASE_URL}
                 wsRef={wsRef}
-                // handleLogin prop을 제거 - LLMConversationTab이 알아서 처리
               />
             </TabsContent>
 

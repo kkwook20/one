@@ -275,7 +275,7 @@ class NativeExtension {
       
       console.log(`[Extension] Opened ${platform} in tab ${tab.id}`);
       
-      // 탭 닫힘 감지를 위한 리스너
+     // 탭 닫힘 감지를 위한 리스너
       const tabRemovedListener = (tabId) => {
         if (tabId === tab.id) {
           console.log(`[Extension] Tab closed for ${platform}`);
@@ -286,12 +286,11 @@ class NativeExtension {
             this.loginCheckIntervals.delete(platform);
           }
           
-          // 탭이 닫혔음을 알림
+          // 탭이 닫혔음을 알림 - messageId를 그대로 사용
           this.sendNativeMessage({
             type: 'session_update',
-            id: `update_${Date.now()}`, // 새로운 ID 생성
+            id: messageId, // 원래 messageId 사용
             data: {
-              command_id: messageId, // 원래 command ID 포함
               platform: platform,
               valid: false,
               source: 'tab_closed',
@@ -303,8 +302,6 @@ class NativeExtension {
           browser.tabs.onRemoved.removeListener(tabRemovedListener);
         }
       };
-      
-      browser.tabs.onRemoved.addListener(tabRemovedListener);
       
       // 로그인 감지 시작
       let checkCount = 0;

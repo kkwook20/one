@@ -1,4 +1,4 @@
-// frontend/src/constants/index.ts - 정리된 버전
+// frontend/src/constants/index.ts - ping/pong 제거 버전
 export const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
 export const WS_URL = process.env.REACT_APP_WS_URL || 'ws://localhost:8000/ws';
 
@@ -83,10 +83,9 @@ export const LOG_TYPES = {
   INFO: 'info'
 } as const;
 
-// WebSocket 메시지 타입
+// WebSocket 메시지 타입 (ping/pong 제거됨)
 export const WS_MESSAGE_TYPES = {
-  PING: 'ping',
-  PONG: 'pong',
+  // 실행 관련
   PROGRESS: 'progress',
   NODE_OUTPUT_UPDATED: 'node_output_updated',
   NODE_EXECUTION_START: 'node_execution_start',
@@ -94,4 +93,13 @@ export const WS_MESSAGE_TYPES = {
   NODE_EXECUTION_ERROR: 'node_execution_error',
   NODE_EXECUTION_STOPPED: 'node_execution_stopped',
   FLOW_PROGRESS: 'flow_progress',
+  
+  // Argosa 관련
+  STATE_UPDATE: 'state_update',
+  SESSION_UPDATE: 'session_update',
+  COLLECTION_RESULT: 'collection_result',
+  
+  // 시스템 관련
+  SYSTEM_METRICS: 'system_metrics',
+  TRAINING_PROGRESS: 'training_progress',
 } as const;

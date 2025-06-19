@@ -51,7 +51,8 @@ if (PLATFORM) {
 
 // Listen for collection requests from background script
 browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (message.action === 'ping') {
-    sendResponse({ pong: true, platform: PLATFORM });
+  // 필요한 경우 다른 메시지 처리
+  if (message.action === 'checkPlatform') {
+    sendResponse({ platform: PLATFORM, url: window.location.href });
   }
 });
