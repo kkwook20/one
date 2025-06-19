@@ -1,4 +1,4 @@
-import React, { useEffect } from "react";
+import React, { useEffect, useState, useCallback } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -32,8 +32,32 @@ import {
   Info,
   Server,
   Zap,
+  Network,
+  Wifi,
+  Monitor,
+  Search,
+  Plus,
+  Trash2,
+  RefreshCw,
+  CheckCircle,
+  XCircle,
+  Loader2,
 } from "lucide-react";
 import type { AIModelConfig, EnhancedAgentType, LMStudioConfig } from "../DataAnalysis";
+
+interface NetworkInstance {
+  id: string;
+  ip: string;
+  hostname: string;
+  port: number;
+  status: "connected" | "disconnected" | "checking";
+  is_local: boolean;
+  models: string[];
+  current_model?: string;
+  performance_score: number;
+  response_time?: number;
+  lastChecked?: Date;
+}
 
 interface SettingsProps {
   modelConfig: AIModelConfig;
@@ -68,6 +92,12 @@ const Settings: React.FC<SettingsProps> = ({
 }) => {
   const [selectedTab, setSelectedTab] = React.useState("models");
   const [isConfiguring, setIsConfiguring] = React.useState(false);
+  const [isScanning, setIsScanning] = React.useState(false);
+  const [networkInstances, setNetworkInstances] = React.useState<NetworkInstance[]>([]);
+  const [selectedInstance, setSelectedInstance] = React.useState<string | null>(null);
+  const [instanceModels, setInstanceModels] = React.useState<Record<string, string[]>>({});
+  const [manualHost, setManualHost] = React.useState("");
+  const [manualPort, setManualPort] = React.useState("1234");
   
   const handleSaveConfiguration = async () => {
     setIsConfiguring(true);
@@ -78,16 +108,163 @@ const Settings: React.FC<SettingsProps> = ({
     }
   };
   
-  // Auto-check connection when endpoint changes
-  useEffect(() => {
-    if (lmStudioConfig.endpoint) {
-      const timeoutId = setTimeout(() => {
-        onCheckConnection();
-      }, 500);
+  // 네트워크 스캔
+  const handleNetworkScan = async () => {
+    setIsScanning(true);
+    try {
+      const response = await fetch('/api/argosa/data-analysis/lm-studio/discover', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ subnet: null }) // 자동 감지
+      });
       
-      return () => clearTimeout(timeoutId);
+      const data = await response.json();
+      const instances: NetworkInstance[] = data.devices.map((device: any) => ({
+        ...device,
+        status: "disconnected" as const,
+        models: [],
+        performance_score: 0,
+        lastChecked: new Date()
+      }));
+      
+      setNetworkInstances(instances);
+      
+      // 각 인스턴스 연결 테스트
+      for (const instance of instances) {
+        await testInstanceConnection(instance.id);
+      }
+    } catch (error) {
+      console.error('Network scan failed:', error);
+    } finally {
+      setIsScanning(false);
     }
-  }, [lmStudioConfig.endpoint, onCheckConnection]);
+  };
+  
+  // 인스턴스 연결 테스트
+  const testInstanceConnection = async (instanceId: string) => {
+    setNetworkInstances(prev => prev.map(inst => 
+      inst.id === instanceId ? { ...inst, status: "checking" } : inst
+    ));
+    
+    try {
+      const response = await fetch(`/api/argosa/data-analysis/lm-studio/instance/${instanceId}/test`, {
+        method: 'POST'
+      });
+      
+      const data = await response.json();
+      
+      setNetworkInstances(prev => prev.map(inst => 
+        inst.id === instanceId ? {
+          ...inst,
+          status: data.connected ? "connected" : "disconnected",
+          models: data.models || [],
+          lastChecked: new Date()
+        } : inst
+      ));
+      
+      if (data.models && data.models.length > 0) {
+        setInstanceModels(prev => ({ ...prev, [instanceId]: data.models }));
+      }
+    } catch (error) {
+      setNetworkInstances(prev => prev.map(inst => 
+        inst.id === instanceId ? { ...inst, status: "disconnected" } : inst
+      ));
+    }
+  };
+  
+  // 수동 인스턴스 추가
+  const handleManualAdd = async () => {
+    if (!manualHost) return;
+    
+    try {
+      const response = await fetch('/api/argosa/data-analysis/lm-studio/add-instance', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          host: manualHost, 
+          port: parseInt(manualPort) 
+        })
+      });
+      
+      const data = await response.json();
+      
+      const newInstance: NetworkInstance = {
+        id: data.id,
+        ip: manualHost,
+        hostname: manualHost,
+        port: parseInt(manualPort),
+        status: data.status === "connected" ? "connected" : "disconnected",
+        is_local: data.is_local,
+        models: data.models || [],
+        performance_score: 0,
+        lastChecked: new Date()
+      };
+      
+      setNetworkInstances(prev => [...prev, newInstance]);
+      setManualHost("");
+      setManualPort("1234");
+    } catch (error) {
+      console.error('Failed to add instance:', error);
+    }
+  };
+  
+  // 인스턴스 제거
+  const handleRemoveInstance = async (instanceId: string) => {
+    try {
+      await fetch(`/api/argosa/data-analysis/lm-studio/instance/${instanceId}`, {
+        method: 'DELETE'
+      });
+      
+      setNetworkInstances(prev => prev.filter(inst => inst.id !== instanceId));
+      if (selectedInstance === instanceId) {
+        setSelectedInstance(null);
+      }
+    } catch (error) {
+      console.error('Failed to remove instance:', error);
+    }
+  };
+  
+  // 인스턴스 선택
+  const handleSelectInstance = (instanceId: string) => {
+    setSelectedInstance(instanceId);
+    const instance = networkInstances.find(inst => inst.id === instanceId);
+    if (instance) {
+      onUpdateLMStudioConfig({
+        ...lmStudioConfig,
+        endpoint: `http://${instance.ip}:${instance.port}/v1/chat/completions`,
+        model: instance.current_model || instance.models[0] || ""
+      });
+    }
+  };
+  
+  // 초기 인스턴스 목록 로드
+  useEffect(() => {
+    const loadInstances = async () => {
+      try {
+        const response = await fetch('/api/argosa/data-analysis/lm-studio/instances');
+        const data = await response.json();
+        
+        const instances: NetworkInstance[] = data.instances.map((inst: any) => ({
+          id: inst.id,
+          ip: inst.host,
+          hostname: inst.hostname || inst.host,
+          port: inst.port,
+          status: inst.status,
+          is_local: inst.is_local,
+          models: inst.models || [],
+          current_model: inst.current_model,
+          performance_score: inst.performance_score || 0,
+          lastChecked: new Date()
+        }));
+        
+        setNetworkInstances(instances);
+      } catch (error) {
+        console.error('Failed to load instances:', error);
+      }
+    };
+    
+    loadInstances();
+  }, []);
   
   return (
     <div className="space-y-6">
@@ -96,7 +273,7 @@ const Settings: React.FC<SettingsProps> = ({
       <Tabs value={selectedTab} onValueChange={setSelectedTab} className="space-y-4">
         <TabsList>
           <TabsTrigger value="models">AI Models</TabsTrigger>
-          <TabsTrigger value="lmstudio">LM Studio</TabsTrigger>
+          <TabsTrigger value="network">Network</TabsTrigger>
           <TabsTrigger value="system">System</TabsTrigger>
           <TabsTrigger value="notifications">Notifications</TabsTrigger>
           <TabsTrigger value="integrations">Integrations</TabsTrigger>
@@ -342,145 +519,241 @@ const Settings: React.FC<SettingsProps> = ({
           </Card>
         </TabsContent>
         
-        <TabsContent value="lmstudio" className="space-y-4">
+        <TabsContent value="network" className="space-y-4">
           <Card>
             <CardHeader>
               <CardTitle className="text-lg flex items-center gap-2">
-                <Server className="w-5 h-5" />
-                LM Studio Configuration
+                <Network className="w-5 h-5" />
+                Network Discovery
               </CardTitle>
               <CardDescription>
-                Configure your local LM Studio connection
+                Discover and manage LM Studio instances on your network
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <Label htmlFor="endpoint">API Endpoint</Label>
-                  <Input
-                    id="endpoint"
-                    value={lmStudioConfig.endpoint}
-                    onChange={(e) => {
-                      onUpdateLMStudioConfig({ ...lmStudioConfig, endpoint: e.target.value });
-                    }}
-                    placeholder="http://localhost:1234/v1/chat/completions"
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="model">Model Selection</Label>
-                  {availableModels.length > 0 ? (
-                    <Select 
-                      value={lmStudioConfig.model} 
-                      onValueChange={(value) => {
-                        onUpdateLMStudioConfig({ ...lmStudioConfig, model: value });
-                      }}
-                    >
-                      <SelectTrigger>
-                        <SelectValue placeholder="Select a model" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {availableModels.map((model) => (
-                          <SelectItem key={model} value={model}>
-                            {model}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
+              <div className="flex items-center justify-between">
+                <Button 
+                  onClick={handleNetworkScan} 
+                  disabled={isScanning}
+                  className="flex items-center gap-2"
+                >
+                  {isScanning ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      Scanning...
+                    </>
                   ) : (
-                    <Input
-                      id="model"
-                      value={lmStudioConfig.model}
-                      onChange={(e) => {
-                        onUpdateLMStudioConfig({ ...lmStudioConfig, model: e.target.value });
-                      }}
-                      placeholder="Model name (connect to see available models)"
-                    />
+                    <>
+                      <Search className="w-4 h-4" />
+                      Scan Network
+                    </>
                   )}
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="temperature">Temperature: {lmStudioConfig.temperature}</Label>
-                  <Slider
-                    id="temperature"
-                    min={0}
-                    max={1}
-                    step={0.1}
-                    value={[lmStudioConfig.temperature]}
-                    onValueChange={(value) => {
-                      onUpdateLMStudioConfig({ ...lmStudioConfig, temperature: value[0] });
-                    }}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="maxTokens">Max Tokens</Label>
-                  <Input
-                    id="maxTokens"
-                    type="number"
-                    value={lmStudioConfig.maxTokens}
-                    onChange={(e) => {
-                      onUpdateLMStudioConfig({ ...lmStudioConfig, maxTokens: parseInt(e.target.value) });
-                    }}
-                  />
+                </Button>
+                
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <Wifi className="w-4 h-4" />
+                  {networkInstances.length} instances found
                 </div>
               </div>
-              <div className="flex items-center justify-between pt-4">
-                <div className="flex items-center gap-4">
-                  <div className="flex items-center gap-2">
-                    <div className={`w-2 h-2 rounded-full ${
-                      connectionStatus === "connected" ? "bg-green-500" : 
-                      connectionStatus === "checking" ? "bg-yellow-500 animate-pulse" : 
-                      "bg-red-500"
-                    }`} />
-                    <span className="text-sm">
-                      {connectionStatus === "connected" ? "Connected" : 
-                       connectionStatus === "checking" ? "Checking..." : 
-                       "Disconnected"}
-                    </span>
-                  </div>
-                  {availableModels.length > 0 && (
-                    <span className="text-xs text-muted-foreground">
-                      {availableModels.length} models available
-                    </span>
-                  )}
-                </div>
-                <div className="flex items-center gap-2">
-                  <Badge variant="secondary" className="text-xs">
-                    <Archive className="w-3 h-3 mr-1" />
-                    Auto-saved
-                  </Badge>
-                  <Button onClick={onCheckConnection} size="sm">
-                    <Zap className="w-4 h-4 mr-2" />
-                    Test Connection
-                  </Button>
-                </div>
+              
+              {/* Manual Add Section */}
+              <div className="flex items-center gap-2">
+                <Input
+                  placeholder="IP or hostname"
+                  value={manualHost}
+                  onChange={(e) => setManualHost(e.target.value)}
+                  className="flex-1"
+                />
+                <Input
+                  placeholder="Port"
+                  value={manualPort}
+                  onChange={(e) => setManualPort(e.target.value)}
+                  className="w-24"
+                />
+                <Button
+                  size="icon"
+                  variant="outline"
+                  onClick={handleManualAdd}
+                  disabled={!manualHost}
+                >
+                  <Plus className="w-4 h-4" />
+                </Button>
               </div>
             </CardContent>
           </Card>
           
-          {Object.keys(savedConfigs).length > 0 && (
+          {/* Instance Pool */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-lg">Instance Pool</CardTitle>
+              <CardDescription>
+                Available LM Studio instances for distributed processing
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <ScrollArea className="h-[400px]">
+                <div className="space-y-2">
+                  {networkInstances.map((instance) => (
+                    <div
+                      key={instance.id}
+                      className={`p-4 rounded-lg border transition-all cursor-pointer ${
+                        selectedInstance === instance.id 
+                          ? 'border-primary bg-accent' 
+                          : 'hover:bg-accent/50'
+                      }`}
+                      onClick={() => handleSelectInstance(instance.id)}
+                    >
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-3">
+                          <div className="relative">
+                            <Monitor className="w-5 h-5" />
+                            {instance.is_local && (
+                              <Badge variant="secondary" className="absolute -top-2 -right-2 text-xs px-1">
+                                Local
+                              </Badge>
+                            )}
+                          </div>
+                          <div>
+                            <div className="font-medium flex items-center gap-2">
+                              {instance.hostname}
+                              {instance.hostname !== instance.ip && (
+                                <span className="text-xs text-muted-foreground">
+                                  ({instance.ip})
+                                </span>
+                              )}
+                            </div>
+                            <div className="text-sm text-muted-foreground">
+                              Port {instance.port}
+                            </div>
+                          </div>
+                        </div>
+                        
+                        <div className="flex items-center gap-2">
+                          {instance.status === "connected" && (
+                            <Badge variant="outline" className="text-xs">
+                              {instance.models.length} models
+                            </Badge>
+                          )}
+                          
+                          <div className="flex items-center gap-1">
+                            {instance.status === "connected" && (
+                              <CheckCircle className="w-4 h-4 text-green-500" />
+                            )}
+                            {instance.status === "disconnected" && (
+                              <XCircle className="w-4 h-4 text-red-500" />
+                            )}
+                            {instance.status === "checking" && (
+                              <Loader2 className="w-4 h-4 animate-spin text-yellow-500" />
+                            )}
+                          </div>
+                          
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              testInstanceConnection(instance.id);
+                            }}
+                          >
+                            <RefreshCw className="w-4 h-4" />
+                          </Button>
+                          
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleRemoveInstance(instance.id);
+                            }}
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </Button>
+                        </div>
+                      </div>
+                      
+                      {selectedInstance === instance.id && instance.models.length > 0 && (
+                        <div className="mt-3 pt-3 border-t">
+                          <Label className="text-sm">Available Models</Label>
+                          <Select
+                            value={instance.current_model || instance.models[0]}
+                            onValueChange={(model) => {
+                              onUpdateLMStudioConfig({
+                                ...lmStudioConfig,
+                                model
+                              });
+                            }}
+                          >
+                            <SelectTrigger className="mt-2">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {instance.models.map((model) => (
+                                <SelectItem key={model} value={model}>
+                                  {model}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      )}
+                      
+                      {instance.lastChecked && (
+                        <div className="mt-2 text-xs text-muted-foreground">
+                          Last checked: {new Date(instance.lastChecked).toLocaleTimeString()}
+                          {instance.response_time && (
+                            <span className="ml-2">
+                              Response time: {instance.response_time.toFixed(0)}ms
+                            </span>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                  
+                  {networkInstances.length === 0 && (
+                    <div className="text-center py-8 text-muted-foreground">
+                      <Network className="w-12 h-12 mx-auto mb-2 opacity-50" />
+                      <p>No instances discovered yet</p>
+                      <p className="text-sm mt-1">Click "Scan Network" to find LM Studio instances</p>
+                    </div>
+                  )}
+                </div>
+              </ScrollArea>
+            </CardContent>
+          </Card>
+          
+          {/* Connection Status */}
+          {selectedInstance && (
             <Card>
               <CardHeader>
-                <CardTitle className="text-lg">Recent Configurations</CardTitle>
+                <CardTitle className="text-lg">Active Connection</CardTitle>
               </CardHeader>
               <CardContent>
                 <div className="space-y-2">
-                  {Object.entries(savedConfigs).slice(0, 3).map(([key, config]) => (
-                    <div
-                      key={key}
-                      className="flex items-center justify-between p-3 rounded border hover:bg-accent cursor-pointer"
-                      onClick={() => {
-                        onUpdateLMStudioConfig(config);
-                        onCheckConnection();
-                      }}
-                    >
-                      <div className="flex items-center gap-2">
-                        <Server className="w-4 h-4" />
-                        <span className="text-sm font-mono">{config.model}</span>
-                      </div>
-                      <span className="text-xs text-muted-foreground">
-                        {config.endpoint.replace('http://', '')}
-                      </span>
-                    </div>
-                  ))}
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm font-medium">Endpoint</span>
+                    <span className="text-sm font-mono text-muted-foreground">
+                      {lmStudioConfig.endpoint}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm font-medium">Model</span>
+                    <span className="text-sm font-mono text-muted-foreground">
+                      {lmStudioConfig.model || "Not selected"}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm font-medium">Temperature</span>
+                    <span className="text-sm text-muted-foreground">
+                      {lmStudioConfig.temperature}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm font-medium">Max Tokens</span>
+                    <span className="text-sm text-muted-foreground">
+                      {lmStudioConfig.maxTokens}
+                    </span>
+                  </div>
                 </div>
               </CardContent>
             </Card>

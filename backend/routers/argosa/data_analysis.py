@@ -1640,7 +1640,7 @@ async def quick_insight(request: Dict[str, Any]):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# ===== 분산 AI 실행 관련 엔드포인트 =====
+# ===== 분산 AI 실행 관련 엔드포인트 (개선됨) =====
 
 @router.post("/lm-studio/discover")
 async def discover_lm_studios(subnet: Optional[str] = None):
@@ -1656,10 +1656,12 @@ async def discover_lm_studios(subnet: Optional[str] = None):
         "discovered": len(devices),
         "devices": [
             {
+                "id": f"{device.ip}:{device.port}",
                 "ip": device.ip,
-                "hostname": device.hostname,
+                "hostname": device.hostname or device.ip,
                 "port": device.port,
-                "response_time": device.response_time
+                "response_time": device.response_time,
+                "is_local": device.ip in ["localhost", "127.0.0.1"]
             }
             for device in devices
         ]
@@ -1674,36 +1676,101 @@ async def list_lm_studio_instances():
         instances.append({
             "id": inst.id,
             "host": inst.host,
+            "hostname": inst.host,  # 추가
             "port": inst.port,
             "status": inst.status,
             "is_local": inst.is_local,
             "models": inst.available_models,
             "current_model": inst.current_model,
-            "performance_score": inst.performance_score
+            "performance_score": inst.performance_score,
+            "capabilities": inst.capabilities  # 추가
         })
     
     return {
         "instances": instances,
-        "total": len(instances)
+        "total": len(instances),
+        "active": sum(1 for inst in lm_studio_manager.instances.values() if inst.status == "connected")
     }
 
 @router.post("/lm-studio/add-instance")
-async def add_lm_studio_instance(host: str, port: int = 1234):
+async def add_lm_studio_instance(request: Dict[str, Any]):
     """LM Studio 인스턴스 수동 추가"""
+    
+    host = request.get("host", "localhost")
+    port = request.get("port", 1234)
     
     instance = await lm_studio_manager.add_instance(host, port)
     
     return {
         "id": instance.id,
         "status": instance.status,
-        "models": instance.available_models
+        "models": instance.available_models,
+        "is_local": instance.is_local
     }
+
+@router.get("/lm-studio/instance/{instance_id}/models")
+async def get_instance_models(instance_id: str):
+    """특정 인스턴스의 모델 목록 가져오기"""
+    
+    instance = lm_studio_manager.instances.get(instance_id)
+    if not instance:
+        raise HTTPException(status_code=404, detail="Instance not found")
+    
+    # 연결 재시도
+    if instance.status != "connected":
+        await lm_studio_manager.test_connection(instance)
+    
+    if instance.status == "connected":
+        await lm_studio_manager.get_instance_info(instance)
+    
+    return {
+        "instance_id": instance_id,
+        "models": instance.available_models,
+        "current_model": instance.current_model,
+        "status": instance.status
+    }
+
+@router.post("/lm-studio/instance/{instance_id}/test")
+async def test_instance_connection(instance_id: str):
+    """인스턴스 연결 테스트"""
+    
+    instance = lm_studio_manager.instances.get(instance_id)
+    if not instance:
+        raise HTTPException(status_code=404, detail="Instance not found")
+    
+    connected = await lm_studio_manager.test_connection(instance)
+    
+    if connected:
+        await lm_studio_manager.get_instance_info(instance)
+    
+    return {
+        "instance_id": instance_id,
+        "connected": connected,
+        "status": instance.status,
+        "models": instance.available_models if connected else []
+    }
+
+@router.delete("/lm-studio/instance/{instance_id}")
+async def remove_instance(instance_id: str):
+    """인스턴스 제거"""
+    
+    if instance_id in lm_studio_manager.instances:
+        del lm_studio_manager.instances[instance_id]
+        return {"status": "removed", "instance_id": instance_id}
+    
+    raise HTTPException(status_code=404, detail="Instance not found")
 
 @router.get("/distributed/status")
 async def get_distributed_status():
     """분산 시스템 상태"""
     
-    return distributed_executor.get_cluster_status()
+    status = distributed_executor.get_cluster_status()
+    
+    # 추가 정보 포함
+    status["network_scan_available"] = True
+    status["auto_discovery_enabled"] = hasattr(distributed_executor, 'auto_discover')
+    
+    return status
 
 @router.post("/distributed/execute")
 async def execute_distributed(request: Dict[str, Any]):
