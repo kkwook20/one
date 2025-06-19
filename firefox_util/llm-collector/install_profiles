@@ -1,0 +1,136 @@
+# Firefox 프로필 자동 생성 및 Extension 설치 스크립트
+
+param(
+    [string]$ProfileName = "llm-collector-profile",
+    [string]$ProfilePath = "F:\ONE_AI\firefox-profile",
+    [string]$ExtensionSourcePath = "F:\ONE_AI\firefox_util\llm-collector"
+)
+
+# Firefox 실행 파일 경로 찾기
+function Find-Firefox {
+    $firefoxPaths = @(
+        "${env:ProgramFiles}\Mozilla Firefox\firefox.exe",
+        "${env:ProgramFiles(x86)}\Mozilla Firefox\firefox.exe",
+        "${env:LocalAppData}\Mozilla Firefox\firefox.exe"
+    )
+    
+    foreach ($path in $firefoxPaths) {
+        if (Test-Path $path) {
+            return $path
+        }
+    }
+    
+    # 레지스트리에서 찾기
+    try {
+        $regPath = Get-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\firefox.exe" -ErrorAction SilentlyContinue
+        if ($regPath -and (Test-Path $regPath.'(Default)')) {
+            return $regPath.'(Default)'
+        }
+    } catch {}
+    
+    return $null
+}
+
+# 메인 스크립트
+Write-Host "=== Firefox 프로필 생성 및 Extension 설치 ===" -ForegroundColor Cyan
+
+# Firefox 경로 확인
+$firefoxPath = Find-Firefox
+if (-not $firefoxPath) {
+    Write-Host "Error: Firefox가 설치되어 있지 않습니다." -ForegroundColor Red
+    exit 1
+}
+Write-Host "Firefox 경로: $firefoxPath" -ForegroundColor Green
+
+# 프로필 폴더 생성
+Write-Host "`n1. 프로필 폴더 생성 중..." -ForegroundColor Yellow
+if (!(Test-Path $ProfilePath)) {
+    New-Item -ItemType Directory -Path $ProfilePath -Force | Out-Null
+    Write-Host "   프로필 폴더 생성됨: $ProfilePath" -ForegroundColor Green
+} else {
+    Write-Host "   프로필 폴더가 이미 존재합니다: $ProfilePath" -ForegroundColor Yellow
+}
+
+# Firefox 프로필 생성 (headless 모드로)
+Write-Host "`n2. Firefox 프로필 생성 중..." -ForegroundColor Yellow
+$profileArg = "-CreateProfile `"$ProfileName $ProfilePath`""
+$process = Start-Process -FilePath $firefoxPath -ArgumentList $profileArg -PassThru -WindowStyle Hidden -Wait
+
+if ($process.ExitCode -eq 0) {
+    Write-Host "   프로필 생성 성공!" -ForegroundColor Green
+} else {
+    Write-Host "   경고: 프로필이 이미 존재하거나 생성 중 오류 발생" -ForegroundColor Yellow
+}
+
+# prefs.js 파일 생성 (Extension 자동 설치를 위한 설정)
+Write-Host "`n3. 프로필 설정 구성 중..." -ForegroundColor Yellow
+$prefsPath = Join-Path $ProfilePath "prefs.js"
+$prefsContent = @'
+// Extension 설치 관련 설정
+user_pref("extensions.autoDisableScopes", 0);
+user_pref("extensions.enabledScopes", 15);
+user_pref("xpinstall.signatures.required", false);
+user_pref("extensions.webextensions.uuids", "{\"llm-collector@argosa.ai\":\"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee\"}");
+user_pref("browser.startup.homepage_override.mstone", "ignore");
+user_pref("startup.homepage_welcome_url", "");
+user_pref("startup.homepage_welcome_url.additional", "");
+user_pref("browser.startup.firstrunSkipsHomepage", true);
+'@
+
+if (!(Test-Path $prefsPath)) {
+    $prefsContent | Out-File -FilePath $prefsPath -Encoding UTF8
+    Write-Host "   설정 파일 생성됨" -ForegroundColor Green
+}
+
+# Extension 설치
+Write-Host "`n4. Extension 설치 중..." -ForegroundColor Yellow
+$extensionsPath = Join-Path $ProfilePath "extensions"
+
+if (!(Test-Path $extensionsPath)) {
+    New-Item -ItemType Directory -Path $extensionsPath -Force | Out-Null
+}
+
+# Extension 복사
+$extensionDestPath = Join-Path $extensionsPath "llm-collector@argosa.ai"
+if (Test-Path $ExtensionSourcePath) {
+    Copy-Item -Path $ExtensionSourcePath -Destination $extensionDestPath -Recurse -Force
+    Write-Host "   Extension 복사 완료!" -ForegroundColor Green
+    
+    # manifest.json 확인
+    $manifestPath = Join-Path $extensionDestPath "manifest.json"
+    if (Test-Path $manifestPath) {
+        Write-Host "   Extension 설치 확인됨" -ForegroundColor Green
+    }
+} else {
+    Write-Host "   오류: Extension 소스 폴더를 찾을 수 없습니다: $ExtensionSourcePath" -ForegroundColor Red
+}
+
+# 설치 요약
+Write-Host "`n=== 설치 완료 ===" -ForegroundColor Cyan
+Write-Host "프로필 이름: $ProfileName" -ForegroundColor White
+Write-Host "프로필 경로: $ProfilePath" -ForegroundColor White
+Write-Host "Extension 경로: $extensionDestPath" -ForegroundColor White
+
+# Firefox 실행 명령어 생성
+Write-Host "`n=== Firefox 실행 방법 ===" -ForegroundColor Cyan
+Write-Host "다음 명령어로 Firefox를 실행하세요:" -ForegroundColor Yellow
+Write-Host "`n& `"$firefoxPath`" -profile `"$ProfilePath`"" -ForegroundColor White
+
+# 바로가기 생성 옵션
+Write-Host "`n바로가기를 만들시겠습니까? (Y/N): " -NoNewline
+$createShortcut = Read-Host
+
+if ($createShortcut -eq 'Y' -or $createShortcut -eq 'y') {
+    $shortcutPath = [Environment]::GetFolderPath("Desktop") + "\Firefox - LLM Collector.lnk"
+    $WshShell = New-Object -ComObject WScript.Shell
+    $Shortcut = $WshShell.CreateShortcut($shortcutPath)
+    $Shortcut.TargetPath = $firefoxPath
+    $Shortcut.Arguments = "-profile `"$ProfilePath`""
+    $Shortcut.WorkingDirectory = Split-Path $firefoxPath
+    $Shortcut.IconLocation = $firefoxPath
+    $Shortcut.Save()
+    
+    Write-Host "`n바탕화면에 바로가기가 생성되었습니다!" -ForegroundColor Green
+}
+
+Write-Host "`n스크립트 완료!" -ForegroundColor Green
