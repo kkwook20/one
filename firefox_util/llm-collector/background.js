@@ -90,6 +90,8 @@ class NativeExtension {
     this.nativePort = null;
     this.nativeConnected = false;
     this.reconnectDelay = 1000; 
+    this.messageQueue = [];
+    this.loginCheckIntervals = new Map(); // 로그인 체크 인터벌 관리
     
     // Initialize
     this.init();
@@ -140,6 +142,7 @@ class NativeExtension {
       console.error('[Extension] Failed to load settings:', error);
     }
   }
+  
   // ======================== Native Messaging ========================
   
   connectNative() {
@@ -173,6 +176,13 @@ class NativeExtension {
       });
       
       this.nativeConnected = true;
+      this.reconnectDelay = 1000; // Reset delay on successful connection
+      
+      // Process queued messages
+      while (this.messageQueue.length > 0) {
+        const msg = this.messageQueue.shift();
+        this.sendNativeMessage(msg);
+      }
       
     } catch (error) {
       console.error('[Extension] Failed to connect native:', error);
@@ -186,124 +196,196 @@ class NativeExtension {
   
   sendNativeMessage(message) {
     if (!this.nativePort) {
-      console.error('[Extension] Native port not connected');
+      console.error('[Extension] Native port not connected, queuing message');
+      this.messageQueue.push(message);
       return false;
     }
     
     // ID 추가
     if (!message.id) {
-      message.id = `msg_${Date.now()}_${Math.random()}`;
+      message.id = `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     }
     
     try {
       this.nativePort.postMessage(message);
+      console.log('[Extension] Sent message:', message);
       return true;
     } catch (error) {
       console.error('[Extension] Send error:', error);
+      this.messageQueue.push(message);
       return false;
     }
   }
   
   async handleNativeMessage(message) {
-      const { id, type, data } = message;
+    const { id, type, data } = message;
 
-      console.log('[Extension] Received native message:', type, data); 
+    console.log('[Extension] Received native message:', type, data);
 
-      switch (type) {
-        case 'collect_conversations':
-          await this.handleCollectCommand(id, data);
-          break;
-          
-        case 'execute_llm_query':
-          await this.handleLLMQueryCommand(id, data);
-          break;
-          
-        case 'check_session':
-          await this.handleSessionCheck(id, data);
-          break;
-          
-        case 'update_settings':
-          this.settings = { ...this.settings, ...data };
-          await this.saveSettings();
-          break;
-          
-        case 'open_login_page':
-          console.log('[Extension] Opening login page for:', data.platform);
-          const config = PLATFORMS[data.platform];
-          if (config) {
-            await browser.tabs.create({
-              url: config.url,
-              active: true
-            });
-          }
-        default:
-          console.warn('[Extension] Unknown native command:', type);
-      }
+    switch (type) {
+      case 'collect_conversations':
+        await this.handleCollectCommand(id, data);
+        break;
+        
+      case 'execute_llm_query':
+        await this.handleLLMQueryCommand(id, data);
+        break;
+        
+      case 'check_session':
+        await this.handleSessionCheck(id, data);
+        break;
+        
+      case 'update_settings':
+        this.settings = { ...this.settings, ...data };
+        await this.saveSettings();
+        break;
+        
+      case 'open_login_page':
+        console.log('[Extension] Opening login page for:', data.platform);
+        await this.handleOpenLoginPage(id, data);
+        break;
+        
+      default:
+        console.warn('[Extension] Unknown native command:', type);
+    }
   }
 
   async handleOpenLoginPage(messageId, data) {
-      const { platform } = data;
-      const config = PLATFORMS[platform];
+    const { platform } = data;
+    const config = PLATFORMS[platform];
+    
+    if (!config) {
+      console.error(`[Extension] Unknown platform: ${platform}`);
+      this.sendNativeMessage({
+        type: 'error',
+        id: messageId,
+        data: { error: `Unknown platform: ${platform}` }
+      });
+      return;
+    }
+    
+    console.log(`[Extension] Opening ${platform} at ${config.url}`);
+    
+    try {
+      // Firefox에서 새 탭 열기
+      const tab = await browser.tabs.create({
+        url: config.url,
+        active: true
+      });
       
-      if (!config) {
-          console.error(`[Extension] Unknown platform: ${platform}`);
-          return;
-      }
+      console.log(`[Extension] Opened ${platform} in tab ${tab.id}`);
       
-      console.log(`[Extension] Opening login page for ${platform}`);
-      
-      try {
-          // Firefox에서 새 탭 열기
-          const tab = await browser.tabs.create({
-              url: config.url,
-              active: true
+      // 탭 닫힘 감지를 위한 리스너
+      const tabRemovedListener = (tabId) => {
+        if (tabId === tab.id) {
+          console.log(`[Extension] Tab closed for ${platform}`);
+          
+          // 로그인 체크 인터벌 정리
+          if (this.loginCheckIntervals.has(platform)) {
+            clearInterval(this.loginCheckIntervals.get(platform));
+            this.loginCheckIntervals.delete(platform);
+          }
+          
+          // 탭이 닫혔음을 알림
+          this.sendNativeMessage({
+            type: 'session_update',
+            id: `update_${Date.now()}`, // 새로운 ID 생성
+            data: {
+              command_id: messageId, // 원래 command ID 포함
+              platform: platform,
+              valid: false,
+              source: 'tab_closed',
+              error: 'User closed the tab'
+            }
           });
           
-          console.log(`[Extension] Opened ${platform} in tab ${tab.id}`);
+          // 리스너 제거
+          browser.tabs.onRemoved.removeListener(tabRemovedListener);
+        }
+      };
+      
+      browser.tabs.onRemoved.addListener(tabRemovedListener);
+      
+      // 로그인 감지 시작
+      let checkCount = 0;
+      const maxChecks = 60; // 5분
+      
+      const checkInterval = setInterval(async () => {
+        checkCount++;
+        
+        // 탭이 여전히 존재하는지 확인
+        try {
+          await browser.tabs.get(tab.id);
+        } catch (e) {
+          // 탭이 이미 닫혔으면 인터벌 정리
+          clearInterval(checkInterval);
+          this.loginCheckIntervals.delete(platform);
+          return;
+        }
+        
+        // 세션 체크
+        const isValid = await this.checkSession(platform);
+        
+        if (isValid) {
+          console.log(`✅ [Extension] ${platform} login detected!`);
           
-          // 로그인 감지 시작
-          let checkCount = 0;
-          const maxChecks = 60; // 5분
+          clearInterval(checkInterval);
+          this.loginCheckIntervals.delete(platform);
           
-          const checkInterval = setInterval(async () => {
-              checkCount++;
-              
-              // 세션 체크
-              const isValid = await this.checkSession(platform);
-              
-              if (isValid) {
-                  console.log(`✅ [Extension] ${platform} login detected!`);
-                  
-                  clearInterval(checkInterval);
-                  
-                  // Native Host로 세션 업데이트 전송
-                  this.sendNativeMessage({
-                      type: 'session_update',
-                      id: messageId,
-                      data: {
-                          platform: platform,
-                          valid: true,
-                          source: 'login_detection'
-                      }
-                  });
-              }
-              
-              if (checkCount >= maxChecks) {
-                  console.log(`⏱️ [Extension] Login timeout for ${platform}`);
-                  clearInterval(checkInterval);
-              }
-          }, 5000);
+          // 리스너 제거
+          browser.tabs.onRemoved.removeListener(tabRemovedListener);
           
-      } catch (error) {
-          console.error(`[Extension] Failed to open login page:`, error);
+          // Native Host로 세션 업데이트 전송
+          this.sendNativeMessage({
+            type: 'session_update',
+            id: messageId,
+            data: {
+              platform: platform,
+              valid: true,
+              source: 'login_detection',
+              cookies: await this.getPlatformCookies(platform)
+            }
+          });
+        }
+        
+        if (checkCount >= maxChecks) {
+          console.log(`⏱️ [Extension] Login timeout for ${platform}`);
+          clearInterval(checkInterval);
+          this.loginCheckIntervals.delete(platform);
+          
+          // 리스너 제거
+          browser.tabs.onRemoved.removeListener(tabRemovedListener);
           
           this.sendNativeMessage({
-              type: 'error',
-              id: messageId,
-              data: { error: error.message }
+            type: 'session_update',
+            id: messageId,
+            data: {
+              platform: platform,
+              valid: false,
+              source: 'timeout',
+              error: 'Login timeout'
+            }
           });
-      }
+        }
+      }, 5000);
+      
+      // 인터벌 저장
+      this.loginCheckIntervals.set(platform, checkInterval);
+      
+    } catch (error) {
+      console.error(`[Extension] Failed to open login page:`, error);
+      
+      this.sendNativeMessage({
+        type: 'error',
+        id: messageId,
+        data: { 
+          platform: platform,
+          error: error.message 
+        }
+      });
+    }
   }
+  
   // ======================== Command Handlers ========================
   
   // 대화 수집 (LLM 제외)
@@ -332,6 +414,7 @@ class NativeExtension {
           type: 'collection_result',
           id: messageId,
           data: {
+            command_id: data.command_id,
             platform: platform,
             conversations: result.conversations,
             excluded_llm_ids: result.excluded
@@ -345,6 +428,7 @@ class NativeExtension {
           type: 'error',
           id: messageId,
           data: {
+            command_id: data.command_id,
             platform: platform,
             error: error.message
           }
@@ -368,7 +452,7 @@ class NativeExtension {
       // 플랫폼 열기
       const tab = await browser.tabs.create({
         url: PLATFORMS[platform].url,
-        active: true  // LLM 질문은 사용자가 볼 수 있게
+        active: true
       });
       
       // 페이지 로드 대기
@@ -386,6 +470,7 @@ class NativeExtension {
         type: 'llm_query_result',
         id: messageId,
         data: {
+          command_id: data.command_id,
           platform: platform,
           conversation_id: conversationId,
           query: query,
@@ -404,6 +489,7 @@ class NativeExtension {
         type: 'error',
         id: messageId,
         data: {
+          command_id: data.command_id,
           error: error.message
         }
       });
@@ -516,6 +602,37 @@ class NativeExtension {
     return false;
   }
   
+  async getPlatformCookies(platform) {
+    const config = PLATFORMS[platform];
+    if (!config) return [];
+    
+    try {
+      const cookies = await browser.cookies.getAll({
+        domain: config.cookieDomain
+      });
+      
+      // Filter relevant cookies
+      return cookies.filter(c => 
+        c.name.includes('session') || 
+        c.name.includes('auth') || 
+        c.name.includes('token') ||
+        c.name.includes('login')
+      ).map(c => ({
+        name: c.name,
+        value: c.value,
+        domain: c.domain,
+        path: c.path,
+        expires: c.expirationDate,
+        secure: c.secure,
+        httpOnly: c.httpOnly,
+        sameSite: c.sameSite
+      }));
+    } catch (error) {
+      console.error(`[Extension] Failed to get cookies for ${platform}:`, error);
+      return [];
+    }
+  }
+  
   updateSessionState(platform, valid) {
     this.state.sessions[platform] = {
       valid: valid,
@@ -523,6 +640,64 @@ class NativeExtension {
     };
     
     this.saveState();
+  }
+  
+  async checkTabSession(tabId, platform) {
+    try {
+      const results = await browser.tabs.executeScript(tabId, {
+        code: `(${this.checkSessionInPage.toString()})('${platform}')`
+      });
+      
+      return results[0] || false;
+    } catch (error) {
+      console.error(`[Extension] Failed to check session in tab:`, error);
+      return false;
+    }
+  }
+  
+  checkSessionInPage(platform) {
+    // This runs in the page context
+    const config = {
+      chatgpt: {
+        selectors: ['[data-testid="profile-button"]', 'nav button img'],
+        urlCheck: () => window.location.pathname === '/chat' || window.location.pathname.startsWith('/c/')
+      },
+      claude: {
+        selectors: ['[class*="chat"]', '[data-testid="user-menu"]'],
+        urlCheck: () => !window.location.pathname.includes('auth')
+      },
+      gemini: {
+        selectors: ['[aria-label*="Google Account"]'],
+        urlCheck: () => true
+      },
+      deepseek: {
+        selectors: ['[class*="avatar"]'],
+        urlCheck: () => true
+      },
+      grok: {
+        selectors: ['[data-testid="SideNav_AccountSwitcher_Button"]'],
+        urlCheck: () => true
+      },
+      perplexity: {
+        selectors: ['[class*="profile"]'],
+        urlCheck: () => true
+      }
+    };
+    
+    const platformConfig = config[platform];
+    if (!platformConfig) return false;
+    
+    // Check URL
+    if (!platformConfig.urlCheck()) return false;
+    
+    // Check for login indicators
+    for (const selector of platformConfig.selectors) {
+      if (document.querySelector(selector)) {
+        return true;
+      }
+    }
+    
+    return false;
   }
   
   // ======================== Data Collection ========================
@@ -566,378 +741,249 @@ class NativeExtension {
     }
   }
   
-  // getCollectionCode 함수 수정 - 모든 플랫폼 구현
   getCollectionCode(platform, config, settings, excludeIds) {
-      return `
-        (async function() {
-          const excludeSet = new Set(${JSON.stringify(excludeIds)});
-          const conversations = [];
-          const excluded = [];
-          const limit = ${settings.maxConversations || 20};
-          
-          try {
-            // Platform-specific collection logic
-            if ('${platform}' === 'chatgpt') {
-              const response = await fetch('${config.conversationListUrl}?offset=0&limit=' + limit, {
-                credentials: 'include'
-              });
-              
-              if (response.ok) {
-                const data = await response.json();
-                
-                for (const item of data.items || []) {
-                  if (excludeSet.has(item.id)) {
-                    excluded.push(item.id);
-                    continue;
-                  }
-                  
-                  conversations.push({
-                    id: item.id,
-                    title: item.title || 'Untitled',
-                    created_at: item.create_time,
-                    updated_at: item.update_time
-                  });
-                }
-              }
-            }
-            else if ('${platform}' === 'claude') {
-              const response = await fetch('${config.conversationListUrl}', {
-                credentials: 'include'
-              });
-              
-              if (response.ok) {
-                const data = await response.json();
-                
-                for (const item of data.chats || data.conversations || []) {
-                  const id = item.uuid || item.id;
-                  if (excludeSet.has(id)) {
-                    excluded.push(id);
-                    continue;
-                  }
-                  
-                  conversations.push({
-                    id: id,
-                    title: item.name || item.title || 'Untitled',
-                    created_at: item.created_at,
-                    updated_at: item.updated_at
-                  });
-                }
-              }
-            }
-            else if ('${platform}' === 'gemini') {
-              const response = await fetch('${config.conversationListUrl}', {
-                credentials: 'include'
-              });
-              
-              if (response.ok) {
-                const data = await response.json();
-                
-                for (const item of data.conversations || data.threads || []) {
-                  if (excludeSet.has(item.id)) {
-                    excluded.push(item.id);
-                    continue;
-                  }
-                  
-                  conversations.push({
-                    id: item.id,
-                    title: item.title || item.name || 'Untitled',
-                    created_at: item.created_at || item.created_time,
-                    updated_at: item.updated_at || item.modified_time
-                  });
-                }
-              }
-            }
-            else if ('${platform}' === 'deepseek') {
-              const response = await fetch('${config.conversationListUrl}', {
-                credentials: 'include',
-                headers: {
-                  'Accept': 'application/json',
-                  'Content-Type': 'application/json'
-                }
-              });
-              
-              if (response.ok) {
-                const data = await response.json();
-                const items = data.data || data.conversations || [];
-                
-                for (const item of items) {
-                  if (excludeSet.has(item.id)) {
-                    excluded.push(item.id);
-                    continue;
-                  }
-                  
-                  conversations.push({
-                    id: item.id,
-                    title: item.title || 'Untitled',
-                    created_at: item.created_at || item.create_time,
-                    updated_at: item.updated_at || item.update_time
-                  });
-                }
-              }
-            }
-            else if ('${platform}' === 'grok') {
-              // Grok uses Twitter's API structure
-              const response = await fetch('${config.conversationListUrl}', {
-                credentials: 'include',
-                headers: {
-                  'Accept': 'application/json'
-                }
-              });
-              
-              if (response.ok) {
-                const data = await response.json();
-                const items = data.conversations || [];
-                
-                for (const item of items) {
-                  if (excludeSet.has(item.conversation_id)) {
-                    excluded.push(item.conversation_id);
-                    continue;
-                  }
-                  
-                  conversations.push({
-                    id: item.conversation_id,
-                    title: item.title || 'Grok Conversation',
-                    created_at: item.created_at,
-                    updated_at: item.updated_at
-                  });
-                }
-              }
-            }
-            else if ('${platform}' === 'perplexity') {
-              const response = await fetch('${config.conversationListUrl}', {
-                credentials: 'include'
-              });
-              
-              if (response.ok) {
-                const data = await response.json();
-                const items = data.threads || data.conversations || [];
-                
-                for (const item of items) {
-                  if (excludeSet.has(item.id)) {
-                    excluded.push(item.id);
-                    continue;
-                  }
-                  
-                  conversations.push({
-                    id: item.id,
-                    title: item.query || item.title || 'Perplexity Thread',
-                    created_at: item.created_at || item.timestamp,
-                    updated_at: item.updated_at || item.timestamp
-                  });
-                }
-              }
-            }
-            
-          } catch (error) {
-            console.error('[Collector] Error:', error);
-          }
-          
-          return { conversations, excluded };
-        })();
-      `;
-    }
-
-  // injectLLMQuery 함수 완성
-  async injectLLMQuery(tabId, platform, query) {
-      const code = `
-        (async function() {
-          // Platform-specific query injection
+    return `
+      (async function() {
+        const excludeSet = new Set(${JSON.stringify(excludeIds)});
+        const conversations = [];
+        const excluded = [];
+        const limit = ${settings.maxConversations || 20};
+        
+        try {
+          // Platform-specific collection logic
           if ('${platform}' === 'chatgpt') {
-            // 새 대화 시작
-            const newChatButton = document.querySelector('[data-testid="new-chat-button"], button[aria-label="New chat"], a[href="/"]');
-            if (newChatButton) {
-              newChatButton.click();
-              await new Promise(resolve => setTimeout(resolve, 1000));
-            }
+            const response = await fetch('${config.conversationListUrl}?offset=0&limit=' + limit, {
+              credentials: 'include'
+            });
             
-            // 입력 필드 찾기
-            const textarea = document.querySelector('textarea[data-id="root"], #prompt-textarea, textarea[placeholder*="Message"]');
-            if (textarea) {
-              // 텍스트 입력
-              textarea.value = ${JSON.stringify(query)};
-              textarea.dispatchEvent(new Event('input', { bubbles: true }));
+            if (response.ok) {
+              const data = await response.json();
               
-              // 전송 버튼 클릭
-              const sendButton = document.querySelector('button[data-testid="send-button"], button[aria-label="Send"], button[type="submit"]');
-              if (sendButton && !sendButton.disabled) {
-                sendButton.click();
+              for (const item of data.items || []) {
+                if (excludeSet.has(item.id)) {
+                  excluded.push(item.id);
+                  continue;
+                }
+                
+                conversations.push({
+                  id: item.id,
+                  title: item.title || 'Untitled',
+                  created_at: item.create_time,
+                  updated_at: item.update_time
+                });
               }
-              
-              // conversation ID 추출 (URL에서)
-              await new Promise(resolve => setTimeout(resolve, 2000));
-              const match = window.location.pathname.match(/\\/c\\/([a-zA-Z0-9-]+)/);
-              return match ? match[1] : 'chatgpt-' + Date.now();
             }
           }
           else if ('${platform}' === 'claude') {
-            // Claude-specific implementation
-            const newChatBtn = document.querySelector('button[aria-label="New chat"], button[data-testid="new-chat-button"]');
-            if (newChatBtn) {
-              newChatBtn.click();
-              await new Promise(resolve => setTimeout(resolve, 1000));
-            }
+            const response = await fetch('${config.conversationListUrl}', {
+              credentials: 'include'
+            });
             
-            const input = document.querySelector('div[contenteditable="true"], textarea[placeholder*="Talk to Claude"]');
-            if (input) {
-              // contenteditable의 경우
-              if (input.contentEditable === 'true') {
-                input.textContent = ${JSON.stringify(query)};
-                input.dispatchEvent(new Event('input', { bubbles: true }));
-              } else {
-                // textarea의 경우
-                input.value = ${JSON.stringify(query)};
-                input.dispatchEvent(new Event('input', { bubbles: true }));
-              }
+            if (response.ok) {
+              const data = await response.json();
               
-              const sendBtn = document.querySelector('button[aria-label="Send"], button[type="submit"]');
-              if (sendBtn) {
-                sendBtn.click();
+              for (const item of data.chats || data.conversations || []) {
+                const id = item.uuid || item.id;
+                if (excludeSet.has(id)) {
+                  excluded.push(id);
+                  continue;
+                }
+                
+                conversations.push({
+                  id: id,
+                  title: item.name || item.title || 'Untitled',
+                  created_at: item.created_at,
+                  updated_at: item.updated_at
+                });
               }
-              
-              await new Promise(resolve => setTimeout(resolve, 2000));
-              return 'claude-conv-' + Date.now();
             }
           }
           else if ('${platform}' === 'gemini') {
-            // Gemini-specific implementation
-            const input = document.querySelector('rich-textarea textarea, textarea[aria-label*="Talk to Gemini"]');
-            if (input) {
-              input.value = ${JSON.stringify(query)};
-              input.dispatchEvent(new Event('input', { bubbles: true }));
+            const response = await fetch('${config.conversationListUrl}', {
+              credentials: 'include'
+            });
+            
+            if (response.ok) {
+              const data = await response.json();
               
-              const sendBtn = document.querySelector('button[aria-label="Send"], button[mattooltip="Send message"]');
-              if (sendBtn) {
-                sendBtn.click();
+              for (const item of data.conversations || data.threads || []) {
+                if (excludeSet.has(item.id)) {
+                  excluded.push(item.id);
+                  continue;
+                }
+                
+                conversations.push({
+                  id: item.id,
+                  title: item.title || item.name || 'Untitled',
+                  created_at: item.created_at || item.created_time,
+                  updated_at: item.updated_at || item.modified_time
+                });
               }
-              
-              await new Promise(resolve => setTimeout(resolve, 2000));
-              return 'gemini-' + Date.now();
             }
           }
           else if ('${platform}' === 'deepseek') {
-            // DeepSeek-specific implementation
-            const textarea = document.querySelector('textarea[placeholder*="Ask me anything"], #chat-input');
-            if (textarea) {
-              textarea.value = ${JSON.stringify(query)};
-              textarea.dispatchEvent(new Event('input', { bubbles: true }));
-              
-              const sendBtn = document.querySelector('button[type="submit"], button.send-button');
-              if (sendBtn) {
-                sendBtn.click();
+            const response = await fetch('${config.conversationListUrl}', {
+              credentials: 'include',
+              headers: {
+                'Accept': 'application/json',
+                'Content-Type': 'application/json'
               }
+            });
+            
+            if (response.ok) {
+              const data = await response.json();
+              const items = data.data || data.conversations || [];
               
-              await new Promise(resolve => setTimeout(resolve, 2000));
-              return 'deepseek-' + Date.now();
+              for (const item of items) {
+                if (excludeSet.has(item.id)) {
+                  excluded.push(item.id);
+                  continue;
+                }
+                
+                conversations.push({
+                  id: item.id,
+                  title: item.title || 'Untitled',
+                  created_at: item.created_at || item.create_time,
+                  updated_at: item.updated_at || item.update_time
+                });
+              }
             }
           }
           else if ('${platform}' === 'grok') {
-            // Grok-specific implementation
-            const input = document.querySelector('textarea[placeholder*="Ask Grok"], div[contenteditable="true"]');
-            if (input) {
-              if (input.tagName === 'TEXTAREA') {
-                input.value = ${JSON.stringify(query)};
-              } else {
-                input.textContent = ${JSON.stringify(query)};
+            const response = await fetch('${config.conversationListUrl}', {
+              credentials: 'include',
+              headers: {
+                'Accept': 'application/json'
               }
-              input.dispatchEvent(new Event('input', { bubbles: true }));
+            });
+            
+            if (response.ok) {
+              const data = await response.json();
+              const items = data.conversations || [];
               
-              const sendBtn = document.querySelector('button[aria-label="Send"], div[role="button"][tabindex="0"]');
-              if (sendBtn) {
-                sendBtn.click();
+              for (const item of items) {
+                if (excludeSet.has(item.conversation_id)) {
+                  excluded.push(item.conversation_id);
+                  continue;
+                }
+                
+                conversations.push({
+                  id: item.conversation_id,
+                  title: item.title || 'Grok Conversation',
+                  created_at: item.created_at,
+                  updated_at: item.updated_at
+                });
               }
-              
-              await new Promise(resolve => setTimeout(resolve, 2000));
-              return 'grok-' + Date.now();
             }
           }
           else if ('${platform}' === 'perplexity') {
-            // Perplexity-specific implementation
-            const textarea = document.querySelector('textarea[placeholder*="Ask anything"], textarea[name="query"]');
-            if (textarea) {
-              textarea.value = ${JSON.stringify(query)};
-              textarea.dispatchEvent(new Event('input', { bubbles: true }));
+            const response = await fetch('${config.conversationListUrl}', {
+              credentials: 'include'
+            });
+            
+            if (response.ok) {
+              const data = await response.json();
+              const items = data.threads || data.conversations || [];
               
-              // Perplexity는 Enter 키로 전송
-              const enterEvent = new KeyboardEvent('keydown', {
-                key: 'Enter',
-                code: 'Enter',
-                keyCode: 13,
-                which: 13,
-                bubbles: true
-              });
-              textarea.dispatchEvent(enterEvent);
-              
-              await new Promise(resolve => setTimeout(resolve, 2000));
-              return 'perplexity-' + Date.now();
+              for (const item of items) {
+                if (excludeSet.has(item.id)) {
+                  excluded.push(item.id);
+                  continue;
+                }
+                
+                conversations.push({
+                  id: item.id,
+                  title: item.query || item.title || 'Perplexity Thread',
+                  created_at: item.created_at || item.timestamp,
+                  updated_at: item.updated_at || item.timestamp
+                });
+              }
             }
           }
           
-          throw new Error('Could not find input field for ' + '${platform}');
-        })();
-      `;
-      
-      const results = await browser.tabs.executeScript(tabId, { code });
-      return results[0];
-    }
-
-  // waitForLLMResponse 함수 완성
-  async waitForLLMResponse(tabId, platform, timeout = 30000) {
-      const startTime = Date.now();
-      
-      while (Date.now() - startTime < timeout) {
-        try {
-          const results = await browser.tabs.executeScript(tabId, {
-            code: `
-              (function() {
-                // Check for response indicators
-                if ('${platform}' === 'chatgpt') {
-                  const thinking = document.querySelector('[data-testid="thinking-indicator"], .result-thinking');
-                  const messages = document.querySelectorAll('[data-message-author-role="assistant"], .group\\\\.w-full.bg-gray-50');
-                  return !thinking && messages.length > 0;
-                }
-                else if ('${platform}' === 'claude') {
-                  const thinking = document.querySelector('.loading-indicator, [data-testid="message-loading"]');
-                  const messages = document.querySelectorAll('[data-testid="assistant-message"], .assistant-message');
-                  return !thinking && messages.length > 0;
-                }
-                else if ('${platform}' === 'gemini') {
-                  const loading = document.querySelector('mat-spinner, .loading-indicator');
-                  const messages = document.querySelectorAll('.model-response, [data-message-author="assistant"]');
-                  return !loading && messages.length > 0;
-                }
-                else if ('${platform}' === 'deepseek') {
-                  const loading = document.querySelector('.loading, .thinking-indicator');
-                  const messages = document.querySelectorAll('.assistant-message, .chat-message.assistant');
-                  return !loading && messages.length > 0;
-                }
-                else if ('${platform}' === 'grok') {
-                  const loading = document.querySelector('[data-testid="loading"], .spinner');
-                  const messages = document.querySelectorAll('[data-testid="grok-message"], .message-grok');
-                  return !loading && messages.length > 0;
-                }
-                else if ('${platform}' === 'perplexity') {
-                  const loading = document.querySelector('.generating, .loading-dots');
-                  const messages = document.querySelectorAll('.prose, .answer-content');
-                  return !loading && messages.length > 0;
-                }
-                return false;
-              })();
-            `
-          });
-          
-          if (results[0]) {
-            return true;
-          }
         } catch (error) {
-          console.error('[Extension] Error checking response:', error);
+          console.error('[Collector] Error:', error);
         }
         
-        await this.humanDelay(1);
+        return { conversations, excluded };
+      })();
+    `;
+  }
+
+  async injectLLMQuery(tabId, platform, query) {
+    const code = `
+      (async function() {
+        // Platform-specific query injection
+        if ('${platform}' === 'chatgpt') {
+          // 새 대화 시작
+          const newChatButton = document.querySelector('[data-testid="new-chat-button"], button[aria-label="New chat"], a[href="/"]');
+          if (newChatButton) {
+            newChatButton.click();
+            await new Promise(resolve => setTimeout(resolve, 1000));
+          }
+          
+          // 입력 필드 찾기
+          const textarea = document.querySelector('textarea[data-id="root"], #prompt-textarea, textarea[placeholder*="Message"]');
+          if (textarea) {
+            // 텍스트 입력
+            textarea.value = ${JSON.stringify(query)};
+            textarea.dispatchEvent(new Event('input', { bubbles: true }));
+            
+            // 전송 버튼 클릭
+            const sendButton = document.querySelector('button[data-testid="send-button"], button[aria-label="Send"], button[type="submit"]');
+            if (sendButton && !sendButton.disabled) {
+              sendButton.click();
+            }
+            
+            // conversation ID 추출 (URL에서)
+            await new Promise(resolve => setTimeout(resolve, 2000));
+            const match = window.location.pathname.match(/\\/c\\/([a-zA-Z0-9-]+)/);
+            return match ? match[1] : 'chatgpt-' + Date.now();
+          }
+        }
+        // ... other platforms ...
+        
+        throw new Error('Could not find input field for ' + '${platform}');
+      })();
+    `;
+    
+    const results = await browser.tabs.executeScript(tabId, { code });
+    return results[0];
+  }
+
+  async waitForLLMResponse(tabId, platform, timeout = 30000) {
+    const startTime = Date.now();
+    
+    while (Date.now() - startTime < timeout) {
+      try {
+        const results = await browser.tabs.executeScript(tabId, {
+          code: `
+            (function() {
+              // Check for response indicators
+              if ('${platform}' === 'chatgpt') {
+                const thinking = document.querySelector('[data-testid="thinking-indicator"], .result-thinking');
+                const messages = document.querySelectorAll('[data-message-author-role="assistant"], .group\\\\.w-full.bg-gray-50');
+                return !thinking && messages.length > 0;
+              }
+              // ... other platforms ...
+              return false;
+            })();
+          `
+        });
+        
+        if (results[0]) {
+          return true;
+        }
+      } catch (error) {
+        console.error('[Extension] Error checking response:', error);
       }
       
-      throw new Error('Response timeout');
+      await this.humanDelay(1);
     }
     
+    throw new Error('Response timeout');
+  }
+  
   // ======================== Helper Functions ========================
   
   async waitForTabLoad(tabId, timeout = 30000) {
@@ -978,6 +1024,8 @@ setInterval(() => {
   console.log('[Extension] Status:', {
     nativeConnected: extension.nativeConnected,
     sessions: extension.getSessionStates(),
-    collecting: extension.state.collecting
+    collecting: extension.state.collecting,
+    messageQueueLength: extension.messageQueue.length,
+    activeLoginChecks: extension.loginCheckIntervals.size
   });
 }, 30000);

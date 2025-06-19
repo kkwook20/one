@@ -1,8 +1,7 @@
 /**
  * LLMConversationTab.tsx
  * 
- * LLM Conversation 수집 탭 UI
- * DataCollection.tsx에서 필요한 props 전달받아 사용
+ * LLM Conversation 수집 탭 - 완전한 버전
  */
 
 import { useState, useEffect, useCallback, useRef, ReactNode } from "react";
@@ -32,7 +31,10 @@ import {
   Loader2,
   Eye,
   EyeOff,
-  Activity
+  Activity,
+  Wifi,
+  WifiOff,
+  Chrome
 } from "lucide-react";
 
 import type { SystemState, SessionInfo } from "../DataCollection";
@@ -262,14 +264,10 @@ export default function LLMConversationTab({
   // Timer refs
   const sessionAutoCheckRef = useRef<NodeJS.Timeout | null>(null);
   const loginCheckIntervalRef = useRef<NodeJS.Timeout | null>(null);
-  const websocketRef = wsRef || { current: null }; // fallback if not provided
+  const loginTimeoutRef = useRef<Record<string, NodeJS.Timeout>>({});
+  const websocketRef = wsRef || { current: null };
   
   // ==================== API Functions ====================
-  
-  const loadScheduleFailure = useCallback(async () => {
-    // Schedule failure는 systemState에서 직접 확인
-    // 백엔드에 별도 엔드포인트가 없음
-  }, []);
   
   const checkSessionManual = async (platform: string) => {
     setCheckingSession(platform);
@@ -328,7 +326,7 @@ export default function LLMConversationTab({
       .map(p => p.key);
     
     if (enabledPlatforms.length === 0) {
-      onSuccess('Please enable at least one platform');
+      onError('Please enable at least one platform');
       return;
     }
     
@@ -382,6 +380,7 @@ export default function LLMConversationTab({
       
       // Clear any schedule failure
       setScheduleFailure(null);
+      localStorage.removeItem('argosa_schedule_failure');
       
       // Reload stats
       await loadStats();
@@ -392,81 +391,49 @@ export default function LLMConversationTab({
     }
   };
   
-  const cancelSync = async () => {
-    // Native collection은 취소 기능이 없음
-    console.log('Collection cancellation not available with Native Messaging');
+  const openLoginPage = async (platform: string) => {
+    const config = PLATFORMS[platform];
+    if (!config || openingLoginPlatform) return;
+    
+    console.log(`🔐 Opening login for ${platform}`);
+    setOpeningLoginPlatform(platform);
+    
+    try {
+      // ensure_firefox 엔드포인트 사용
+      const response = await fetch(`${apiBaseUrl}/data/sessions/ensure_firefox`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          platform: platform,
+          profile_path: 'F:\\ONE_AI\\firefox-profile'
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to ensure Firefox');
+      }
+
+      const result = await response.json();
+      console.log(`✅ Firefox ensured, command_id: ${result.command_id}`);
+      onSuccess(`Opening ${config.name} in Firefox Developer Edition...`);
+      
+      // 타임아웃 설정 (3분)
+      const timeout = setTimeout(() => {
+        console.log(`⏱️ Login timeout for ${platform}`);
+        setOpeningLoginPlatform(null);
+        onError(`Login timeout for ${config.name}. Please try again.`);
+      }, 180000); // 3분
+      
+      // 타임아웃 클리어를 위해 ref에 저장
+      loginTimeoutRef.current[platform] = timeout;
+      
+    } catch (error) {
+      console.error(`❌ Failed to open login page: ${error}`);
+      setOpeningLoginPlatform(null);
+      onError(`Failed to open Firefox for ${config.name} login`);
+    }
   };
   
-  const openLoginPage = async (platform: string) => {
-      const config = PLATFORMS[platform];
-      if (!config || openingLoginPlatform) return;
-      
-      console.log(`🔐 Opening login for ${platform}`);
-      setOpeningLoginPlatform(platform);
-      
-      try {
-        // ensure_firefox 엔드포인트 사용으로 변경!
-        const response = await fetch(`${apiBaseUrl}/data/sessions/ensure_firefox`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            platform: platform,
-            profile_path: 'F:\\ONE_AI\\firefox-profile'  // 필요시 경로 수정
-          })
-        });
-
-        if (!response.ok) {
-          throw new Error('Failed to ensure Firefox');
-        }
-
-        const result = await response.json();
-        console.log(`✅ Firefox ensured, command_id: ${result.command_id}`);
-        onSuccess(`Opening ${config.name} in Firefox Developer Edition...`);
-        
-        // 로그인 성공 확인을 위한 주기적 체크
-        let checkCount = 0;
-        const maxChecks = 36; // 3 minutes (5초 * 36 = 180초)
-        
-        loginCheckIntervalRef.current = setInterval(async () => {
-          checkCount++;
-          
-          // WebSocket을 통해 업데이트된 세션 정보 확인
-          const sessionInfo = systemState.sessions[platform];
-          const isValid = sessionInfo?.valid || false;
-          
-          if (isValid) {
-            console.log(`✅ ${platform} login detected!`);
-            
-            setOpeningLoginPlatform(null);
-            if (loginCheckIntervalRef.current) {
-              clearInterval(loginCheckIntervalRef.current);
-              loginCheckIntervalRef.current = null;
-            }
-            
-            onSuccess(`${config.name} login successful!`);
-            return;
-          }
-          
-          if (checkCount >= maxChecks) {
-            console.log(`⏱️ Login monitoring timeout for ${platform}`);
-            setOpeningLoginPlatform(null);
-            if (loginCheckIntervalRef.current) {
-              clearInterval(loginCheckIntervalRef.current);
-              loginCheckIntervalRef.current = null;
-            }
-            
-            // 타임아웃 메시지 표시
-            onError(`Login timeout for ${config.name}. Please try again.`);
-          }
-        }, 5000);
-        
-      } catch (error) {
-        console.error(`❌ Failed to open login page: ${error}`);
-        setOpeningLoginPlatform(null);
-        onError(`Failed to open Firefox for ${config.name} login`);
-      }
-    };
-    
   const cleanData = async () => {
     if (!window.confirm(
       'Delete all collected data?\n\n' +
@@ -498,7 +465,7 @@ export default function LLMConversationTab({
       if (stats) {
         const files = Object.keys(stats).map(platform => ({
           platform,
-          files: [`${platform}_conversations.json`] // 실제 파일 구조에 맞게 추정
+          files: [`${platform}_conversations.json`] // 실제 파일 구조에 맞게 수정 필요
         }));
         
         setFilesList(files);
@@ -537,8 +504,83 @@ export default function LLMConversationTab({
   
   // ==================== Effects ====================
   
+  // WebSocket을 통한 세션 업데이트 감지
   useEffect(() => {
-    // Check all sessions on mount
+    // 로그인 대기 중인 플랫폼이 있을 때만 체크
+    if (!openingLoginPlatform) return;
+    
+    const sessionInfo = systemState.sessions[openingLoginPlatform];
+    
+    // 디버깅을 위한 로그
+    console.log(`[Session Update] Platform: ${openingLoginPlatform}`, sessionInfo);
+    
+    // sessionInfo가 없으면 아무것도 하지 않음
+    if (!sessionInfo) return;
+    
+    // 세션이 유효해졌을 때
+    if (sessionInfo.valid === true) {
+      console.log(`✅ ${openingLoginPlatform} login detected via WebSocket!`);
+      
+      // 타임아웃 클리어
+      const timeout = loginTimeoutRef.current?.[openingLoginPlatform];
+      if (timeout) {
+        clearTimeout(timeout);
+        delete loginTimeoutRef.current[openingLoginPlatform];
+      }
+      
+      const platformName = PLATFORMS[openingLoginPlatform]?.name || openingLoginPlatform;
+      onSuccess(`${platformName} login successful!`);
+      setOpeningLoginPlatform(null);
+    }
+    // 세션이 유효하지 않고, source가 있을 때만 체크
+    else if (sessionInfo.valid === false) {
+      const source = sessionInfo.source || sessionInfo.status; // status도 체크
+      
+      if (source === 'tab_closed') {
+        console.log(`❌ ${openingLoginPlatform} tab was closed`);
+        
+        // 타임아웃 클리어
+        const timeout = loginTimeoutRef.current?.[openingLoginPlatform];
+        if (timeout) {
+          clearTimeout(timeout);
+          delete loginTimeoutRef.current[openingLoginPlatform];
+        }
+        
+        onError(`Login cancelled - tab was closed`);
+        setOpeningLoginPlatform(null);
+      }
+      else if (source === 'timeout') {
+        console.log(`⏱️ ${openingLoginPlatform} login timeout`);
+        
+        // 타임아웃 클리어
+        const timeout = loginTimeoutRef.current?.[openingLoginPlatform];
+        if (timeout) {
+          clearTimeout(timeout);
+          delete loginTimeoutRef.current[openingLoginPlatform];
+        }
+        
+        onError(`Login timeout - please try again`);
+        setOpeningLoginPlatform(null);
+      }
+      // 다른 에러 케이스 처리
+      else if (sessionInfo.error) {
+        console.log(`❌ ${openingLoginPlatform} login error:`, sessionInfo.error);
+        
+        // 타임아웃 클리어
+        const timeout = loginTimeoutRef.current?.[openingLoginPlatform];
+        if (timeout) {
+          clearTimeout(timeout);
+          delete loginTimeoutRef.current[openingLoginPlatform];
+        }
+        
+        onError(sessionInfo.error);
+        setOpeningLoginPlatform(null);
+      }
+    }
+  }, [systemState.sessions, openingLoginPlatform, onSuccess, onError]);
+  
+  // Check all sessions on mount
+  useEffect(() => {
     checkAllSessions();
     
     // Set up automatic session checking (every 30 seconds)
@@ -561,33 +603,75 @@ export default function LLMConversationTab({
     localStorage.setItem('syncSettings', JSON.stringify(syncSettings));
   }, [syncSettings]);
   
+  // Load schedule failure from localStorage
+  useEffect(() => {
+    const savedFailure = localStorage.getItem('argosa_schedule_failure');
+    if (savedFailure) {
+      try {
+        setScheduleFailure(JSON.parse(savedFailure));
+      } catch (e) {
+        console.error('Failed to load schedule failure:', e);
+      }
+    }
+  }, []);
+  
+  // Cleanup effect
+  useEffect(() => {
+    return () => {
+      // 컴포넌트 언마운트 시 모든 타임아웃 클리어
+      if (loginTimeoutRef.current) {
+        Object.values(loginTimeoutRef.current).forEach(timeout => {
+          clearTimeout(timeout);
+        });
+      }
+    };
+  }, []);
+  
   // ==================== Helper Functions ====================
   
   const getSessionStatus = (platform: string) => {
     const session = systemState.sessions[platform];
-    if (!session) return { valid: false, status: 'unknown' };
     
-    if (session.source === 'timeout') {
-      return { valid: false, status: 'timeout' };
+    // session이 없는 경우
+    if (!session) {
+      return { 
+        valid: false, 
+        status: 'unknown',
+        expiresAt: undefined 
+      };
     }
     
+    // source 체크 (옵셔널 체이닝 사용)
+    if (session.source === 'timeout') {
+      return { 
+        valid: false, 
+        status: 'timeout',
+        expiresAt: undefined 
+      };
+    }
+    
+    // expires_at 체크
     if (session.expires_at) {
-      const expires = new Date(session.expires_at);
-      const now = new Date();
-      if (expires > now) {
-        const hours = Math.floor((expires.getTime() - now.getTime()) / (1000 * 60 * 60));
-        return { 
-          valid: true, 
-          status: `Active (${hours}h remaining)`,
-          expiresAt: session.expires_at
-        };
+      try {
+        const expires = new Date(session.expires_at);
+        const now = new Date();
+        if (expires > now) {
+          const hours = Math.floor((expires.getTime() - now.getTime()) / (1000 * 60 * 60));
+          return { 
+            valid: true, 
+            status: `Active (${hours}h remaining)`,
+            expiresAt: session.expires_at
+          };
+        }
+      } catch (e) {
+        console.error('Invalid expires_at date:', session.expires_at);
       }
     }
     
     return { 
-      valid: session.valid, 
+      valid: session.valid || false, 
       status: session.valid ? 'Active' : 'Login required',
-      expiresAt: session.expires_at
+      expiresAt: session.expires_at || undefined
     };
   };
   
@@ -630,6 +714,47 @@ export default function LLMConversationTab({
       {/* Left Panel */}
       <div className="lg:col-span-2 space-y-6">
         <Section title="Data Sources">
+          {/* Connection Status Bar */}
+          <Card className="mb-6">
+            <CardContent className="p-4">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-4">
+                  <div className="flex items-center gap-2">
+                    {isBackendConnected ? (
+                      <>
+                        <Wifi className="h-4 w-4 text-green-500" />
+                        <span className="text-sm text-gray-600">Backend Connected</span>
+                      </>
+                    ) : (
+                      <>
+                        <WifiOff className="h-4 w-4 text-red-500" />
+                        <span className="text-sm text-gray-600">Backend Disconnected</span>
+                      </>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {systemState.extension_status === 'connected' ? (
+                      <>
+                        <Chrome className="h-4 w-4 text-green-500" />
+                        <span className="text-sm text-gray-600">Extension Connected</span>
+                      </>
+                    ) : (
+                      <>
+                        <Chrome className="h-4 w-4 text-gray-400" />
+                        <span className="text-sm text-gray-400">Extension Disconnected</span>
+                      </>
+                    )}
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Badge variant={systemState.firefox_status === 'ready' ? 'default' : 'secondary'}>
+                    Firefox: {systemState.firefox_status}
+                  </Badge>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+
           {/* Sync Progress */}
           {systemState.sync_status && (
             <Card className="mb-6">
@@ -678,7 +803,10 @@ export default function LLMConversationTab({
                   size="sm"
                   variant="outline"
                   className="mt-3"
-                  onClick={() => setScheduleFailure(null)}
+                  onClick={() => {
+                    setScheduleFailure(null);
+                    localStorage.removeItem('argosa_schedule_failure');
+                  }}
                 >
                   Dismiss
                 </Button>
@@ -712,7 +840,7 @@ export default function LLMConversationTab({
                       ./data/argosa/llm-conversations
                     </div>
                     <p className="text-xs text-blue-700">
-                      Conversations stored by platform
+                      Conversations stored by platform with automatic LLM filtering
                     </p>
                   </div>
                 </div>
@@ -767,7 +895,7 @@ export default function LLMConversationTab({
                 <CheckCircle className="h-4 w-4 text-blue-600" />
                 <AlertDescription className="text-blue-800">
                   <strong>Automatic Session Management:</strong> Sessions are checked every 30 seconds. 
-                  Just log in once and the system will maintain your session.
+                  Just log in once and the system will maintain your session automatically.
                 </AlertDescription>
               </Alert>
 
@@ -1027,6 +1155,7 @@ export default function LLMConversationTab({
                             if (window.confirm('Reset all settings to default?\n\nThis will clear all saved configurations.')) {
                               localStorage.removeItem('llmEnabledStates');
                               localStorage.removeItem('syncSettings');
+                              localStorage.removeItem('argosa_schedule_failure');
                               window.location.reload();
                             }
                           }}

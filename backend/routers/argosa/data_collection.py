@@ -508,6 +508,7 @@ async def handle_native_message(message: Dict[str, Any]):
     data = message.get('data', {})
     
     logger.info(f"Native message received: {msg_type}")
+    logger.debug(f"Message data: {data}")  # 디버깅용
     
     # 메트릭 기록
     await metrics.increment_counter(f"native_message.{msg_type}")
@@ -533,13 +534,72 @@ async def handle_native_message(message: Dict[str, Any]):
             platform = data.get('platform')
             valid = data.get('valid', False)
             cookies = data.get('cookies', [])
+            source = data.get('source', 'unknown')
+            error = data.get('error')
             
+            logger.info(f"Session update for {platform}: valid={valid}, source={source}")
+            
+            # 세션 매니저 업데이트
             await session_manager.update_session(
                 platform=platform,
                 valid=valid,
                 cookies=cookies,
-                source="native"
+                source=source,
+                session_data={
+                    'error': error,
+                    'source': source,
+                    'timestamp': datetime.now().isoformat()
+                }
             )
+            
+            # 특별한 source 처리
+            if source == 'tab_closed':
+                logger.info(f"Tab closed for {platform}")
+                # systemState 업데이트 - source 정보 포함
+                current_sessions = state_manager.state.sessions.copy()
+                current_sessions[platform] = {
+                    'platform': platform,
+                    'valid': False,
+                    'last_checked': datetime.now().isoformat(),
+                    'expires_at': None,
+                    'source': 'tab_closed',
+                    'status': 'tab_closed',
+                    'error': error
+                }
+                await state_manager.update_state("sessions", current_sessions)
+                
+            elif source == 'timeout':
+                logger.info(f"Login timeout for {platform}")
+                # systemState 업데이트 - timeout 정보 포함
+                current_sessions = state_manager.state.sessions.copy()
+                current_sessions[platform] = {
+                    'platform': platform,
+                    'valid': False,
+                    'last_checked': datetime.now().isoformat(),
+                    'expires_at': None,
+                    'source': 'timeout',
+                    'status': 'timeout',
+                    'error': error
+                }
+                await state_manager.update_state("sessions", current_sessions)
+                
+            elif source == 'login_detection' and valid:
+                logger.info(f"Login detected for {platform}")
+                # 로그인 성공 시 정상 세션 정보로 업데이트
+                current_sessions = state_manager.state.sessions.copy()
+                current_sessions[platform] = {
+                    'platform': platform,
+                    'valid': True,
+                    'last_checked': datetime.now().isoformat(),
+                    'expires_at': (datetime.now() + timedelta(days=7)).isoformat(),
+                    'source': 'login_detection',
+                    'status': 'active'
+                }
+                await state_manager.update_state("sessions", current_sessions)
+            
+            # WebSocket을 통해 즉시 브로드캐스트
+            await state_manager.broadcast_state()
+            
             return {"status": "updated"}
             
         elif msg_type == MessageType.COLLECTION_RESULT.value:
@@ -613,7 +673,23 @@ async def handle_native_message(message: Dict[str, Any]):
             # 에러 처리
             error_msg = data.get('error', 'Unknown error')
             command_id = data.get('command_id')
+            platform = data.get('platform')
             logger.error(f"Native error: {error_msg}")
+            
+            # 플랫폼 관련 에러인 경우 세션 상태 업데이트
+            if platform:
+                current_sessions = state_manager.state.sessions.copy()
+                current_sessions[platform] = {
+                    'platform': platform,
+                    'valid': False,
+                    'last_checked': datetime.now().isoformat(),
+                    'expires_at': None,
+                    'source': 'error',
+                    'status': 'error',
+                    'error': error_msg
+                }
+                await state_manager.update_state("sessions", current_sessions)
+                await state_manager.broadcast_state()
             
             if command_id:
                 await native_command_manager.complete_command(command_id, {

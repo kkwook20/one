@@ -51,8 +51,10 @@ export interface SessionInfo {
   valid: boolean;
   last_checked: string;
   expires_at: string | null;
-  source: 'cache' | 'extension' | 'firefox' | 'timeout';
+  source: 'cache' | 'extension' | 'firefox' | 'timeout' | 'tab_closed' | 'login_detection' | 'heartbeat' | 'manual';
   status: string;
+  error?: string;  // 에러 메시지를 위한 선택적 필드 추가
+  cookies?: any[];  // 쿠키 정보를 위한 선택적 필드 추가
 }
 
 export interface SyncStatus {
