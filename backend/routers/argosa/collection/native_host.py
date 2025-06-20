@@ -70,13 +70,17 @@ class FirefoxMonitor:
                 
                 # 종료된 프로세스 감지
                 closed_pids = self.firefox_pids - current_pids
-                if closed_pids:
-                    logger.info(f"Firefox processes closed: {closed_pids}")
+                if closed_pids and len(current_pids) == 0:  # Firefox가 완전히 종료됨
+                    logger.info(f"Firefox completely closed (was tracking: {closed_pids})")
                     # Firefox가 종료되면 모든 로그인 대기 중인 플랫폼에 대해 알림
-                    asyncio.run_coroutine_threadsafe(
-                        self._handle_firefox_closed(),
-                        asyncio.get_event_loop()
-                    )
+                    try:
+                        # 새로운 이벤트 루프에서 실행
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                        loop.run_until_complete(self._handle_firefox_closed())
+                        loop.close()
+                    except Exception as e:
+                        logger.error(f"Error handling Firefox closed: {e}")
                 
                 # 새로운 프로세스 감지
                 new_pids = current_pids - self.firefox_pids
@@ -94,10 +98,14 @@ class FirefoxMonitor:
     
     async def _handle_firefox_closed(self):
         """Firefox 종료 처리"""
+        logger.info(f"Handling Firefox closed event. Login tabs: {list(self.login_tabs.keys())}")
+        
         for platform, info in list(self.login_tabs.items()):
+            logger.info(f"Sending firefox_closed event for {platform}")
             await self.callback('firefox_closed', {
                 'platform': platform,
-                'error': 'Firefox was closed'
+                'error': 'Firefox was closed',
+                'source': 'firefox_monitor'
             })
         self.login_tabs.clear()
     
@@ -137,9 +145,12 @@ class ImprovedNativeHost:
     
     async def handle_firefox_event(self, event_type: str, data: Dict[str, Any]):
         """Firefox 이벤트 처리"""
+        logger.info(f"Firefox event: {event_type}, data: {data}")
+        
         if event_type == 'firefox_closed':
             platform = data.get('platform')
             if platform:
+                logger.info(f"Notifying backend that Firefox closed for {platform}")
                 # Backend에 알림
                 await self.notify_backend('native/message', {
                     'type': 'session_update',
@@ -148,7 +159,8 @@ class ImprovedNativeHost:
                         'platform': platform,
                         'valid': False,
                         'source': 'firefox_closed',
-                        'error': 'Firefox was closed'
+                        'error': 'Firefox was closed',
+                        'status': 'firefox_closed'
                     }
                 })
     
@@ -292,20 +304,46 @@ class ImprovedNativeHost:
         
         logger.info(f"Processing command: {command_type}")
         
+        # 플랫폼 URL 매핑
+        platform_urls = {
+            'chatgpt': 'https://chat.openai.com',
+            'claude': 'https://claude.ai',
+            'gemini': 'https://gemini.google.com',
+            'deepseek': 'https://chat.deepseek.com',
+            'grok': 'https://grok.x.ai',
+            'perplexity': 'https://www.perplexity.ai'
+        }
+        
         if command_type == 'open_login_page':
             platform = data.get('platform')
-            if platform:
+            command_id = data.get('command_id')
+            url = platform_urls.get(platform)
+            
+            if platform and url:
+                logger.info(f"Opening login page for {platform}: {url}")
                 # 로그인 탭 추적 시작
                 self.firefox_monitor.add_login_tab(platform, {
-                    'command_id': command_id
+                    'command_id': command_id,
+                    'url': url,
+                    'timestamp': datetime.now().isoformat()
                 })
-        
-        # Extension으로 전달
-        await self.send_to_extension({
-            'type': command_type,
-            'id': command_id,
-            'data': data
-        })
+                
+                # Extension으로 전달 (URL 포함)
+                await self.send_to_extension({
+                    'type': command_type,
+                    'id': command_id,
+                    'data': {
+                        **data,
+                        'url': url  # URL 추가
+                    }
+                })
+        else:
+            # Extension으로 전달
+            await self.send_to_extension({
+                'type': command_type,
+                'id': command_id,
+                'data': data
+            })
         
         # 명령 전송 완료 알림
         complete_url = f"{self.backend_url}/data/commands/complete/{command_id}"

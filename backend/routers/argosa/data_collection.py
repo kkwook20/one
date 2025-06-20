@@ -579,9 +579,35 @@ async def handle_native_message(message: Dict[str, Any]):
                 }
             )
             
+            # Firefox가 종료된 경우 특별 처리
+            if source == 'firefox_closed':
+                logger.info(f"Firefox closed while waiting for {platform} login")
+                
+                # systemState 업데이트
+                current_sessions = state_manager.state.sessions.copy()
+                current_sessions[platform] = {
+                    'platform': platform,
+                    'valid': False,
+                    'last_checked': datetime.now().isoformat(),
+                    'expires_at': None,
+                    'source': 'firefox_closed',
+                    'status': 'firefox_closed',
+                    'error': error or 'Firefox was closed'
+                }
+                await state_manager.update_state("sessions", current_sessions)
+                
+                # Firefox 상태도 업데이트
+                await state_manager.update_state("firefox_status", "closed")
+                await state_manager.update_state("extension_status", "disconnected")
+                
+                # WebSocket을 통해 즉시 브로드캐스트
+                await state_manager.broadcast_state()
+                
+                return {"status": "firefox_closed"}
+            
             # 특별한 source 처리
-            if source in ['tab_closed', 'firefox_closed']:
-                logger.info(f"Browser closed for {platform}: {source}")
+            elif source in ['tab_closed']:
+                logger.info(f"Browser tab closed for {platform}: {source}")
                 # systemState 업데이트
                 current_sessions = state_manager.state.sessions.copy()
                 current_sessions[platform] = {
@@ -591,14 +617,9 @@ async def handle_native_message(message: Dict[str, Any]):
                     'expires_at': None,
                     'source': source,
                     'status': source,
-                    'error': error or 'Browser closed'
+                    'error': error or 'Tab closed'
                 }
                 await state_manager.update_state("sessions", current_sessions)
-                
-                # Firefox가 완전히 종료된 경우
-                if source == 'firefox_closed':
-                    await state_manager.update_state("firefox_status", "closed")
-                    await state_manager.update_state("extension_status", "disconnected")
                 
             elif source == 'timeout':
                 logger.info(f"Login timeout for {platform}")

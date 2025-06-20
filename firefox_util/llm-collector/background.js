@@ -251,7 +251,7 @@ class NativeExtension {
   }
 
   async handleOpenLoginPage(messageId, data) {
-    const { platform } = data;
+    const { platform, url } = data;
     const config = PLATFORMS[platform];
     
     if (!config) {
@@ -264,18 +264,21 @@ class NativeExtension {
       return;
     }
     
-    console.log(`[Extension] Opening ${platform} at ${config.url}`);
+    // URL이 data에 포함되어 있으면 그것을 사용, 아니면 config의 URL 사용
+    const targetUrl = url || config.url;
+    
+    console.log(`[Extension] Opening ${platform} at ${targetUrl}`);
     
     try {
       // Firefox에서 새 탭 열기
       const tab = await browser.tabs.create({
-        url: config.url,
+        url: targetUrl,
         active: true
       });
       
       console.log(`[Extension] Opened ${platform} in tab ${tab.id}`);
       
-     // 탭 닫힘 감지를 위한 리스너
+      // 탭 닫힘 감지를 위한 리스너 - 먼저 등록
       const tabRemovedListener = (tabId) => {
         if (tabId === tab.id) {
           console.log(`[Extension] Tab closed for ${platform}`);
@@ -286,10 +289,10 @@ class NativeExtension {
             this.loginCheckIntervals.delete(platform);
           }
           
-          // 탭이 닫혔음을 알림 - messageId를 그대로 사용
+          // 탭이 닫혔음을 알림
           this.sendNativeMessage({
             type: 'session_update',
-            id: messageId, // 원래 messageId 사용
+            id: messageId,
             data: {
               platform: platform,
               valid: false,
@@ -303,6 +306,9 @@ class NativeExtension {
         }
       };
       
+      // 리스너 등록
+      browser.tabs.onRemoved.addListener(tabRemovedListener);
+      
       // 로그인 감지 시작
       let checkCount = 0;
       const maxChecks = 60; // 5분
@@ -314,7 +320,7 @@ class NativeExtension {
         try {
           await browser.tabs.get(tab.id);
         } catch (e) {
-          // 탭이 이미 닫혔으면 인터벌 정리
+          // 탭이 이미 닫혔으면 인터벌 정리 (리스너가 처리하므로 여기서는 정리만)
           clearInterval(checkInterval);
           this.loginCheckIntervals.delete(platform);
           return;

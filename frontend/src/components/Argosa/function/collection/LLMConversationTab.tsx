@@ -536,7 +536,20 @@ export default function LLMConversationTab({
     else if (sessionInfo.valid === false) {
       const source = sessionInfo.source || sessionInfo.status; // status도 체크
       
-      if (source === 'tab_closed') {
+      if (source === 'firefox_closed') {
+        console.log(`❌ Firefox was closed while waiting for ${openingLoginPlatform} login`);
+        
+        // 타임아웃 클리어
+        const timeout = loginTimeoutRef.current?.[openingLoginPlatform];
+        if (timeout) {
+          clearTimeout(timeout);
+          delete loginTimeoutRef.current[openingLoginPlatform];
+        }
+        
+        onError(`Firefox was closed - please try logging in again`);
+        setOpeningLoginPlatform(null);
+      }
+      else if (source === 'tab_closed') {
         console.log(`❌ ${openingLoginPlatform} tab was closed`);
         
         // 타임아웃 클리어
@@ -642,6 +655,14 @@ export default function LLMConversationTab({
     }
     
     // source 체크 (옵셔널 체이닝 사용)
+    if (session.source === 'firefox_closed' || session.status === 'firefox_closed') {
+      return { 
+        valid: false, 
+        status: 'Firefox closed',
+        expiresAt: undefined 
+      };
+    }
+    
     if (session.source === 'timeout') {
       return { 
         valid: false, 
