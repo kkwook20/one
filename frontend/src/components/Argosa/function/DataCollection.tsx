@@ -1,7 +1,5 @@
 /**
  * DataCollection.tsx - 메인 파일 (전체 코드)
- * 
- * WebSocket ping/pong 제거 버전
  */
 
 import { useState, useEffect, useCallback, useRef } from "react";
@@ -191,9 +189,28 @@ export default function DataCollection() {
     }
   }, []);
   
+  const checkFirefoxStatus = useCallback(async () => {
+    try {
+      const response = await fetch(`${API_BASE_URL}/data/check_firefox_status`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+      });
+      
+      if (response.ok) {
+        const data = await response.json();
+        console.log('Firefox status checked:', data);
+      }
+    } catch (error) {
+      console.error('Failed to check Firefox status:', error);
+    }
+  }, []);
+  
   // ==================== Effects ====================
   
   useEffect(() => {
+    // Check Firefox status on mount
+    checkFirefoxStatus();
+    
     // Connect WebSocket
     connectWebSocket();
     
@@ -218,7 +235,7 @@ export default function DataCollection() {
         clearInterval(statsIntervalRef.current);
       }
     };
-  }, [connectWebSocket, loadStats, loadSystemStatus]);
+  }, [connectWebSocket, loadStats, loadSystemStatus, checkFirefoxStatus]);
   
   // Auto-clear messages
   useEffect(() => {

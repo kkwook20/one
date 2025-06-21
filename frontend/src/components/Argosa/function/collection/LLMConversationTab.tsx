@@ -1,7 +1,5 @@
 /**
  * LLMConversationTab.tsx
- * 
- * LLM Conversation 수집 탭 - 완전한 버전
  */
 
 import { useState, useEffect, useCallback, useRef, ReactNode } from "react";
@@ -610,17 +608,12 @@ export default function LLMConversationTab({
   
   // Check all sessions on mount
   useEffect(() => {
+    // 마운트 시 한 번만 체크
     checkAllSessions();
     
-    // Set up automatic session checking (every 30 seconds)
-    sessionAutoCheckRef.current = setInterval(() => {
-      checkAllSessions();
-    }, 30000);
+    // 자동 세션 체크 제거 (30초마다 체크하는 부분 삭제)
     
     return () => {
-      if (sessionAutoCheckRef.current) {
-        clearInterval(sessionAutoCheckRef.current);
-      }
       if (loginCheckIntervalRef.current) {
         clearInterval(loginCheckIntervalRef.current);
       }
@@ -927,12 +920,12 @@ export default function LLMConversationTab({
               </CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
-              {/* Auto Session Check Notice */}
+              {/* Session Status Notice */}
               <Alert className="bg-blue-50 border-blue-200">
                 <CheckCircle className="h-4 w-4 text-blue-600" />
                 <AlertDescription className="text-blue-800">
-                  <strong>Automatic Session Management:</strong> Sessions are checked every 30 seconds. 
-                  Just log in once and the system will maintain your session automatically.
+                  <strong>Session Management:</strong> Click the refresh button to check session status. 
+                  Log in once and your session will be maintained.
                 </AlertDescription>
               </Alert>
 

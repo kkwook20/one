@@ -117,9 +117,6 @@ class NativeExtension {
     // Connect to Native Host
     this.connectNative();
     
-    // Start heartbeat
-    this.startHeartbeat();
-    
     console.log('[Extension] Initialization complete');
   }
   
@@ -547,23 +544,6 @@ class NativeExtension {
     } catch (error) {
       console.error('[Extension] Failed to save settings:', error);
     }
-  }
-  
-  // ======================== Heartbeat ========================
-  
-  startHeartbeat() {
-    setInterval(() => {
-      if (this.nativeConnected) {
-        this.sendNativeMessage({
-          type: 'heartbeat',
-          data: {
-            sessions: this.getSessionStates(),
-            timestamp: new Date().toISOString(),
-            collecting: this.state.collecting
-          }
-        });
-      }
-    }, 10000);
   }
   
   getSessionStates() {

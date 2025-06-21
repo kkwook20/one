@@ -40,14 +40,12 @@ active_websockets: Set[WebSocket] = set()
 DATA_PATH = Path("./data/argosa")
 STATE_FILE_PATH = DATA_PATH / "system_state.json"
 SESSION_CACHE_PATH = DATA_PATH / "session_cache.json"
-EXTENSION_HEARTBEAT_PATH = DATA_PATH / "extension_heartbeat.json"
 
 # ======================== Data Models ========================
 
 class MessageType(Enum):
     """Native Messaging 메시지 타입"""
     INIT = "init"
-    HEARTBEAT = "heartbeat"
     SESSION_UPDATE = "session_update"
     COLLECTION_RESULT = "collection_result"
     LLM_QUERY_RESULT = "llm_query_result"
@@ -64,13 +62,6 @@ class SystemState(BaseModel):
     schedule_enabled: bool = False
     data_sources_active: int = 0
     total_conversations: int = 0
-
-class ExtensionHeartbeat(BaseModel):
-    timestamp: str
-    status: str
-    firefox_pid: Optional[int] = None
-    sessions: Optional[Dict[str, bool]] = None
-    version: str = "2.0"
 
 class SessionCache(BaseModel):
     platform: str
@@ -145,15 +136,11 @@ class SystemStateManager:
 state_manager = SystemStateManager()
 
 # ======================== Firefox Running ========================
-@router.post("/sessions/ensure_firefox")
-async def ensure_firefox_running(request: Dict[str, Any]):
-    """Firefox가 실행 중인지 확인하고, 아니면 실행"""
+@router.post("/check_firefox_status")
+async def check_firefox_status():
+    """Firefox와 Extension 상태 확인"""
     
-    platform = request.get('platform')
-    if not platform:
-        raise HTTPException(status_code=400, detail="Platform is required")
-    
-    logger.info(f"🔐 Ensuring Firefox for {platform} login")
+    logger.info("Checking Firefox and Extension status")
     
     # Firefox 프로세스 확인
     firefox_running = any(p.name().lower().startswith('firefox') for p in psutil.process_iter())
@@ -161,29 +148,58 @@ async def ensure_firefox_running(request: Dict[str, Any]):
     if not firefox_running:
         logger.info("Firefox not running, starting...")
         # Firefox 실행
-        profile_path = request.get('profile_path', 'F:\\ONE_AI\\firefox-profile')
+        profile_path = 'F:\\ONE_AI\\firefox-profile'
         try:
             subprocess.Popen([
                 r"C:\Program Files\Firefox Developer Edition\firefox.exe",
                 '-profile', profile_path
             ])
             
-            # Firefox 상태 업데이트
             await state_manager.update_state("firefox_status", "opening")
             
             # Extension 로드 대기
             await asyncio.sleep(5)
             
-            # Firefox 상태 업데이트
             await state_manager.update_state("firefox_status", "ready")
+            
+            return {
+                "firefox_started": True,
+                "firefox_status": "ready",
+                "extension_status": state_manager.state.extension_status
+            }
             
         except Exception as e:
             logger.error(f"Failed to start Firefox: {e}")
             await state_manager.update_state("firefox_status", "error")
-            raise HTTPException(status_code=500, detail=f"Failed to start Firefox: {str(e)}")
+            return {
+                "firefox_started": False,
+                "firefox_status": "error",
+                "error": str(e)
+            }
     else:
         logger.info("Firefox already running")
         await state_manager.update_state("firefox_status", "ready")
+        
+        return {
+            "firefox_started": False,
+            "firefox_status": "ready",
+            "extension_status": state_manager.state.extension_status,
+            "already_running": True
+        }
+
+@router.post("/sessions/ensure_firefox")
+async def ensure_firefox_running(request: Dict[str, Any]):
+    """로그인 페이지 열기 (Firefox 실행은 check_firefox_status에서 처리)"""
+    
+    platform = request.get('platform')
+    if not platform:
+        raise HTTPException(status_code=400, detail="Platform is required")
+    
+    logger.info(f"🔐 Opening login page for {platform}")
+    
+    # Extension 연결 확인
+    if state_manager.state.extension_status != 'connected':
+        raise HTTPException(status_code=503, detail="Extension not connected. Please check Firefox.")
     
     # Native Messaging으로 로그인 페이지 열기 명령 전송
     try:
@@ -367,78 +383,6 @@ class UnifiedSessionManager:
 # Global session manager
 session_manager = UnifiedSessionManager()
 
-# ======================== Extension Communication ========================
-
-class ExtensionMonitor:
-    def __init__(self):
-        self.last_heartbeat: Optional[datetime] = None
-        self.check_interval = 10  # seconds
-        self._monitor_task = None
-        
-    async def start_monitoring(self):
-        """Start monitoring Extension heartbeat"""
-        if self._monitor_task is None:
-            self._monitor_task = asyncio.create_task(self._monitoring_loop())
-    
-    async def _monitoring_loop(self):
-        """Monitoring loop"""
-        while True:
-            await asyncio.sleep(self.check_interval)
-            await self.check_heartbeat()
-            
-    async def check_heartbeat(self):
-        """Check Extension heartbeat status"""
-        try:
-            if EXTENSION_HEARTBEAT_PATH.exists():
-                with open(EXTENSION_HEARTBEAT_PATH, 'r') as f:
-                    data = json.load(f)
-                    heartbeat = ExtensionHeartbeat(**data)
-                    
-                last_seen = datetime.fromisoformat(heartbeat.timestamp)
-                
-                # Update state
-                if (datetime.now() - last_seen).seconds < 30:
-                    await state_manager.update_state("extension_status", "connected")
-                    await state_manager.update_state("extension_last_seen", heartbeat.timestamp)
-                else:
-                    await state_manager.update_state("extension_status", "disconnected")
-                    
-        except Exception as e:
-            logger.error(f"Error checking heartbeat: {e}")
-            await state_manager.update_state("extension_status", "disconnected")
-            
-    async def update_heartbeat(self, heartbeat: ExtensionHeartbeat):
-        """Update heartbeat from Extension"""
-        try:
-            EXTENSION_HEARTBEAT_PATH.parent.mkdir(parents=True, exist_ok=True)
-            with open(EXTENSION_HEARTBEAT_PATH, 'w') as f:
-                json.dump(heartbeat.dict(), f)
-                
-            self.last_heartbeat = datetime.now()
-            await state_manager.update_state("extension_status", "connected")
-            await state_manager.update_state("extension_last_seen", heartbeat.timestamp)
-            
-            # Update session info if provided
-            if heartbeat.sessions:
-                for platform, valid in heartbeat.sessions.items():
-                    await session_manager.update_session(platform, valid, source="heartbeat")
-                    
-        except Exception as e:
-            logger.error(f"Error updating heartbeat: {e}")
-    
-    async def stop_monitoring(self):
-        """Stop monitoring"""
-        if self._monitor_task:
-            self._monitor_task.cancel()
-            try:
-                await self._monitor_task
-            except asyncio.CancelledError:
-                pass
-            self._monitor_task = None
-
-# Global Extension monitor
-extension_monitor = ExtensionMonitor()
-
 # ======================== API Endpoints ========================
 
 @router.get("/status")
@@ -546,15 +490,6 @@ async def handle_native_message(message: Dict[str, Any]):
             await state_manager.update_state("extension_status", "connected")
             await state_manager.update_state("firefox_status", "ready")
             return {"status": "initialized"}
-            
-        elif msg_type == MessageType.HEARTBEAT.value:
-            # Heartbeat 처리
-            await extension_monitor.update_heartbeat(ExtensionHeartbeat(
-                timestamp=datetime.now().isoformat(),
-                status="active",
-                sessions=data.get('sessions', {})
-            ))
-            return {"status": "alive"}
             
         elif msg_type == MessageType.SESSION_UPDATE.value:
             # 세션 업데이트
@@ -906,9 +841,6 @@ async def initialize():
     await command_queue.initialize()
     await metrics.initialize()
     
-    # Start extension monitoring
-    await extension_monitor.start_monitoring()
-    
     # Command handlers 등록
     command_queue.register_handler("collect_conversations", handle_collect_command)
     command_queue.register_handler("execute_llm_query", handle_llm_query_command)
@@ -925,9 +857,6 @@ async def initialize():
 async def shutdown():
     """Shutdown Argosa core system"""
     logger.info("Shutting down Argosa core system...")
-    
-    # Stop extension monitoring
-    await extension_monitor.stop_monitoring()
     
     # Close WebSocket connections
     for websocket in list(active_websockets):
