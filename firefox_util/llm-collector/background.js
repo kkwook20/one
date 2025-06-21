@@ -336,116 +336,133 @@ class NativeExtension {
     return `
       (async function() {
         try {
+          // 공통: 페이지 로드 확인
+          if (document.readyState !== 'complete') {
+            return { valid: false, error: 'Page still loading' };
+          }
+          
+          // 공통: 로그인 페이지 체크
+          const loginPaths = ['/auth', '/login', '/signin'];
+          const isLoginPage = loginPaths.some(path => window.location.pathname.includes(path));
+          if (isLoginPage) {
+            return { valid: false, error: 'On login page' };
+          }
+          
           const platform = '${platform}';
           const sessionCheckUrl = '${config.sessionCheckUrl}';
           const method = '${config.sessionCheckMethod}';
           
-          // API 호출로 세션 확인
-          const response = await fetch(sessionCheckUrl, {
-            method: method,
-            credentials: 'include',
-            redirect: 'manual'
-          });
+          // API 호출
+          let apiValid = false;
+          let userData = null;
           
-          // 플랫폼별 세션 체크 로직
+          try {
+            const response = await fetch(sessionCheckUrl, {
+              method: method,
+              credentials: 'include',
+              redirect: 'manual'
+            });
+            
+            if (response.ok) {
+              const data = await response.json();
+              
+              // 플랫폼별 API 응답 검증
+              switch(platform) {
+                case 'chatgpt':
+                  apiValid = !!(data && data.account && data.account.email);
+                  userData = data.account?.email;
+                  break;
+                case 'claude':
+                  apiValid = !!(data && data.length >= 0); // organizations 배열
+                  break;
+                case 'perplexity':
+                  apiValid = !!(data && data.user);
+                  break;
+                default:
+                  apiValid = response.ok;
+              }
+            }
+          } catch (e) {
+            // API 실패는 무시하고 DOM 체크로 진행
+          }
+          
+          // DOM 체크 - main content 확인
+          const mainContent = document.querySelector('main') || document.querySelector('#app') || document.querySelector('[role="main"]');
+          if (!mainContent) {
+            return { valid: false, error: 'Main content not loaded' };
+          }
+          
+          // 플랫폼별 UI 요소 체크
+          let hasRequiredUI = false;
+          
           switch(platform) {
             case 'chatgpt':
-              // API 체크와 UI 체크 모두 필요
-              if (response.ok) {
-                // 실제 채팅 UI가 있는지 확인
-                const hasProfileButton = document.querySelector('[data-testid="profile-button"]') !== null;
-                const hasChatInterface = document.querySelector('textarea[data-id="root"]') !== null;
-                const isNotLoginPage = !window.location.pathname.includes('/auth');
-                
-                if (hasProfileButton && hasChatInterface && isNotLoginPage) {
-                  const data = await response.json();
-                  return { 
-                    valid: true,
-                    user: data.account?.email,
-                    expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()
-                  };
-                }
-              }
-              return { valid: false };
+              hasRequiredUI = (document.querySelector('[data-testid="profile-button"]') !== null ||
+                              document.querySelector('nav button img') !== null) &&
+                             (document.querySelector('textarea[data-id="root"]') !== null ||
+                              document.querySelector('#prompt-textarea') !== null);
+              break;
               
             case 'claude':
-              if (response.ok) {
-                // Claude UI 확인
-                const hasComposer = document.querySelector('[data-testid="composer"]') !== null;
-                const hasUserMenu = document.querySelector('[data-testid="user-menu"]') !== null;
-                const isNotLandingPage = window.location.pathname !== '/' || hasComposer;
-                
-                if (hasComposer && hasUserMenu && isNotLandingPage) {
-                  return {
-                    valid: true,
-                    expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()
-                  };
-                }
-              }
-              return { valid: false };
+              hasRequiredUI = document.querySelector('[data-testid="composer"]') !== null ||
+                             document.querySelector('[class*="ChatMessageInput"]') !== null;
+              break;
               
             case 'gemini':
-              // Gemini는 리다이렉트 체크 + UI 체크
-              if (!response.type === 'opaqueredirect' && response.status !== 302) {
-                const hasMessageInput = document.querySelector('[aria-label="Message Gemini"]') !== null;
-                const hasAccountButton = document.querySelector('[aria-label*="Google Account"]') !== null;
-                const noSignInButton = document.querySelector('a[href*="accounts.google.com"]') === null;
-                
-                if (hasMessageInput && hasAccountButton && noSignInButton) {
-                  return { 
-                    valid: true,
-                    expires_at: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString()
-                  };
-                }
-              }
-              return { valid: false };
+              hasRequiredUI = document.querySelector('[aria-label="Message Gemini"]') !== null &&
+                             document.querySelector('[aria-label*="Google Account"]') !== null;
+              break;
               
             case 'deepseek':
-              if (response.ok) {
-                const hasChatInput = document.querySelector('[class*="chat-input"]') !== null;
-                const hasAvatar = document.querySelector('[class*="avatar"]') !== null;
-                
-                if (hasChatInput && hasAvatar) {
-                  return {
-                    valid: true,
-                    expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()
-                  };
-                }
-              }
-              return { valid: false };
+              hasRequiredUI = document.querySelector('[class*="chat-input"]') !== null &&
+                             document.querySelector('[class*="avatar"]') !== null;
+              break;
               
             case 'grok':
-              if (response.ok) {
-                const hasComposer = document.querySelector('[data-testid="MessageComposer"]') !== null;
-                const hasAccountButton = document.querySelector('[data-testid="SideNav_AccountSwitcher_Button"]') !== null;
-                
-                if (hasComposer && hasAccountButton) {
-                  return {
-                    valid: true,
-                    expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()
-                  };
-                }
-              }
-              return { valid: false };
+              hasRequiredUI = document.querySelector('[data-testid="MessageComposer"]') !== null &&
+                             document.querySelector('[data-testid="SideNav_AccountSwitcher_Button"]') !== null;
+              break;
               
             case 'perplexity':
-              if (response.ok) {
-                const data = await response.json();
-                const hasSearchBar = document.querySelector('[class*="SearchBar"]') !== null;
-                const hasProfile = document.querySelector('[class*="profile"]') !== null;
-                
-                if (data.user && hasSearchBar && hasProfile) {
-                  return {
-                    valid: !!data.user,
-                    expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()
-                  };
-                }
-              }
-              return { valid: false };
-              
-            default:
-              return { valid: false, error: 'Unknown platform' };
+              hasRequiredUI = document.querySelector('[class*="SearchBar"]') !== null ||
+                             document.querySelector('[class*="ThreadView"]') !== null;
+              break;
           }
+          
+          // 추가 검증: 로그인 관련 요소가 있으면 무조건 false
+          const loginIndicators = [
+            'button[aria-label="Log in"]',
+            'button[aria-label="Sign in"]', 
+            '[data-testid="login-button"]',
+            'input[type="email"][placeholder*="email"]',
+            'input[type="password"]'
+          ];
+
+          const hasLoginElement = loginIndicators.some(selector => 
+            document.querySelector(selector) !== null
+          );
+
+          if (hasLoginElement) {
+            return { valid: false, error: 'Login elements detected' };
+          }
+          
+          // 최종 판단: API와 UI 모두 확인 (플랫폼별로 다르게)
+          let isValid = false;
+          
+          if (platform === 'chatgpt' || platform === 'claude') {
+            // 이 플랫폼들은 API와 UI 모두 필요
+            isValid = apiValid && hasRequiredUI;
+          } else {
+            // 다른 플랫폼은 UI만 체크
+            isValid = hasRequiredUI;
+          }
+          
+          return {
+            valid: isValid,
+            user: userData,
+            expires_at: isValid ? new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString() : null
+          };
+          
         } catch (error) {
           return { valid: false, error: error.message };
         }
@@ -487,7 +504,6 @@ class NativeExtension {
     const config = PLATFORMS[platform];
     
     if (!config) {
-      console.error(`[Extension] Unknown platform: ${platform}`);
       this.sendNativeMessage({
         type: 'error',
         id: messageId,
@@ -496,32 +512,36 @@ class NativeExtension {
       return;
     }
     
-    // URL이 data에 포함되어 있으면 그것을 사용, 아니면 config의 URL 사용
     const targetUrl = url || config.url;
-    
-    console.log(`[Extension] Opening ${platform} at ${targetUrl}`);
+    let tab = null;
+    let tabRemovedListener = null;
     
     try {
-      // Firefox에서 새 탭 열기
-      const tab = await browser.tabs.create({
-        url: targetUrl,
-        active: true
-      });
+      // 기존 탭 찾기
+      const existingTabs = await browser.tabs.query({ url: `${config.url}/*` });
       
-      console.log(`[Extension] Opened ${platform} in tab ${tab.id}`);
+      if (existingTabs.length > 0) {
+        // 기존 탭 사용
+        tab = existingTabs[0];
+        await browser.tabs.update(tab.id, { active: true });
+        console.log(`[Extension] Using existing tab for ${platform}`);
+      } else {
+        // 새 탭 생성
+        tab = await browser.tabs.create({
+          url: targetUrl,
+          active: true
+        });
+        console.log(`[Extension] Created new tab for ${platform}`);
+      }
       
-      // 탭 닫힘 감지를 위한 리스너 - 먼저 등록
-      const tabRemovedListener = (tabId) => {
+      // 탭 닫힘 리스너 먼저 등록
+      tabRemovedListener = (tabId) => {
         if (tabId === tab.id) {
-          console.log(`[Extension] Tab closed for ${platform}`);
-          
-          // 로그인 체크 인터벌 정리
           if (this.loginCheckIntervals.has(platform)) {
             clearInterval(this.loginCheckIntervals.get(platform));
             this.loginCheckIntervals.delete(platform);
           }
           
-          // 탭이 닫혔음을 알림
           this.sendNativeMessage({
             type: 'session_update',
             id: messageId,
@@ -533,62 +553,108 @@ class NativeExtension {
             }
           });
           
-          // 리스너 제거
           browser.tabs.onRemoved.removeListener(tabRemovedListener);
         }
       };
-      
-      // 리스너 등록
       browser.tabs.onRemoved.addListener(tabRemovedListener);
       
-      // 로그인 감지 시작
-      let checkCount = 0;
-      const maxChecks = 60; // 5분
+      // 탭 로드 대기 (실패해도 계속 진행)
+      try {
+        await this.waitForTabLoad(tab.id, 10000);
+      } catch (e) {
+        console.log(`[Extension] Tab load timeout, continuing anyway`);
+      }
       
-      const checkInterval = setInterval(async () => {
-        checkCount++;
+      // 탭이 아직 존재하는지 확인
+      try {
+        await browser.tabs.get(tab.id);
+      } catch (e) {
+        console.log(`[Extension] Tab was closed immediately`);
+        return;
+      }
+      
+      await this.humanDelay(2);
+      
+      // 초기 세션 체크
+      try {
+        const results = await browser.tabs.executeScript(tab.id, {
+          code: this.getSessionCheckCode(platform)
+        });
         
-        // 탭이 여전히 존재하는지 확인
-        try {
-          await browser.tabs.get(tab.id);
-        } catch (e) {
-          // 탭이 이미 닫혔으면 인터벌 정리 (리스너가 처리하므로 여기서는 정리만)
-          clearInterval(checkInterval);
-          this.loginCheckIntervals.delete(platform);
-          return;
-        }
-        
-        // 세션 체크 - checkSessionInNewTab 사용
-        const result = await this.checkSessionInNewTab(platform, config.url);
-        
-        if (result.valid) {
-          console.log(`✅ [Extension] ${platform} login detected!`);
-          
-          clearInterval(checkInterval);
-          this.loginCheckIntervals.delete(platform);
-          
-          // 리스너 제거
+        if (results && results[0] && results[0].valid) {
           browser.tabs.onRemoved.removeListener(tabRemovedListener);
           
-          // Native Host로 세션 업데이트 전송
+          const cookies = await this.getPlatformCookies(platform);
+          
+          // 이미 로그인된 경우 탭 닫기
+          await browser.tabs.remove(tab.id);
+          
           this.sendNativeMessage({
             type: 'session_update',
             id: messageId,
             data: {
               platform: platform,
               valid: true,
-              source: 'login_detection',
-              cookies: result.cookies
+              source: 'already_logged_in',
+              cookies: cookies
             }
           });
+          return;
+        }
+      } catch (e) {
+        console.log(`[Extension] Initial check failed, starting login detection`);
+      }
+      
+      // 로그인 감지 루프
+      let checkCount = 0;
+      const maxChecks = 60;
+      
+      const checkInterval = setInterval(async () => {
+        checkCount++;
+        
+        // 탭 존재 확인
+        try {
+          await browser.tabs.get(tab.id);
+        } catch (e) {
+          clearInterval(checkInterval);
+          this.loginCheckIntervals.delete(platform);
+          return;
+        }
+        
+        // 세션 체크
+        try {
+          const results = await browser.tabs.executeScript(tab.id, {
+            code: this.getSessionCheckCode(platform)
+          });
+          
+          if (results && results[0] && results[0].valid) {
+            clearInterval(checkInterval);
+            this.loginCheckIntervals.delete(platform);
+            browser.tabs.onRemoved.removeListener(tabRemovedListener);
+            
+            const cookies = await this.getPlatformCookies(platform);
+            
+            // 로그인 성공 시 탭 닫기
+            await browser.tabs.remove(tab.id);
+            
+            this.sendNativeMessage({
+              type: 'session_update',
+              id: messageId,
+              data: {
+                platform: platform,
+                valid: true,
+                source: 'login_detection',
+                cookies: cookies
+              }
+            });
+          }
+        } catch (e) {
+          // 스크립트 실행 실패는 무시하고 계속
         }
         
         if (checkCount >= maxChecks) {
-          console.log(`⏱️ [Extension] Login timeout for ${platform}`);
           clearInterval(checkInterval);
           this.loginCheckIntervals.delete(platform);
-          
-          // 리스너 제거
           browser.tabs.onRemoved.removeListener(tabRemovedListener);
           
           this.sendNativeMessage({
@@ -604,11 +670,13 @@ class NativeExtension {
         }
       }, 5000);
       
-      // 인터벌 저장
       this.loginCheckIntervals.set(platform, checkInterval);
       
     } catch (error) {
-      console.error(`[Extension] Failed to open login page:`, error);
+      // 탭 생성 실패
+      if (tabRemovedListener) {
+        browser.tabs.onRemoved.removeListener(tabRemovedListener);
+      }
       
       this.sendNativeMessage({
         type: 'error',
@@ -1134,20 +1202,30 @@ class NativeExtension {
   
   async waitForTabLoad(tabId, timeout = 30000) {
     return new Promise((resolve, reject) => {
-      const timeoutId = setTimeout(() => {
-        browser.tabs.onUpdated.removeListener(listener);
-        reject(new Error('Tab load timeout'));
-      }, timeout);
-      
-      const listener = (updatedTabId, changeInfo) => {
-        if (updatedTabId === tabId && changeInfo.status === 'complete') {
-          clearTimeout(timeoutId);
-          browser.tabs.onUpdated.removeListener(listener);
+      // 먼저 탭 상태 확인
+      browser.tabs.get(tabId).then(tab => {
+        if (tab.status === 'complete') {
           resolve();
+          return;
         }
-      };
-      
-      browser.tabs.onUpdated.addListener(listener);
+        
+        const timeoutId = setTimeout(() => {
+          browser.tabs.onUpdated.removeListener(listener);
+          reject(new Error('Tab load timeout'));
+        }, timeout);
+        
+        const listener = (updatedTabId, changeInfo) => {
+          if (updatedTabId === tabId && changeInfo.status === 'complete') {
+            clearTimeout(timeoutId);
+            browser.tabs.onUpdated.removeListener(listener);
+            resolve();
+          }
+        };
+        
+        browser.tabs.onUpdated.addListener(listener);
+      }).catch(error => {
+        reject(error);
+      });
     });
   }
   
