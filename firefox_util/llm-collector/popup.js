@@ -10,56 +10,74 @@ const PLATFORMS = {
   perplexity: { name: 'Perplexity', icon: 'P', color: '#10b981' }
 };
 
-// Get extension instance
-let extension = null;
+// State cache
+let extensionState = null;
 
 document.addEventListener('DOMContentLoaded', async () => {
-  // Get background page
-  const backgroundPage = await browser.runtime.getBackgroundPage();
-  extension = backgroundPage.llmCollectorExtension;
-  
-  if (!extension) {
-    console.error('[Popup] Extension not found!');
-    updateStatus('Error', false);
-    return;
-  }
-  
-  // Initial update
-  updateUI();
+  console.log('[Popup] Initializing...');
   
   // Setup event listeners
   document.getElementById('syncNowBtn').addEventListener('click', handleSyncNow);
   document.getElementById('dashboardBtn').addEventListener('click', handleOpenDashboard);
   
-  // Update UI every second
-  setInterval(updateUI, 1000);
+  // Initial update when popup opens
+  await updateUI();
+  
+  // Listen for storage changes - only update when state actually changes
+  browser.storage.onChanged.addListener((changes, area) => {
+    if (area === 'local' && changes.extensionState) {
+      console.log('[Popup] Storage changed, updating UI');
+      updateUI();
+    }
+  });
+  
+  // No more setInterval - only update on demand
 });
 
+// Get extension state via message
+async function getExtensionState() {
+  try {
+    const response = await browser.runtime.sendMessage({ type: 'getState' });
+    return response;
+  } catch (error) {
+    console.error('[Popup] Failed to get state:', error);
+    return null;
+  }
+}
+
 // Update entire UI
-function updateUI() {
-  if (!extension) return;
+async function updateUI() {
+  // Get current state
+  const state = await getExtensionState();
+  
+  if (!state) {
+    updateStatus('Extension Error', false);
+    return;
+  }
+  
+  extensionState = state;
   
   // Update status
   updateStatus(
-    extension.mode === 'connected' ? 'Backend Connected' : 'Standalone Mode',
-    extension.mode === 'connected'
+    state.nativeConnected ? 'Native Connected' : 'Disconnected',
+    state.nativeConnected
   );
   
   // Update mode text
   document.getElementById('modeText').textContent = 
-    extension.mode === 'connected' ? 'Connected' : 'Standalone';
+    state.nativeConnected ? 'Connected' : 'Standalone';
   
   // Update platforms
-  updatePlatforms();
+  updatePlatforms(state.sessions);
   
   // Update stats
-  updateStats();
+  updateStats(state.sessions);
   
   // Update sync button
-  updateSyncButton();
+  updateSyncButton(state.collecting);
   
   // Update footer
-  updateFooter();
+  updateFooter(state);
 }
 
 // Update connection status
@@ -72,11 +90,9 @@ function updateStatus(text, connected) {
 }
 
 // Update platform list
-function updatePlatforms() {
+function updatePlatforms(sessions = {}) {
   const container = document.getElementById('platformList');
   container.innerHTML = '';
-  
-  const sessions = extension.state.sessions || {};
   
   Object.entries(PLATFORMS).forEach(([key, config]) => {
     const session = sessions[key] || { valid: false };
@@ -106,9 +122,8 @@ function updatePlatforms() {
 }
 
 // Update statistics
-function updateStats() {
+function updateStats(sessions = {}) {
   // Count active sessions
-  const sessions = extension.state.sessions || {};
   const activeCount = Object.values(sessions).filter(s => s.valid).length;
   document.getElementById('activeCount').textContent = activeCount;
   
@@ -120,12 +135,12 @@ function updateStats() {
 }
 
 // Update sync button
-function updateSyncButton() {
+function updateSyncButton(collecting = false) {
   const btn = document.getElementById('syncNowBtn');
   const icon = document.getElementById('syncIcon');
   const text = document.getElementById('syncText');
   
-  if (extension.collectionLock) {
+  if (collecting) {
     btn.disabled = true;
     icon.innerHTML = '<span class="spinner"></span>';
     text.textContent = 'Syncing...';
@@ -137,13 +152,11 @@ function updateSyncButton() {
 }
 
 // Update footer
-function updateFooter() {
+function updateFooter(state) {
   const footer = document.getElementById('footerText');
   
-  // Check if we have scheduled sync info
-  const lastHeartbeat = extension.state.lastHeartbeat;
-  if (lastHeartbeat) {
-    footer.textContent = `Last activity: ${formatTime(lastHeartbeat)}`;
+  if (state.savedAt) {
+    footer.textContent = `Last activity: ${formatTime(state.savedAt)}`;
   } else {
     footer.textContent = 'Extension active';
   }
@@ -151,29 +164,38 @@ function updateFooter() {
 
 // Handle sync now button
 async function handleSyncNow() {
-  if (!extension || extension.collectionLock) return;
+  if (!extensionState || extensionState.collecting) return;
   
-  // Get enabled platforms (for now, use all with valid sessions)
-  const sessions = extension.state.sessions || {};
+  // Get enabled platforms
+  const sessions = extensionState.sessions || {};
   const enabledPlatforms = Object.entries(sessions)
     .filter(([key, session]) => session.valid)
-    .map(([key]) => ({ platform: key, enabled: true }));
+    .map(([key]) => key);
   
   if (enabledPlatforms.length === 0) {
     alert('No platforms with valid sessions. Please log in first.');
     return;
   }
   
-  // Start collection
-  await extension.startCollection({
-    action: 'sync',
-    sync_id: `manual-${Date.now()}`,
-    platforms: enabledPlatforms,
-    settings: extension.settings
-  });
-  
-  // Update UI
-  updateUI();
+  try {
+    // Send collection request via message
+    await browser.runtime.sendMessage({
+      type: 'startCollection',
+      data: {
+        platforms: enabledPlatforms,
+        settings: {
+          maxConversations: 20,
+          delayBetweenPlatforms: 5
+        }
+      }
+    });
+    
+    // Update UI after starting collection
+    await updateUI();
+  } catch (error) {
+    console.error('[Popup] Failed to start collection:', error);
+    alert('Failed to start collection. Please check console.');
+  }
 }
 
 // Handle open dashboard button

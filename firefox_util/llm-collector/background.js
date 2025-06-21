@@ -3,6 +3,7 @@ console.log('[LLM Collector] Extension loaded at', new Date().toISOString());
 
 // ======================== Configuration ========================
 const NATIVE_HOST_ID = 'com.argosa.native';
+const BACKEND_URL = 'http://localhost:8000/api/argosa/data';
 
 // Platform configurations
 const PLATFORMS = {
@@ -117,27 +118,26 @@ class NativeExtension {
     // Connect to Native Host
     this.connectNative();
     
-    console.log('[Extension] Initialization complete');
-  }
-  
-  async loadSettings() {
-    try {
-      const settings = await browser.storage.local.get([
-        'maxConversations',
-        'delayBetweenPlatforms',
-        'syncInterval'
-      ]);
+    // 메시지 핸들러 추가
+    browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
+      if (message.type === 'getState') {
+        sendResponse({
+          nativeConnected: this.nativeConnected,
+          sessions: this.state.sessions,
+          collecting: this.state.collecting,
+          savedAt: this.state.savedAt
+        });
+        return true;
+      }
       
-      if (settings.maxConversations) {
-        this.settings.maxConversations = settings.maxConversations;
+      if (message.type === 'startCollection') {
+        this.handleCollectCommand('popup', message.data);
+        sendResponse({ success: true });
+        return true;
       }
-      if (settings.delayBetweenPlatforms) {
-        this.settings.randomDelay = settings.delayBetweenPlatforms;
-        this.settings.delayBetweenPlatforms = settings.delayBetweenPlatforms;
-      }
-    } catch (error) {
-      console.error('[Extension] Failed to load settings:', error);
-    }
+    });
+    
+    console.log('[Extension] Initialization complete');
   }
   
   // ======================== Native Messaging ========================
@@ -157,6 +157,9 @@ class NativeExtension {
         console.error('[Extension] Native port disconnected');
         this.nativePort = null;
         this.nativeConnected = false;
+        
+        // Backend에 연결 해제 알림
+        this.notifyBackendStatus('disconnected');
         
         // 재연결 시도
         this.reconnectDelay = Math.min(this.reconnectDelay * 2, 60000);
@@ -191,6 +194,24 @@ class NativeExtension {
     }
   }
   
+  async notifyBackendStatus(status, additionalData = {}) {
+    try {
+      await fetch(`${BACKEND_URL}/native/status`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          status: status,
+          extension_ready: status === 'connected',
+          timestamp: new Date().toISOString(),
+          ...additionalData
+        })
+      });
+      console.log(`[Extension] Backend notified: ${status}`);
+    } catch (error) {
+      console.error('[Extension] Failed to notify backend:', error);
+    }
+  }
+  
   sendNativeMessage(message) {
     if (!this.nativePort) {
       console.error('[Extension] Native port not connected, queuing message');
@@ -215,42 +236,86 @@ class NativeExtension {
   }
   
   async handleNativeMessage(message) {
-      const { id, type, data } = message;
+    const { id, type, data, status } = message;
 
-      console.log('[Extension] Received native message:', type, data);
+    console.log('[Extension] Received native message:', type, data);
 
-      switch (type) {
-        case 'init_response':
-          // Native Host 초기화 완료
-          console.log('[Extension] Native Host initialized successfully');
-          break;
-          
-        case 'collect_conversations':
-          await this.handleCollectCommand(id, data);
-          break;
-          
-        case 'execute_llm_query':
-          await this.handleLLMQueryCommand(id, data);
-          break;
-          
-        case 'check_session':
-          await this.handleSessionCheck(id, data);
-          break;
-          
-        case 'update_settings':
-          this.settings = { ...this.settings, ...data };
-          await this.saveSettings();
-          break;
-          
-        case 'open_login_page':
-          console.log('[Extension] Opening login page for:', data.platform);
-          await this.handleOpenLoginPage(id, data);
-          break;
-          
-        default:
-          console.warn('[Extension] Unknown native command:', type);
-      }
+    switch (type) {
+      case 'init_response':
+        console.log('[Extension] Native Host initialized successfully');
+        // Backend로 연결 상태 알림
+        await this.notifyBackendStatus('connected', {
+          capabilities: message.capabilities || [],
+          nativeHost: true,
+          status: status
+        });
+        
+        // init_ack 전송 (선택사항)
+        this.sendNativeMessage({
+          type: 'init_ack',
+          id: id
+        });
+        break; // 🔴 이 break가 누락되어 있었음!
+        
+      case 'collect_conversations':
+        await this.handleCollectCommand(id, data);
+        break;
+        
+      case 'execute_llm_query':
+        await this.handleLLMQueryCommand(id, data);
+        break;
+        
+      case 'check_session':
+        await this.handleSessionCheck(id, data);
+        break;
+        
+      case 'update_settings':
+        this.settings = { ...this.settings, ...data };
+        await this.saveSettings();
+        break;
+        
+      case 'open_login_page':
+        console.log('[Extension] Opening login page for:', data.platform);
+        await this.handleOpenLoginPage(id, data);
+        break;
+        
+      case 'error':
+        console.error('[Extension] Native Host error:', data);
+        break;
+        
+      default:
+        console.warn('[Extension] Unknown native command:', type);
     }
+  }
+
+  // Firefox 종료 감지를 위한 리스너 추가
+  async monitorFirefoxClose() {
+    // 윈도우가 모두 닫히면 Firefox가 종료된 것
+    browser.windows.onRemoved.addListener(async () => {
+      const windows = await browser.windows.getAll();
+      if (windows.length === 0) {
+        console.log('[Extension] Firefox is closing');
+        
+        // 모든 플랫폼의 로그인 대기 중인 상태 정리
+        for (const [platform, intervalId] of this.loginCheckIntervals) {
+          clearInterval(intervalId);
+          
+          // Native Host로 Firefox 종료 알림
+          this.sendNativeMessage({
+            type: 'session_update',
+            data: {
+              platform: platform,
+              valid: false,
+              source: 'firefox_closed',
+              error: 'Firefox is closing'
+            }
+          });
+        }
+        
+        this.loginCheckIntervals.clear();
+      }
+    });
+  }
 
   async handleOpenLoginPage(messageId, data) {
     const { platform, url } = data;
@@ -540,6 +605,17 @@ class NativeExtension {
       });
     } catch (error) {
       console.error('[Extension] Failed to save state:', error);
+    }
+  }
+  
+  async loadSettings() {
+    try {
+      const { extensionSettings } = await browser.storage.local.get('extensionSettings');
+      if (extensionSettings) {
+        this.settings = { ...this.settings, ...extensionSettings };
+      }
+    } catch (error) {
+      console.error('[Extension] Failed to load settings:', error);
     }
   }
   
@@ -1003,6 +1079,9 @@ class NativeExtension {
 // ======================== Initialize Extension ========================
 
 const extension = new NativeExtension();
+
+// Firefox 종료 감지 추가
+extension.monitorFirefoxClose();
 
 // Export for debugging
 window.llmCollectorExtension = extension;

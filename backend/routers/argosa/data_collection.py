@@ -132,93 +132,108 @@ class SystemStateManager:
             for ws in disconnected:
                 active_websockets.discard(ws)
 
-# Global state manager
+# ======================== Firefox Manager ========================
+
+class FirefoxManager:
+    """Firefox 프로세스 시작 및 모니터링 통합 관리"""
+    
+    def __init__(self, state_manager):
+        self.state_manager = state_manager
+        self.monitor_thread = None
+        self.running = False
+        self.firefox_path = r"C:\Program Files\Firefox Developer Edition\firefox.exe"
+        self.profile_path = r'F:\ONE_AI\firefox-profile'
+        
+    async def check_and_start(self):
+        """Firefox 상태 확인 및 시작"""
+        firefox_running = any(p.name().lower().startswith('firefox') for p in psutil.process_iter())
+        
+        if not firefox_running:
+            logger.info("Firefox not running, starting...")
+            try:
+                subprocess.Popen([self.firefox_path, '-profile', self.profile_path])
+                await self.state_manager.update_state("firefox_status", "opening")
+                await asyncio.sleep(5)
+                await self.state_manager.update_state("firefox_status", "ready")
+                
+                return {"firefox_started": True, "firefox_status": "ready"}
+            except Exception as e:
+                logger.error(f"Failed to start Firefox: {e}")
+                await self.state_manager.update_state("firefox_status", "error")
+                return {"firefox_started": False, "firefox_status": "error", "error": str(e)}
+        else:
+            logger.info("Firefox already running")
+            await self.state_manager.update_state("firefox_status", "ready")
+            return {"firefox_started": False, "firefox_status": "ready", "already_running": True}
+    
+    def start_monitor(self):
+        """모니터링 시작"""
+        if not self.running:
+            self.running = True
+            self.monitor_thread = threading.Thread(target=self._monitor_loop, daemon=True)
+            self.monitor_thread.start()
+            logger.info("Firefox monitor started")
+    
+    def _monitor_loop(self):
+        """Firefox 프로세스 모니터링 루프"""
+        firefox_pids = set()
+        
+        while self.running:
+            current_pids = {p.info['pid'] for p in psutil.process_iter(['pid', 'name']) 
+                           if p.info['name'] and 'firefox' in p.info['name'].lower()}
+            
+            if current_pids != firefox_pids:
+                if not current_pids and firefox_pids:  # Firefox 종료
+                    logger.info(f"Firefox CLOSED! (was tracking PIDs: {firefox_pids})")
+                    asyncio.run_coroutine_threadsafe(
+                        self._handle_firefox_closed(),
+                        asyncio.get_event_loop()
+                    )
+                elif current_pids and not firefox_pids:  # Firefox 시작
+                    logger.info(f"Firefox STARTED! (PIDs: {current_pids})")
+                    asyncio.run_coroutine_threadsafe(
+                        self.state_manager.update_state("firefox_status", "ready"),
+                        asyncio.get_event_loop()
+                    )
+                
+                firefox_pids = current_pids
+            
+            time.sleep(1)
+    
+    async def _handle_firefox_closed(self):
+        """Firefox 종료 처리"""
+        await self.state_manager.update_state("firefox_status", "closed")
+        await self.state_manager.update_state("extension_status", "disconnected")
+        
+        # system_status도 초기화로 되돌림
+        if self.state_manager.state.system_status == "initializing":
+            await self.state_manager.update_state("system_status", "idle")
+        
+        # 모든 세션 무효화
+        sessions = self.state_manager.state.sessions.copy()
+        for platform in sessions:
+            sessions[platform] = {
+                'platform': platform,
+                'valid': False,
+                'last_checked': datetime.now().isoformat(),
+                'source': 'firefox_closed',
+                'status': 'firefox_closed',
+                'error': 'Firefox was closed'
+            }
+        await self.state_manager.update_state("sessions", sessions)
+        await self.state_manager.broadcast_state()
+    
+    def stop_monitor(self):
+        """모니터링 중지"""
+        self.running = False
+        if self.monitor_thread:
+            self.monitor_thread.join(timeout=2)
+
+# Global instances
 state_manager = SystemStateManager()
-
-# ======================== Firefox Running ========================
-@router.post("/check_firefox_status")
-async def check_firefox_status():
-    """Firefox와 Extension 상태 확인"""
-    
-    logger.info("Checking Firefox and Extension status")
-    
-    # Firefox 프로세스 확인
-    firefox_running = any(p.name().lower().startswith('firefox') for p in psutil.process_iter())
-    
-    if not firefox_running:
-        logger.info("Firefox not running, starting...")
-        # Firefox 실행
-        profile_path = 'F:\\ONE_AI\\firefox-profile'
-        try:
-            subprocess.Popen([
-                r"C:\Program Files\Firefox Developer Edition\firefox.exe",
-                '-profile', profile_path
-            ])
-            
-            await state_manager.update_state("firefox_status", "opening")
-            
-            # Extension 로드 대기
-            await asyncio.sleep(5)
-            
-            await state_manager.update_state("firefox_status", "ready")
-            
-            return {
-                "firefox_started": True,
-                "firefox_status": "ready",
-                "extension_status": state_manager.state.extension_status
-            }
-            
-        except Exception as e:
-            logger.error(f"Failed to start Firefox: {e}")
-            await state_manager.update_state("firefox_status", "error")
-            return {
-                "firefox_started": False,
-                "firefox_status": "error",
-                "error": str(e)
-            }
-    else:
-        logger.info("Firefox already running")
-        await state_manager.update_state("firefox_status", "ready")
-        
-        return {
-            "firefox_started": False,
-            "firefox_status": "ready",
-            "extension_status": state_manager.state.extension_status,
-            "already_running": True
-        }
-
-@router.post("/sessions/ensure_firefox")
-async def ensure_firefox_running(request: Dict[str, Any]):
-    """로그인 페이지 열기 (Firefox 실행은 check_firefox_status에서 처리)"""
-    
-    platform = request.get('platform')
-    if not platform:
-        raise HTTPException(status_code=400, detail="Platform is required")
-    
-    logger.info(f"🔐 Opening login page for {platform}")
-    
-    # Extension 연결 확인
-    if state_manager.state.extension_status != 'connected':
-        raise HTTPException(status_code=503, detail="Extension not connected. Please check Firefox.")
-    
-    # Native Messaging으로 로그인 페이지 열기 명령 전송
-    try:
-        command_id = await native_command_manager.send_command(
-            "open_login_page",
-            {"platform": platform}
-        )
-        
-        logger.info(f"✅ Sent open_login_page command: {command_id}")
-        
-        return {
-            "success": True, 
-            "command_id": command_id,
-            "firefox_status": state_manager.state.firefox_status
-        }
-        
-    except Exception as e:
-        logger.error(f"Failed to send open_login_page command: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to open login page: {str(e)}")
+firefox_manager = FirefoxManager(state_manager)
+session_manager = None  # UnifiedSessionManager 정의 후 초기화
+native_command_manager = None  # NativeCommandManager 정의 후 초기화
 
 # ======================== Native Messaging Support ========================
 
@@ -273,9 +288,6 @@ class NativeCommandManager:
             future = self.pending_commands.pop(command_id, None)
             if future and not future.done():
                 future.set_result(result)
-
-# 전역 Native 명령 관리자
-native_command_manager = NativeCommandManager()
 
 # ======================== Session Management ========================
 
@@ -380,8 +392,9 @@ class UnifiedSessionManager:
         except:
             return None
 
-# Global session manager
+# Initialize managers
 session_manager = UnifiedSessionManager()
+native_command_manager = NativeCommandManager()
 
 # ======================== API Endpoints ========================
 
@@ -445,6 +458,49 @@ async def state_websocket(websocket: WebSocket):
         except:
             pass
 
+# ======================== Firefox Management Endpoints ========================
+
+@router.post("/check_firefox_status")
+async def check_firefox_status():
+    """Firefox와 Extension 상태 확인"""
+    result = await firefox_manager.check_and_start()
+    
+    # Extension 상태도 함께 반환
+    result["extension_status"] = state_manager.state.extension_status
+    
+    return result
+
+@router.post("/sessions/ensure_firefox")
+async def ensure_firefox_running(request: Dict[str, Any]):
+    """로그인 페이지 열기"""
+    platform = request.get('platform')
+    if not platform:
+        raise HTTPException(status_code=400, detail="Platform is required")
+    
+    logger.info(f"🔐 Opening login page for {platform}")
+    
+    # Extension 연결 확인
+    if state_manager.state.extension_status != 'connected':
+        raise HTTPException(status_code=503, detail="Extension not connected. Please check Firefox.")
+    
+    try:
+        command_id = await native_command_manager.send_command(
+            "open_login_page",
+            {"platform": platform}
+        )
+        
+        logger.info(f"✅ Sent open_login_page command: {command_id}")
+        
+        return {
+            "success": True, 
+            "command_id": command_id,
+            "firefox_status": state_manager.state.firefox_status
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to send open_login_page command: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to open login page: {str(e)}")
+
 # ======================== Command Queue Endpoints ========================
 
 @router.get("/commands/pending")
@@ -468,38 +524,31 @@ async def update_native_status(status: Dict[str, Any]):
     """Native Host 상태 업데이트"""
     logger.info(f"Native status update: {status}")
     
-    # 상태 정보 파싱
     status_type = status.get('status')
     
-    if status_type == 'connected':
-        # Extension 연결됨
-        await state_manager.update_state("extension_status", "connected")
-        await state_manager.update_state("extension_last_seen", datetime.now().isoformat())
-        
-        # extension_connected 플래그 확인
-        if status.get('extension_connected'):
+    # Extension 첫 연결이면 즉시 connected로
+    if status_type in ['connected', 'ready', 'alive'] or status.get('extension_ready'):
+        if state_manager.state.extension_status != "connected":
+            await state_manager.update_state("extension_status", "connected")
             await state_manager.update_state("firefox_status", "ready")
-            
-        logger.info("Extension connected and status updated")
+            logger.info("Extension connected - marking as ready")
         
-    elif status_type == 'disconnected':
-        # Extension 연결 해제
-        await state_manager.update_state("extension_status", "disconnected")
-        await state_manager.update_state("firefox_status", "closed")
-        logger.info("Extension disconnected")
-        
-    elif status_type == 'alive':
-        # Extension이 살아있음을 확인
         await state_manager.update_state("extension_last_seen", datetime.now().isoformat())
         
         # sessions 정보가 있으면 업데이트
         if 'sessions' in status:
             await state_manager.update_state("sessions", status['sessions'])
-            
-        # Firefox 상태 확인
-        if 'firefox_running' in status:
-            firefox_status = "ready" if status['firefox_running'] else "closed"
-            await state_manager.update_state("firefox_status", firefox_status)
+    
+    elif status_type == 'disconnected':
+        # Extension 연결 해제
+        await state_manager.update_state("extension_status", "disconnected")
+        await state_manager.update_state("firefox_status", "closed")
+        
+        # system_status가 initializing이면 idle로
+        if state_manager.state.system_status == "initializing":
+            await state_manager.update_state("system_status", "idle")
+        
+        logger.info("Extension disconnected")
     
     # WebSocket으로 상태 브로드캐스트
     await state_manager.broadcast_state()
@@ -889,11 +938,17 @@ async def initialize():
     await state_manager.update_state("firefox_status", "closed")
     await state_manager.update_state("extension_status", "disconnected")
     
+    # Firefox 모니터 시작
+    firefox_manager.start_monitor()
+    
     logger.info("Argosa core system initialized")
 
 async def shutdown():
     """Shutdown Argosa core system"""
     logger.info("Shutting down Argosa core system...")
+    
+    # Firefox 모니터 중지
+    firefox_manager.stop_monitor()
     
     # Close WebSocket connections
     for websocket in list(active_websockets):

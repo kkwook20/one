@@ -225,6 +225,13 @@ class ImprovedNativeHost:
             elif msg_type == 'init_ack':
                 # Extension이 init_response를 받았다는 확인
                 logger.info("Extension acknowledged initialization")
+                # 백엔드에 완전 연결 상태 알림
+                await self.notify_backend('native/status', {
+                    'status': 'fully_connected',
+                    'extension_ready': True,
+                    'native_ready': True,
+                    'timestamp': datetime.now().isoformat()
+                })
                 return None
             
             elif msg_type == 'session_update':
@@ -236,6 +243,10 @@ class ImprovedNativeHost:
                 if data.get('valid') and source == 'login_detection':
                     self.firefox_monitor.remove_login_tab(platform)
                 
+                # 탭이 닫히거나 Firefox가 종료된 경우도 추적 중지
+                elif source in ['tab_closed', 'firefox_closed']:
+                    self.firefox_monitor.remove_login_tab(platform)
+                
                 # 백엔드로 전달
                 await self.notify_backend('native/message', {
                     'type': 'session_update',
@@ -245,8 +256,14 @@ class ImprovedNativeHost:
                 
                 return None
             
+            elif msg_type in ['collection_result', 'llm_query_result', 'session_check_result', 'error']:
+                # 이런 메시지들은 바로 백엔드로 전달
+                await self.notify_backend('native/message', message)
+                return None
+                
             else:
                 # 기타 메시지는 백엔드로 전달
+                logger.warning(f"Unknown message type from extension: {msg_type}")
                 await self.notify_backend('native/message', message)
                 return None
                 
