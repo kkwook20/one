@@ -706,7 +706,7 @@ export default function LLMConversationTab({
   };
   
   const canSync = isBackendConnected && 
-    systemState.system_status === 'idle' &&
+    (systemState.system_status === 'ready' || systemState.system_status === 'collecting') &&
     Object.values(platformConfigs).some(p => p.enabled);
     
   const getDailyStats = () => {
@@ -739,52 +739,54 @@ export default function LLMConversationTab({
   
   // ==================== Render ====================
   
+  // System not ready check
+  if (systemState.system_status !== 'ready' && systemState.system_status !== 'collecting') {
+    return (
+      <div className="flex items-center justify-center h-[400px]">
+        <Card className="max-w-md">
+          <CardContent className="p-6 text-center">
+            <AlertCircle className="h-12 w-12 text-orange-500 mx-auto mb-4" />
+            <h3 className="text-lg font-semibold mb-2">System Initializing</h3>
+            <p className="text-sm text-gray-600 mb-4">
+              Please wait for all components to be ready before collecting data.
+            </p>
+            <div className="text-left text-sm space-y-2">
+              <div className="flex items-center gap-2">
+                {isBackendConnected ? (
+                  <CheckCircle className="h-4 w-4 text-green-500" />
+                ) : (
+                  <AlertCircle className="h-4 w-4 text-gray-400" />
+                )}
+                <span>Backend Connection</span>
+              </div>
+              <div className="flex items-center gap-2">
+                {systemState.firefox_status === 'ready' ? (
+                  <CheckCircle className="h-4 w-4 text-green-500" />
+                ) : (
+                  <AlertCircle className="h-4 w-4 text-gray-400" />
+                )}
+                <span>Firefox Browser</span>
+              </div>
+              <div className="flex items-center gap-2">
+                {systemState.extension_status === 'connected' ? (
+                  <CheckCircle className="h-4 w-4 text-green-500" />
+                ) : (
+                  <AlertCircle className="h-4 w-4 text-gray-400" />
+                )}
+                <span>Browser Extension</span>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+  
   return (
     <div className="grid lg:grid-cols-3 gap-6">
       {/* Left Panel */}
       <div className="lg:col-span-2 space-y-6">
         <Section title="Data Sources">
-          {/* Connection Status Bar */}
-          <Card className="mb-6">
-            <CardContent className="p-4">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-4">
-                  <div className="flex items-center gap-2">
-                    {isBackendConnected ? (
-                      <>
-                        <Wifi className="h-4 w-4 text-green-500" />
-                        <span className="text-sm text-gray-600">Backend Connected</span>
-                      </>
-                    ) : (
-                      <>
-                        <WifiOff className="h-4 w-4 text-red-500" />
-                        <span className="text-sm text-gray-600">Backend Disconnected</span>
-                      </>
-                    )}
-                  </div>
-                  <div className="flex items-center gap-2">
-                    {systemState.extension_status === 'connected' ? (
-                      <>
-                        <Chrome className="h-4 w-4 text-green-500" />
-                        <span className="text-sm text-gray-600">Extension Connected</span>
-                      </>
-                    ) : (
-                      <>
-                        <Chrome className="h-4 w-4 text-gray-400" />
-                        <span className="text-sm text-gray-400">Extension Disconnected</span>
-                      </>
-                    )}
-                  </div>
-                </div>
-                <div className="flex items-center gap-2">
-                  <Badge variant={systemState.firefox_status === 'ready' ? 'default' : 'secondary'}>
-                    Firefox: {systemState.firefox_status}
-                  </Badge>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-
           {/* Sync Progress */}
           {systemState.sync_status && (
             <Card className="mb-6">
@@ -1014,7 +1016,7 @@ export default function LLMConversationTab({
                               variant="outline"
                               size="sm"
                               onClick={() => openLoginPage(config.key)}
-                              disabled={isChecking || isOpening || systemState.system_status !== 'idle'}
+                              disabled={isChecking || isOpening || systemState.system_status === 'collecting'}
                             >
                               <ExternalLink className="h-3 w-3 mr-1" />
                               Login
@@ -1024,7 +1026,7 @@ export default function LLMConversationTab({
                             variant="outline"
                             size="sm"
                             onClick={() => togglePlatform(config.key)}
-                            disabled={systemState.system_status !== 'idle'}
+                            disabled={systemState.system_status === 'collecting'}
                           >
                             {config.enabled ? 'Disable' : 'Enable'}
                           </Button>
@@ -1056,7 +1058,7 @@ export default function LLMConversationTab({
                 <Button 
                   variant="outline"
                   onClick={() => setShowAdvanced(!showAdvanced)}
-                  disabled={systemState.system_status !== 'idle'}
+                  disabled={systemState.system_status === 'collecting'}
                 >
                   <ChevronDown className={`h-4 w-4 mr-2 transition-transform ${
                     showAdvanced ? 'rotate-180' : ''
@@ -1202,7 +1204,7 @@ export default function LLMConversationTab({
                 variant="destructive" 
                 className="w-full"
                 onClick={cleanData}
-                disabled={systemState.system_status !== 'idle' || !isBackendConnected}
+                disabled={systemState.system_status === 'collecting' || !isBackendConnected}
               >
                 <Trash2 className="h-4 w-4 mr-2" />
                 Clean All Data
@@ -1283,49 +1285,6 @@ export default function LLMConversationTab({
                     <p className="text-sm">No activity yet</p>
                   </div>
                 )}
-              </div>
-            </CardContent>
-          </Card>
-        </Section>
-
-        <Section title="System Status">
-          <Card>
-            <CardHeader>
-              <CardTitle>System Status</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="space-y-3">
-                <div className="flex items-center justify-between text-sm">
-                  <span className="text-gray-600">Firefox</span>
-                  <Badge variant={
-                    systemState.firefox_status === 'ready' ? 'default' : 'secondary'
-                  }>
-                    {systemState.firefox_status}
-                  </Badge>
-                </div>
-                <div className="flex items-center justify-between text-sm">
-                  <span className="text-gray-600">Extension</span>
-                  <Badge variant={
-                    systemState.extension_status === 'connected' ? 'default' : 'secondary'
-                  }>
-                    {systemState.extension_status}
-                  </Badge>
-                </div>
-                <div className="flex items-center justify-between text-sm">
-                  <span className="text-gray-600">System</span>
-                  <Badge variant={
-                    systemState.system_status === 'idle' ? 'default' : 
-                    systemState.system_status === 'error' ? 'destructive' : 'secondary'
-                  }>
-                    {systemState.system_status}
-                  </Badge>
-                </div>
-                <div className="flex items-center justify-between text-sm">
-                  <span className="text-gray-600">Data Sources</span>
-                  <Badge variant="secondary">
-                    {systemState.data_sources_active} active
-                  </Badge>
-                </div>
               </div>
             </CardContent>
           </Card>

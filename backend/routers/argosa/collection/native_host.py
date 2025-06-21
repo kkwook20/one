@@ -42,6 +42,8 @@ class FirefoxMonitor:
         self.firefox_pids: Set[int] = set()
         self.login_tabs: Dict[str, Dict[str, Any]] = {}  # platform -> {tab_id, start_time}
         self._monitor_thread = None
+        # Firefox 모니터링 자동 시작
+        self.start_monitoring()
         
     def start_monitoring(self):
         """모니터링 시작"""
@@ -100,6 +102,7 @@ class FirefoxMonitor:
         """Firefox 종료 처리"""
         logger.info(f"Handling Firefox closed event. Login tabs: {list(self.login_tabs.keys())}")
         
+        # 로그인 대기 중인 플랫폼에 대해 알림
         for platform, info in list(self.login_tabs.items()):
             logger.info(f"Sending firefox_closed event for {platform}")
             await self.callback('firefox_closed', {
@@ -108,6 +111,14 @@ class FirefoxMonitor:
                 'source': 'firefox_monitor'
             })
         self.login_tabs.clear()
+        
+        # Firefox 종료 자체도 백엔드에 알림
+        logger.info("Notifying backend that Firefox completely closed")
+        await self.callback('firefox_closed', {
+            'firefox_status': 'closed',
+            'extension_status': 'disconnected',
+            'source': 'firefox_monitor'
+        })
     
     def add_login_tab(self, platform: str, tab_info: Dict[str, Any]):
         """로그인 탭 추가"""
@@ -193,10 +204,15 @@ class ImprovedNativeHost:
                 # Firefox 모니터링 시작
                 self.firefox_monitor.start_monitoring()
                 
-                # 백엔드에 연결 상태 알림
-                await self.notify_backend('native/status', {
-                    'status': 'connected',
-                    'timestamp': datetime.now().isoformat()
+                # 백엔드에 연결 상태 즉시 알림
+                await self.notify_backend('native/message', {
+                    'type': 'init',
+                    'id': msg_id,
+                    'data': {
+                        'status': 'connected',
+                        'extension_connected': True,
+                        'timestamp': datetime.now().isoformat()
+                    }
                 })
                 
                 return {
@@ -206,20 +222,10 @@ class ImprovedNativeHost:
                     'capabilities': ['collect', 'llm_query', 'session_check', 'open_login_page']
                 }
             
-            elif msg_type == 'heartbeat':
-                # 하트비트 처리
-                await self.notify_backend('native/status', {
-                    'status': 'alive',
-                    'timestamp': datetime.now().isoformat(),
-                    'sessions': data.get('sessions', {}),
-                    'firefox_running': len(self.firefox_monitor.firefox_pids) > 0
-                })
-                
-                return {
-                    'type': 'heartbeat_ack',
-                    'id': msg_id,
-                    'timestamp': datetime.now().isoformat()
-                }
+            elif msg_type == 'init_ack':
+                # Extension이 init_response를 받았다는 확인
+                logger.info("Extension acknowledged initialization")
+                return None
             
             elif msg_type == 'session_update':
                 # 세션 업데이트
@@ -285,8 +291,11 @@ class ImprovedNativeHost:
                         data = await response.json()
                         commands = data.get('commands', [])
                         
-                        for cmd in commands:
-                            await self.process_backend_command(cmd)
+                        # 명령이 있을 때만 로그
+                        if commands:
+                            logger.info(f"Got {len(commands)} pending commands")
+                            for cmd in commands:
+                                await self.process_backend_command(cmd)
                 
                 await asyncio.sleep(2)
                 

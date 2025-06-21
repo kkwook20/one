@@ -467,7 +467,44 @@ async def complete_command_endpoint(command_id: str, result: Dict[str, Any]):
 async def update_native_status(status: Dict[str, Any]):
     """Native Host 상태 업데이트"""
     logger.info(f"Native status update: {status}")
-    return {"status": "ok"}
+    
+    # 상태 정보 파싱
+    status_type = status.get('status')
+    
+    if status_type == 'connected':
+        # Extension 연결됨
+        await state_manager.update_state("extension_status", "connected")
+        await state_manager.update_state("extension_last_seen", datetime.now().isoformat())
+        
+        # extension_connected 플래그 확인
+        if status.get('extension_connected'):
+            await state_manager.update_state("firefox_status", "ready")
+            
+        logger.info("Extension connected and status updated")
+        
+    elif status_type == 'disconnected':
+        # Extension 연결 해제
+        await state_manager.update_state("extension_status", "disconnected")
+        await state_manager.update_state("firefox_status", "closed")
+        logger.info("Extension disconnected")
+        
+    elif status_type == 'alive':
+        # Extension이 살아있음을 확인
+        await state_manager.update_state("extension_last_seen", datetime.now().isoformat())
+        
+        # sessions 정보가 있으면 업데이트
+        if 'sessions' in status:
+            await state_manager.update_state("sessions", status['sessions'])
+            
+        # Firefox 상태 확인
+        if 'firefox_running' in status:
+            firefox_status = "ready" if status['firefox_running'] else "closed"
+            await state_manager.update_state("firefox_status", firefox_status)
+    
+    # WebSocket으로 상태 브로드캐스트
+    await state_manager.broadcast_state()
+    
+    return {"status": "ok", "updated": True}
 
 @router.post("/native/message")
 @with_retry(max_retries=3)  # 데코레이터 추가

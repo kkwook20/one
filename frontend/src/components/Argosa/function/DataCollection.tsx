@@ -31,7 +31,7 @@ const WS_URL = 'ws://localhost:8000/api/argosa/data/ws/state';
 // ======================== Type Definitions ========================
 
 export interface SystemState {
-  system_status: 'idle' | 'preparing' | 'collecting' | 'error';
+  system_status: 'initializing' | 'ready' | 'collecting' | 'error';
   sessions: Record<string, SessionInfo>;
   sync_status: SyncStatus | null;
   firefox_status: 'closed' | 'opening' | 'ready' | 'error';
@@ -85,7 +85,7 @@ export default function DataCollection() {
   
   // System State
   const [systemState, setSystemState] = useState<SystemState>({
-    system_status: 'idle',
+    system_status: 'initializing',
     sessions: {},
     sync_status: null,
     firefox_status: 'closed',
@@ -110,6 +110,12 @@ export default function DataCollection() {
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const statsIntervalRef = useRef<NodeJS.Timeout | null>(null);
   
+  // ==================== Computed Values ====================
+  
+  const isBackendConnected = wsRef.current?.readyState === WebSocket.OPEN || 
+    systemState.extension_status === 'connected' ||
+    Object.keys(systemState.sessions).length > 0;
+  
   // ==================== WebSocket Management ====================
   
   const connectWebSocket = useCallback(() => {
@@ -133,7 +139,6 @@ export default function DataCollection() {
             console.log('[WebSocket] State update:', message.data);
             setSystemState(message.data);
           }
-          // ping/pong 제거됨
         } catch (error) {
           console.error('WebSocket message error:', error);
         }
@@ -207,10 +212,40 @@ export default function DataCollection() {
   
   // ==================== Effects ====================
   
+  // Auto-check and update system status
   useEffect(() => {
-    // Check Firefox status on mount
-    checkFirefoxStatus();
+    const checkSystemReady = () => {
+      const isReady = isBackendConnected && 
+        systemState.firefox_status === 'ready' && 
+        systemState.extension_status === 'connected';
+      
+      const newStatus = isReady ? 'ready' : 'initializing';
+      
+      if (systemState.system_status !== newStatus && systemState.system_status !== 'collecting') {
+        setSystemState(prev => ({
+          ...prev,
+          system_status: newStatus
+        }));
+      }
+    };
     
+    checkSystemReady();
+  }, [isBackendConnected, systemState.firefox_status, systemState.extension_status, systemState.system_status]);
+  
+  // Check Firefox on mount
+  useEffect(() => {
+    const initializeSystem = async () => {
+      // Firefox가 실행되지 않았다면 자동으로 실행
+      if (systemState.firefox_status === 'closed') {
+        await checkFirefoxStatus();
+      }
+    };
+    
+    initializeSystem();
+  }, [systemState.firefox_status, checkFirefoxStatus]); // firefox_status 변경 시 재실행
+  
+  // Main initialization effect
+  useEffect(() => {
     // Connect WebSocket
     connectWebSocket();
     
@@ -235,7 +270,7 @@ export default function DataCollection() {
         clearInterval(statsIntervalRef.current);
       }
     };
-  }, [connectWebSocket, loadStats, loadSystemStatus, checkFirefoxStatus]);
+  }, [connectWebSocket, loadStats, loadSystemStatus]);
   
   // Auto-clear messages
   useEffect(() => {
@@ -252,12 +287,6 @@ export default function DataCollection() {
     }
   }, [successMessage]);
   
-  // ==================== Computed Values ====================
-  
-  const isBackendConnected = wsRef.current?.readyState === WebSocket.OPEN || 
-    systemState.extension_status === 'connected' ||
-    Object.keys(systemState.sessions).length > 0;
-  
   // ==================== Render ====================
   
   return (
@@ -269,7 +298,7 @@ export default function DataCollection() {
             <h1 className="text-2xl font-semibold tracking-tight">Data Collection Hub</h1>
             <p className="text-sm text-gray-600">Collect and analyze data from multiple sources</p>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-4">
             {/* Backend Status */}
             <div className="flex items-center gap-2 text-sm">
               {isBackendConnected ? (
@@ -281,6 +310,26 @@ export default function DataCollection() {
                 <>
                   <WifiOff className="h-4 w-4 text-red-500" />
                   <span className="text-gray-600">Backend</span>
+                </>
+              )}
+            </div>
+            
+            {/* Firefox Status */}
+            <div className="flex items-center gap-2 text-sm">
+              {systemState.firefox_status === 'ready' ? (
+                <>
+                  <Globe className="h-4 w-4 text-green-500" />
+                  <span className="text-gray-600">Firefox</span>
+                </>
+              ) : systemState.firefox_status === 'opening' ? (
+                <>
+                  <Globe className="h-4 w-4 text-orange-500 animate-pulse" />
+                  <span className="text-gray-600">Firefox</span>
+                </>
+              ) : (
+                <>
+                  <Globe className="h-4 w-4 text-gray-400" />
+                  <span className="text-gray-400">Firefox</span>
                 </>
               )}
             </div>
@@ -306,7 +355,12 @@ export default function DataCollection() {
             </div>
             
             {/* System Status */}
-            <Badge variant={systemState.system_status === 'collecting' ? "default" : "secondary"}>
+            <Badge variant={
+              systemState.system_status === 'ready' ? "default" : 
+              systemState.system_status === 'collecting' ? "default" : 
+              systemState.system_status === 'initializing' ? "secondary" : 
+              "destructive"
+            }>
               {systemState.system_status}
             </Badge>
           </div>
@@ -360,14 +414,29 @@ export default function DataCollection() {
             </Alert>
           )}
 
+          {/* System Initializing Alert */}
+          {systemState.system_status === 'initializing' && (
+            <Alert className="mb-6 border-orange-200 bg-orange-50">
+              <AlertCircle className="h-4 w-4 text-orange-600" />
+              <AlertDescription className="text-orange-800">
+                <strong>System Initializing:</strong> Waiting for all components to be ready...
+                <div className="mt-2 text-sm">
+                  <div>✓ Backend: {isBackendConnected ? 'Connected' : 'Connecting...'}</div>
+                  <div>✓ Firefox: {systemState.firefox_status === 'ready' ? 'Ready' : systemState.firefox_status === 'opening' ? 'Opening...' : 'Not running'}</div>
+                  <div>✓ Extension: {systemState.extension_status === 'connected' ? 'Connected' : 'Waiting...'}</div>
+                </div>
+              </AlertDescription>
+            </Alert>
+          )}
+
           {/* Main Tabs */}
           <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
             <TabsList className="grid w-full grid-cols-3">
-              <TabsTrigger value="web" disabled={systemState.system_status !== 'idle'}>
+              <TabsTrigger value="web" disabled={systemState.system_status !== 'ready'}>
                 <Globe className="h-4 w-4 mr-2" />
                 Web Crawler
               </TabsTrigger>
-              <TabsTrigger value="llm" className="relative">
+              <TabsTrigger value="llm" className="relative" disabled={systemState.system_status !== 'ready' && systemState.system_status !== 'collecting'}>
                 <Bot className="h-4 w-4 mr-2" />
                 LLM Conversations
                 {systemState.system_status === 'collecting' && (
@@ -377,7 +446,7 @@ export default function DataCollection() {
                   </span>
                 )}
               </TabsTrigger>
-              <TabsTrigger value="llm-query" disabled={systemState.system_status !== 'idle'}>
+              <TabsTrigger value="llm-query" disabled={systemState.system_status !== 'ready'}>
                 <MessageSquare className="h-4 w-4 mr-2" />
                 LLM Query
               </TabsTrigger>

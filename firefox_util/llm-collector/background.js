@@ -215,37 +215,42 @@ class NativeExtension {
   }
   
   async handleNativeMessage(message) {
-    const { id, type, data } = message;
+      const { id, type, data } = message;
 
-    console.log('[Extension] Received native message:', type, data);
+      console.log('[Extension] Received native message:', type, data);
 
-    switch (type) {
-      case 'collect_conversations':
-        await this.handleCollectCommand(id, data);
-        break;
-        
-      case 'execute_llm_query':
-        await this.handleLLMQueryCommand(id, data);
-        break;
-        
-      case 'check_session':
-        await this.handleSessionCheck(id, data);
-        break;
-        
-      case 'update_settings':
-        this.settings = { ...this.settings, ...data };
-        await this.saveSettings();
-        break;
-        
-      case 'open_login_page':
-        console.log('[Extension] Opening login page for:', data.platform);
-        await this.handleOpenLoginPage(id, data);
-        break;
-        
-      default:
-        console.warn('[Extension] Unknown native command:', type);
+      switch (type) {
+        case 'init_response':
+          // Native Host 초기화 완료
+          console.log('[Extension] Native Host initialized successfully');
+          break;
+          
+        case 'collect_conversations':
+          await this.handleCollectCommand(id, data);
+          break;
+          
+        case 'execute_llm_query':
+          await this.handleLLMQueryCommand(id, data);
+          break;
+          
+        case 'check_session':
+          await this.handleSessionCheck(id, data);
+          break;
+          
+        case 'update_settings':
+          this.settings = { ...this.settings, ...data };
+          await this.saveSettings();
+          break;
+          
+        case 'open_login_page':
+          console.log('[Extension] Opening login page for:', data.platform);
+          await this.handleOpenLoginPage(id, data);
+          break;
+          
+        default:
+          console.warn('[Extension] Unknown native command:', type);
+      }
     }
-  }
 
   async handleOpenLoginPage(messageId, data) {
     const { platform, url } = data;
@@ -1001,14 +1006,3 @@ const extension = new NativeExtension();
 
 // Export for debugging
 window.llmCollectorExtension = extension;
-
-// Status check every 30 seconds
-setInterval(() => {
-  console.log('[Extension] Status:', {
-    nativeConnected: extension.nativeConnected,
-    sessions: extension.getSessionStates(),
-    collecting: extension.state.collecting,
-    messageQueueLength: extension.messageQueue.length,
-    activeLoginChecks: extension.loginCheckIntervals.size
-  });
-}, 30000);
