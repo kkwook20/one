@@ -236,55 +236,40 @@ class NativeExtension {
   }
   
   async handleNativeMessage(message) {
-    const { id, type, data, status } = message;
+    const { id, type } = message;
+    console.log('[Extension] Received native message:', type);
 
-    console.log('[Extension] Received native message:', type, data);
-
-    switch (type) {
-      case 'init_response':
-        console.log('[Extension] Native Host initialized successfully');
-        // Backend로 연결 상태 알림
-        await this.notifyBackendStatus('connected', {
-          capabilities: message.capabilities || [],
-          nativeHost: true,
-          status: status
-        });
-        
-        // init_ack 전송 (선택사항)
-        this.sendNativeMessage({
-          type: 'init_ack',
-          id: id
-        });
-        break; // 🔴 이 break가 누락되어 있었음!
-        
-      case 'collect_conversations':
-        await this.handleCollectCommand(id, data);
-        break;
-        
-      case 'execute_llm_query':
-        await this.handleLLMQueryCommand(id, data);
-        break;
-        
-      case 'check_session':
-        await this.handleSessionCheck(id, data);
-        break;
-        
-      case 'update_settings':
-        this.settings = { ...this.settings, ...data };
-        await this.saveSettings();
-        break;
-        
-      case 'open_login_page':
-        console.log('[Extension] Opening login page for:', data.platform);
-        await this.handleOpenLoginPage(id, data);
-        break;
-        
-      case 'error':
-        console.error('[Extension] Native Host error:', data);
-        break;
-        
-      default:
-        console.warn('[Extension] Unknown native command:', type);
+    if (type === 'init_response') {
+      console.log('[Extension] Native Host initialized successfully');
+      await this.notifyBackendStatus('connected', {
+        capabilities: message.capabilities || [],
+        nativeHost: true,
+        status: message.status
+      });
+      this.sendNativeMessage({ type: 'init_ack', id: id });
+    }
+    else if (type === 'collect_conversations') {
+      await this.handleCollectCommand(id, message.data);
+    }
+    else if (type === 'execute_llm_query') {
+      await this.handleLLMQueryCommand(id, message.data);
+    }
+    else if (type === 'check_session') {
+      await this.handleSessionCheck(id, message.data);
+    }
+    else if (type === 'update_settings') {
+      this.settings = { ...this.settings, ...message.data };
+      await this.saveSettings();
+    }
+    else if (type === 'open_login_page') {
+      console.log('[Extension] Opening login page for:', message.data?.platform);
+      await this.handleOpenLoginPage(id, message.data);
+    }
+    else if (type === 'error') {
+      console.error('[Extension] Native Host error:', message.data);
+    }
+    else {
+      console.warn('[Extension] Unknown native command:', type);
     }
   }
 

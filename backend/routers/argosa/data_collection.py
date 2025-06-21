@@ -1012,3 +1012,20 @@ async def save_conversations_internal(data: Dict[str, Any]):
         conversations=data['conversations'],
         metadata=data.get('metadata', {})
     )
+async def handle_session_update(self, data):
+    platform = data.get('platform')
+    source = data.get('source')
+    
+    if source == 'firefox_closed':
+        # Firefox 종료 감지
+        await self.update_platform_status(platform, 'browser_closed')
+        
+        # WebSocket으로 UI 업데이트
+        await self.notify_ui({
+            'type': 'browser_closed',
+            'platform': platform,
+            'message': 'Firefox was closed. Please retry.'
+        })
+        
+        # 재시도 옵션 활성화
+        self.enable_retry_for_platform(platform)
