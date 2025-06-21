@@ -18,7 +18,9 @@ const PLATFORMS = {
       () => window.location.pathname === '/chat' || window.location.pathname.startsWith('/c/'),
       () => !window.location.pathname.includes('auth'),
       () => !!document.querySelector('[data-testid="profile-button"]')
-    ]
+    ],
+    sessionCheckUrl: 'https://chat.openai.com/backend-api/accounts/check',
+    sessionCheckMethod: 'GET'
   },
   claude: {
     name: 'Claude',
@@ -30,7 +32,9 @@ const PLATFORMS = {
     loginIndicators: [
       () => !!document.querySelector('[class*="chat"]'),
       () => !document.querySelector('button:has-text("Log in")')
-    ]
+    ],
+    sessionCheckUrl: 'https://claude.ai/api/organizations',
+    sessionCheckMethod: 'GET'
   },
   gemini: {
     name: 'Gemini',
@@ -41,7 +45,9 @@ const PLATFORMS = {
     loginSelectors: ['[aria-label*="Google Account"]'],
     loginIndicators: [
       () => !!document.querySelector('[aria-label*="Google Account"]')
-    ]
+    ],
+    sessionCheckUrl: 'https://gemini.google.com/app',
+    sessionCheckMethod: 'GET'
   },
   deepseek: {
     name: 'DeepSeek',
@@ -52,7 +58,9 @@ const PLATFORMS = {
     loginSelectors: ['[class*="avatar"]'],
     loginIndicators: [
       () => !!document.querySelector('[class*="avatar"]')
-    ]
+    ],
+    sessionCheckUrl: 'https://chat.deepseek.com/api/v0/user/info',
+    sessionCheckMethod: 'GET'
   },
   grok: {
     name: 'Grok',
@@ -63,7 +71,9 @@ const PLATFORMS = {
     loginSelectors: ['[data-testid="SideNav_AccountSwitcher_Button"]'],
     loginIndicators: [
       () => !!document.querySelector('[data-testid="SideNav_AccountSwitcher_Button"]')
-    ]
+    ],
+    sessionCheckUrl: 'https://grok.x.ai/api/user',
+    sessionCheckMethod: 'GET'
   },
   perplexity: {
     name: 'Perplexity',
@@ -74,7 +84,9 @@ const PLATFORMS = {
     loginSelectors: ['[class*="profile"]'],
     loginIndicators: [
       () => !!document.querySelector('[class*="profile"]')
-    ]
+    ],
+    sessionCheckUrl: 'https://www.perplexity.ai/api/auth/session',
+    sessionCheckMethod: 'GET'
   }
 };
 
@@ -133,6 +145,14 @@ class NativeExtension {
       if (message.type === 'startCollection') {
         this.handleCollectCommand('popup', message.data);
         sendResponse({ success: true });
+        return true;
+      }
+      
+      // Session check from content script
+      if (message.action === 'checkSessionInTab') {
+        this.checkSessionInNewTab(message.platform, message.url)
+          .then(result => sendResponse(result))
+          .catch(error => sendResponse({ valid: false, error: error.message }));
         return true;
       }
     });
@@ -241,12 +261,23 @@ class NativeExtension {
 
     if (type === 'init_response') {
       console.log('[Extension] Native Host initialized successfully');
+      
+      // Extension 초기화 시 모든 세션 체크
+      const checkAllSessions = message.check_all_sessions;
+      
       await this.notifyBackendStatus('connected', {
         capabilities: message.capabilities || [],
         nativeHost: true,
         status: message.status
       });
+      
       this.sendNativeMessage({ type: 'init_ack', id: id });
+      
+      // 모든 세션 체크
+      if (checkAllSessions) {
+        console.log('[Extension] Checking all sessions on init...');
+        await this.checkAllPlatformSessions();
+      }
     }
     else if (type === 'collect_conversations') {
       await this.handleCollectCommand(id, message.data);
@@ -271,6 +302,192 @@ class NativeExtension {
     else {
       console.warn('[Extension] Unknown native command:', type);
     }
+  }
+
+  // ======================== Session Checking ========================
+
+  async checkAllPlatformSessions() {
+    console.log('[Extension] Checking all platform sessions...');
+    
+    for (const [platform, config] of Object.entries(PLATFORMS)) {
+      try {
+        const result = await this.checkSessionInNewTab(platform, config.url);
+        
+        // Native Host로 전송
+        this.sendNativeMessage({
+          type: 'session_update',
+          id: `init_check_${platform}_${Date.now()}`,
+          data: {
+            platform: platform,
+            ...result,
+            source: 'extension_init'
+          }
+        });
+        
+        // 잠시 대기
+        await this.humanDelay(1);
+        
+      } catch (error) {
+        console.error(`[Extension] Session check failed for ${platform}:`, error);
+        
+        this.sendNativeMessage({
+          type: 'session_update',
+          id: `init_check_${platform}_${Date.now()}`,
+          data: {
+            platform: platform,
+            valid: false,
+            error: error.message,
+            source: 'extension_init'
+          }
+        });
+      }
+    }
+  }
+
+  async checkSessionInNewTab(platform, url) {
+    return new Promise(async (resolve) => {
+      try {
+        // 새 탭 생성 (백그라운드)
+        const tab = await browser.tabs.create({
+          url: url,
+          active: false
+        });
+        
+        // 탭 로드 대기
+        await this.waitForTabLoad(tab.id, 10000);
+        
+        // 세션 체크 스크립트 실행
+        const results = await browser.tabs.executeScript(tab.id, {
+          code: this.getSessionCheckCode(platform)
+        });
+        
+        // 탭 닫기
+        await browser.tabs.remove(tab.id);
+        
+        if (results && results[0]) {
+          const sessionResult = results[0];
+          
+          // 쿠키도 확인
+          const cookies = await this.getPlatformCookies(platform);
+          
+          resolve({
+            valid: sessionResult.valid,
+            status: sessionResult.valid ? 'active' : 'expired',
+            expires_at: sessionResult.expires_at,
+            cookies: cookies,
+            error: sessionResult.error
+          });
+        } else {
+          resolve({ 
+            valid: false, 
+            status: 'error',
+            error: 'Script execution failed' 
+          });
+        }
+        
+      } catch (error) {
+        console.error(`[Extension] Session check error for ${platform}:`, error);
+        resolve({ 
+          valid: false, 
+          status: 'error',
+          error: error.message 
+        });
+      }
+    });
+  }
+
+  getSessionCheckCode(platform) {
+    const config = PLATFORMS[platform];
+    
+    return `
+      (async function() {
+        try {
+          const platform = '${platform}';
+          const sessionCheckUrl = '${config.sessionCheckUrl}';
+          const method = '${config.sessionCheckMethod}';
+          
+          // API 호출로 세션 확인
+          const response = await fetch(sessionCheckUrl, {
+            method: method,
+            credentials: 'include',
+            redirect: 'manual'
+          });
+          
+          // 플랫폼별 세션 체크 로직
+          switch(platform) {
+            case 'chatgpt':
+              if (response.ok) {
+                const data = await response.json();
+                return { 
+                  valid: true,
+                  user: data.account?.email,
+                  expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()
+                };
+              }
+              // 로그인 페이지 체크
+              const isLoginPage = document.querySelector('[data-testid="login-button"]') !== null ||
+                                 window.location.pathname.includes('/auth/login');
+              return { valid: !isLoginPage };
+              
+            case 'claude':
+              if (response.ok) {
+                return {
+                  valid: true,
+                  expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()
+                };
+              }
+              // 로그인 페이지 체크
+              const isClaudeLogin = window.location.pathname === '/' && 
+                                   document.querySelector('button[aria-label="Log in"]') !== null;
+              return { valid: !isClaudeLogin };
+              
+            case 'gemini':
+              // Google은 리다이렉트로 로그인 체크
+              if (response.type === 'opaqueredirect' || response.status === 302) {
+                return { valid: false };
+              }
+              const hasSignInButton = document.querySelector('a[href*="accounts.google.com"]') !== null;
+              return { 
+                valid: !hasSignInButton,
+                expires_at: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString()
+              };
+              
+            case 'deepseek':
+              if (response.ok) {
+                return {
+                  valid: true,
+                  expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()
+                };
+              }
+              return { valid: false };
+              
+            case 'grok':
+              if (response.ok) {
+                return {
+                  valid: true,
+                  expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()
+                };
+              }
+              return { valid: false };
+              
+            case 'perplexity':
+              if (response.ok) {
+                const data = await response.json();
+                return {
+                  valid: !!data.user,
+                  expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()
+                };
+              }
+              return { valid: false };
+              
+            default:
+              return { valid: false, error: 'Unknown platform' };
+          }
+        } catch (error) {
+          return { valid: false, error: error.message };
+        }
+      })();
+    `;
   }
 
   // Firefox 종료 감지를 위한 리스너 추가
@@ -553,17 +770,36 @@ class NativeExtension {
   
   // 세션 체크
   async handleSessionCheck(messageId, data) {
-    const isValid = await this.checkSession(data.platform);
+    const platform = data.platform;
+    const force = data.force || false;
     
-    this.sendNativeMessage({
-      type: 'session_check_result',
-      id: messageId,
-      data: {
-        platform: data.platform,
-        valid: isValid,
-        checked_at: new Date().toISOString()
-      }
-    });
+    if (force) {
+      // 새 탭에서 강제 확인
+      const result = await this.checkSessionInNewTab(platform, PLATFORMS[platform].url);
+      
+      this.sendNativeMessage({
+        type: 'session_update',
+        id: messageId,
+        data: {
+          platform: platform,
+          ...result,
+          source: 'session_check'
+        }
+      });
+    } else {
+      // 기존 방식으로 체크
+      const isValid = await this.checkSession(platform);
+      
+      this.sendNativeMessage({
+        type: 'session_check_result',
+        id: messageId,
+        data: {
+          platform: platform,
+          valid: isValid,
+          checked_at: new Date().toISOString()
+        }
+      });
+    }
   }
   
   // ======================== State Management ========================

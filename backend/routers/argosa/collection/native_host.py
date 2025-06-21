@@ -222,6 +222,7 @@ class ImprovedNativeHost:
                     'id': msg_id,
                     'status': 'ready',
                     'capabilities': ['collect', 'llm_query', 'session_check', 'open_login_page']
+                    # 'check_all_sessions': True 제거
                 }
             
             elif msg_type == 'init_ack':
