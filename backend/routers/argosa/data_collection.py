@@ -997,9 +997,9 @@ async def handle_crawl_command(command):
     return {"status": "processed", "command_id": command.id}
 
 async def handle_open_login_command(command):
-    """로그인 페이지 열기 명령 처리"""
-    # Native Host가 처리하도록 함
-    return None
+    """로그인 페이지 열기 명령 처리 - Native Host가 처리하도록 패스"""
+    # 아무것도 하지 않음 - Native Host가 polling으로 가져감
+    return {"status": "pending", "message": "Waiting for Native Host to process"}
 
 # Internal helper for saving conversations
 async def save_conversations_internal(data: Dict[str, Any]):

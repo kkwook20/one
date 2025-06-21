@@ -1,4 +1,4 @@
-// Firefox Extension - background.js (Native Messaging 전용 버전)
+// Firefox Extension - firefox_util\llm-collector\background.js (Native Messaging 전용 버전)
 console.log('[LLM Collector] Extension loaded at', new Date().toISOString());
 
 // ======================== Configuration ========================
@@ -14,11 +14,6 @@ const PLATFORMS = {
     conversationDetailUrl: (id) => `https://chat.openai.com/backend-api/conversation/${id}`,
     cookieDomain: '.openai.com',
     loginSelectors: ['[data-testid="profile-button"]', 'nav button img'],
-    loginIndicators: [
-      () => window.location.pathname === '/chat' || window.location.pathname.startsWith('/c/'),
-      () => !window.location.pathname.includes('auth'),
-      () => !!document.querySelector('[data-testid="profile-button"]')
-    ],
     sessionCheckUrl: 'https://chat.openai.com/backend-api/accounts/check',
     sessionCheckMethod: 'GET'
   },
@@ -29,10 +24,6 @@ const PLATFORMS = {
     conversationDetailUrl: (id) => `https://claude.ai/api/chat_conversations/${id}`,
     cookieDomain: '.claude.ai',
     loginSelectors: ['[class*="chat"]', '[data-testid="user-menu"]'],
-    loginIndicators: [
-      () => !!document.querySelector('[class*="chat"]'),
-      () => !document.querySelector('button:has-text("Log in")')
-    ],
     sessionCheckUrl: 'https://claude.ai/api/organizations',
     sessionCheckMethod: 'GET'
   },
@@ -43,9 +34,6 @@ const PLATFORMS = {
     conversationDetailUrl: (id) => `https://gemini.google.com/api/conversations/${id}`,
     cookieDomain: '.google.com',
     loginSelectors: ['[aria-label*="Google Account"]'],
-    loginIndicators: [
-      () => !!document.querySelector('[aria-label*="Google Account"]')
-    ],
     sessionCheckUrl: 'https://gemini.google.com/app',
     sessionCheckMethod: 'GET'
   },
@@ -56,9 +44,6 @@ const PLATFORMS = {
     conversationDetailUrl: (id) => `https://chat.deepseek.com/api/v0/chat/conversation/${id}`,
     cookieDomain: '.deepseek.com',
     loginSelectors: ['[class*="avatar"]'],
-    loginIndicators: [
-      () => !!document.querySelector('[class*="avatar"]')
-    ],
     sessionCheckUrl: 'https://chat.deepseek.com/api/v0/user/info',
     sessionCheckMethod: 'GET'
   },
@@ -69,9 +54,6 @@ const PLATFORMS = {
     conversationDetailUrl: (id) => `https://grok.x.ai/api/conversations/${id}`,
     cookieDomain: '.x.ai',
     loginSelectors: ['[data-testid="SideNav_AccountSwitcher_Button"]'],
-    loginIndicators: [
-      () => !!document.querySelector('[data-testid="SideNav_AccountSwitcher_Button"]')
-    ],
     sessionCheckUrl: 'https://grok.x.ai/api/user',
     sessionCheckMethod: 'GET'
   },
@@ -82,9 +64,6 @@ const PLATFORMS = {
     conversationDetailUrl: (id) => `https://www.perplexity.ai/api/conversations/${id}`,
     cookieDomain: '.perplexity.ai',
     loginSelectors: ['[class*="profile"]'],
-    loginIndicators: [
-      () => !!document.querySelector('[class*="profile"]')
-    ],
     sessionCheckUrl: 'https://www.perplexity.ai/api/auth/session',
     sessionCheckMethod: 'GET'
   }
@@ -262,9 +241,6 @@ class NativeExtension {
     if (type === 'init_response') {
       console.log('[Extension] Native Host initialized successfully');
       
-      // Extension 초기화 시 모든 세션 체크
-      const checkAllSessions = message.check_all_sessions;
-      
       await this.notifyBackendStatus('connected', {
         capabilities: message.capabilities || [],
         nativeHost: true,
@@ -273,11 +249,7 @@ class NativeExtension {
       
       this.sendNativeMessage({ type: 'init_ack', id: id });
       
-      // 모든 세션 체크
-      if (checkAllSessions) {
-        console.log('[Extension] Checking all sessions on init...');
-        await this.checkAllPlatformSessions();
-      }
+      // Extension 초기화 시 자동 세션 체크 제거
     }
     else if (type === 'collect_conversations') {
       await this.handleCollectCommand(id, message.data);
@@ -305,44 +277,6 @@ class NativeExtension {
   }
 
   // ======================== Session Checking ========================
-
-  async checkAllPlatformSessions() {
-    console.log('[Extension] Checking all platform sessions...');
-    
-    for (const [platform, config] of Object.entries(PLATFORMS)) {
-      try {
-        const result = await this.checkSessionInNewTab(platform, config.url);
-        
-        // Native Host로 전송
-        this.sendNativeMessage({
-          type: 'session_update',
-          id: `init_check_${platform}_${Date.now()}`,
-          data: {
-            platform: platform,
-            ...result,
-            source: 'extension_init'
-          }
-        });
-        
-        // 잠시 대기
-        await this.humanDelay(1);
-        
-      } catch (error) {
-        console.error(`[Extension] Session check failed for ${platform}:`, error);
-        
-        this.sendNativeMessage({
-          type: 'session_update',
-          id: `init_check_${platform}_${Date.now()}`,
-          data: {
-            platform: platform,
-            valid: false,
-            error: error.message,
-            source: 'extension_init'
-          }
-        });
-      }
-    }
-  }
 
   async checkSessionInNewTab(platform, url) {
     return new Promise(async (resolve) => {
@@ -416,67 +350,96 @@ class NativeExtension {
           // 플랫폼별 세션 체크 로직
           switch(platform) {
             case 'chatgpt':
+              // API 체크와 UI 체크 모두 필요
               if (response.ok) {
-                const data = await response.json();
-                return { 
-                  valid: true,
-                  user: data.account?.email,
-                  expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()
-                };
+                // 실제 채팅 UI가 있는지 확인
+                const hasProfileButton = document.querySelector('[data-testid="profile-button"]') !== null;
+                const hasChatInterface = document.querySelector('textarea[data-id="root"]') !== null;
+                const isNotLoginPage = !window.location.pathname.includes('/auth');
+                
+                if (hasProfileButton && hasChatInterface && isNotLoginPage) {
+                  const data = await response.json();
+                  return { 
+                    valid: true,
+                    user: data.account?.email,
+                    expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()
+                  };
+                }
               }
-              // 로그인 페이지 체크
-              const isLoginPage = document.querySelector('[data-testid="login-button"]') !== null ||
-                                 window.location.pathname.includes('/auth/login');
-              return { valid: !isLoginPage };
+              return { valid: false };
               
             case 'claude':
               if (response.ok) {
-                return {
-                  valid: true,
-                  expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()
-                };
+                // Claude UI 확인
+                const hasComposer = document.querySelector('[data-testid="composer"]') !== null;
+                const hasUserMenu = document.querySelector('[data-testid="user-menu"]') !== null;
+                const isNotLandingPage = window.location.pathname !== '/' || hasComposer;
+                
+                if (hasComposer && hasUserMenu && isNotLandingPage) {
+                  return {
+                    valid: true,
+                    expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()
+                  };
+                }
               }
-              // 로그인 페이지 체크
-              const isClaudeLogin = window.location.pathname === '/' && 
-                                   document.querySelector('button[aria-label="Log in"]') !== null;
-              return { valid: !isClaudeLogin };
+              return { valid: false };
               
             case 'gemini':
-              // Google은 리다이렉트로 로그인 체크
-              if (response.type === 'opaqueredirect' || response.status === 302) {
-                return { valid: false };
+              // Gemini는 리다이렉트 체크 + UI 체크
+              if (!response.type === 'opaqueredirect' && response.status !== 302) {
+                const hasMessageInput = document.querySelector('[aria-label="Message Gemini"]') !== null;
+                const hasAccountButton = document.querySelector('[aria-label*="Google Account"]') !== null;
+                const noSignInButton = document.querySelector('a[href*="accounts.google.com"]') === null;
+                
+                if (hasMessageInput && hasAccountButton && noSignInButton) {
+                  return { 
+                    valid: true,
+                    expires_at: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString()
+                  };
+                }
               }
-              const hasSignInButton = document.querySelector('a[href*="accounts.google.com"]') !== null;
-              return { 
-                valid: !hasSignInButton,
-                expires_at: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString()
-              };
+              return { valid: false };
               
             case 'deepseek':
               if (response.ok) {
-                return {
-                  valid: true,
-                  expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()
-                };
+                const hasChatInput = document.querySelector('[class*="chat-input"]') !== null;
+                const hasAvatar = document.querySelector('[class*="avatar"]') !== null;
+                
+                if (hasChatInput && hasAvatar) {
+                  return {
+                    valid: true,
+                    expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()
+                  };
+                }
               }
               return { valid: false };
               
             case 'grok':
               if (response.ok) {
-                return {
-                  valid: true,
-                  expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()
-                };
+                const hasComposer = document.querySelector('[data-testid="MessageComposer"]') !== null;
+                const hasAccountButton = document.querySelector('[data-testid="SideNav_AccountSwitcher_Button"]') !== null;
+                
+                if (hasComposer && hasAccountButton) {
+                  return {
+                    valid: true,
+                    expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()
+                  };
+                }
               }
               return { valid: false };
               
             case 'perplexity':
               if (response.ok) {
                 const data = await response.json();
-                return {
-                  valid: !!data.user,
-                  expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()
-                };
+                const hasSearchBar = document.querySelector('[class*="SearchBar"]') !== null;
+                const hasProfile = document.querySelector('[class*="profile"]') !== null;
+                
+                if (data.user && hasSearchBar && hasProfile) {
+                  return {
+                    valid: !!data.user,
+                    expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()
+                  };
+                }
               }
               return { valid: false };
               
@@ -595,10 +558,10 @@ class NativeExtension {
           return;
         }
         
-        // 세션 체크
-        const isValid = await this.checkSession(platform);
+        // 세션 체크 - checkSessionInNewTab 사용
+        const result = await this.checkSessionInNewTab(platform, config.url);
         
-        if (isValid) {
+        if (result.valid) {
           console.log(`✅ [Extension] ${platform} login detected!`);
           
           clearInterval(checkInterval);
@@ -615,7 +578,7 @@ class NativeExtension {
               platform: platform,
               valid: true,
               source: 'login_detection',
-              cookies: await this.getPlatformCookies(platform)
+              cookies: result.cookies
             }
           });
         }
@@ -773,33 +736,18 @@ class NativeExtension {
     const platform = data.platform;
     const force = data.force || false;
     
-    if (force) {
-      // 새 탭에서 강제 확인
-      const result = await this.checkSessionInNewTab(platform, PLATFORMS[platform].url);
-      
-      this.sendNativeMessage({
-        type: 'session_update',
-        id: messageId,
-        data: {
-          platform: platform,
-          ...result,
-          source: 'session_check'
-        }
-      });
-    } else {
-      // 기존 방식으로 체크
-      const isValid = await this.checkSession(platform);
-      
-      this.sendNativeMessage({
-        type: 'session_check_result',
-        id: messageId,
-        data: {
-          platform: platform,
-          valid: isValid,
-          checked_at: new Date().toISOString()
-        }
-      });
-    }
+    // 항상 checkSessionInNewTab 사용
+    const result = await this.checkSessionInNewTab(platform, PLATFORMS[platform].url);
+    
+    this.sendNativeMessage({
+      type: 'session_update',
+      id: messageId,
+      data: {
+        platform: platform,
+        ...result,
+        source: 'session_check'
+      }
+    });
   }
   
   // ======================== State Management ========================
@@ -858,35 +806,6 @@ class NativeExtension {
   
   // ======================== Session Management ========================
   
-  async checkSession(platform) {
-    const config = PLATFORMS[platform];
-    if (!config) return false;
-    
-    // Check cookies first
-    try {
-      const cookies = await browser.cookies.getAll({
-        domain: config.cookieDomain
-      });
-      
-      const hasAuthCookie = cookies.some(c => 
-        c.name.includes('session') || 
-        c.name.includes('auth') || 
-        c.name.includes('token') ||
-        c.name.includes('login')
-      );
-      
-      if (hasAuthCookie) {
-        this.updateSessionState(platform, true);
-        return true;
-      }
-    } catch (error) {
-      console.error(`[Extension] Cookie check failed for ${platform}:`, error);
-    }
-    
-    this.updateSessionState(platform, false);
-    return false;
-  }
-  
   async getPlatformCookies(platform) {
     const config = PLATFORMS[platform];
     if (!config) return [];
@@ -927,64 +846,6 @@ class NativeExtension {
     this.saveState();
   }
   
-  async checkTabSession(tabId, platform) {
-    try {
-      const results = await browser.tabs.executeScript(tabId, {
-        code: `(${this.checkSessionInPage.toString()})('${platform}')`
-      });
-      
-      return results[0] || false;
-    } catch (error) {
-      console.error(`[Extension] Failed to check session in tab:`, error);
-      return false;
-    }
-  }
-  
-  checkSessionInPage(platform) {
-    // This runs in the page context
-    const config = {
-      chatgpt: {
-        selectors: ['[data-testid="profile-button"]', 'nav button img'],
-        urlCheck: () => window.location.pathname === '/chat' || window.location.pathname.startsWith('/c/')
-      },
-      claude: {
-        selectors: ['[class*="chat"]', '[data-testid="user-menu"]'],
-        urlCheck: () => !window.location.pathname.includes('auth')
-      },
-      gemini: {
-        selectors: ['[aria-label*="Google Account"]'],
-        urlCheck: () => true
-      },
-      deepseek: {
-        selectors: ['[class*="avatar"]'],
-        urlCheck: () => true
-      },
-      grok: {
-        selectors: ['[data-testid="SideNav_AccountSwitcher_Button"]'],
-        urlCheck: () => true
-      },
-      perplexity: {
-        selectors: ['[class*="profile"]'],
-        urlCheck: () => true
-      }
-    };
-    
-    const platformConfig = config[platform];
-    if (!platformConfig) return false;
-    
-    // Check URL
-    if (!platformConfig.urlCheck()) return false;
-    
-    // Check for login indicators
-    for (const selector of platformConfig.selectors) {
-      if (document.querySelector(selector)) {
-        return true;
-      }
-    }
-    
-    return false;
-  }
-  
   // ======================== Data Collection ========================
   
   async collectFromPlatform(platform, settings, excludeIds = []) {
@@ -1002,10 +863,10 @@ class NativeExtension {
       await this.waitForTabLoad(tab.id);
       await this.humanDelay(3);
       
-      // Check session
-      const isLoggedIn = await this.checkTabSession(tab.id, platform);
+      // Check session using checkSessionInNewTab
+      const sessionResult = await this.checkSessionInNewTab(platform, config.url);
       
-      if (!isLoggedIn) {
+      if (!sessionResult.valid) {
         console.log(`[Extension] ${platform} session invalid, skipping...`);
         return { conversations: [], excluded: [] };
       }

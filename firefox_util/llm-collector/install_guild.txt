@@ -20,30 +20,29 @@ if ($profileFolder) {
 $extensionSourcePath = "F:\ONE_AI\firefox_util\llm-collector"
 $profilePath = "F:\ONE_AI\firefox-profile"
 
-# 프로필 폴더 존재 확인
 if (Test-Path $profilePath) {
     Write-Host "Found profile at: $profilePath"
     
-    # extensions 폴더 경로
     $extensionsPath = Join-Path $profilePath "extensions"
     
-    # extensions 폴더 생성
     if (!(Test-Path $extensionsPath)) {
         New-Item -ItemType Directory -Path $extensionsPath -Force
     }
-    
-    # Extension 대상 경로 (ID를 폴더명으로 사용)
+
     $extensionDestPath = Join-Path $extensionsPath "llm-collector@argosa.ai"
 
-    # Extension 복사
-    Copy-Item -Path $extensionSourcePath -Destination $extensionDestPath -Recurse -Force
+    # 폴더가 이미 있으면 삭제 (옵션)
+    if (Test-Path $extensionDestPath) {
+        Remove-Item -Recurse -Force $extensionDestPath
+    }
+    New-Item -ItemType Directory -Path $extensionDestPath | Out-Null
+
+    # ✅ 파일/하위폴더만 복사 (중첩 방지!)
+    Copy-Item -Path "$extensionSourcePath\*" -Destination $extensionDestPath -Recurse -Force
+
     Write-Host "Extension copied successfully!"
-    
-    # 설치 확인
-    Write-Host "`nInstalled extensions:"
-    Get-ChildItem $extensionsPath | Format-Table Name, LastWriteTime
-    
-    # manifest.json 확인
+
+    # 확인
     $manifestPath = Join-Path $extensionDestPath "manifest.json"
     if (Test-Path $manifestPath) {
         Write-Host "`nExtension installed to: $extensionDestPath"

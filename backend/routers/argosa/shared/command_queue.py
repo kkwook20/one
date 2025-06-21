@@ -32,6 +32,18 @@ class CommandStatus:
     CANCELLED = "cancelled"
     TIMEOUT = "timeout"
 
+# 명령 타겟 정의
+COMMAND_TARGETS = {
+    # Native Host 명령들
+    'open_login_page': 'native_host',
+    'check_session': 'native_host',
+    'collect_conversations': 'native_host',
+    'execute_llm_query': 'native_host',
+    'crawl_web': 'native_host',
+    'youtube_analyze': 'native_host',
+    # Backend 명령들은 정의하지 않음 (기본값이 'backend')
+}
+
 @dataclass
 class Command:
     """명령 데이터 클래스"""
@@ -204,11 +216,24 @@ class ImprovedCommandQueue:
         return False
     
     async def get_pending_commands(self, limit: int = 10) -> List[Dict[str, Any]]:
-        """대기 중인 명령 목록"""
+        """대기 중인 명령 목록 - Native Host용 명령은 큐에서 제거"""
         async with self._lock:
-            # 우선순위 순으로 정렬된 명령들
-            sorted_commands = sorted(self._queue)[:limit]
-            return [self._command_to_dict(cmd) for cmd in sorted_commands]
+            native_commands = []
+            remaining_queue = []
+            
+            # 큐를 순회하며 Native Host 명령 추출
+            while self._queue and len(native_commands) < limit:
+                cmd = heapq.heappop(self._queue)
+                if COMMAND_TARGETS.get(cmd.type, 'backend') == 'native_host':
+                    native_commands.append(self._command_to_dict(cmd))
+                else:
+                    remaining_queue.append(cmd)
+            
+            # 나머지를 다시 큐에 넣기
+            for cmd in remaining_queue:
+                heapq.heappush(self._queue, cmd)
+            
+            return native_commands
     
     async def _worker_loop(self):
         """명령 처리 워커"""
@@ -257,15 +282,22 @@ class ImprovedCommandQueue:
                         
                         logger.error(f"Command {cmd_id} timed out")
             
-            # 다음 명령 가져오기
-            if self._queue:
-                command = heapq.heappop(self._queue)
-                command.status = CommandStatus.PROCESSING
-                command.started_at = datetime.now(timezone.utc)
-                self._processing[command.id] = command
-                return command
-        
-        return None
+            # Native Host용이 아닌 명령 찾기
+            for i, cmd in enumerate(self._queue):
+                if COMMAND_TARGETS.get(cmd.type, 'backend') == 'native_host':
+                    continue  # Native Host용은 건너뛰기
+                
+                # Backend용 명령 발견
+                self._queue.pop(i)
+                heapq.heapify(self._queue)
+                
+                cmd.status = CommandStatus.PROCESSING
+                cmd.started_at = datetime.now(timezone.utc)
+                self._processing[cmd.id] = cmd
+                return cmd
+            
+            # Backend용 명령이 없음
+            return None
     
     async def _process_command(self, command: Command):
         """명령 처리"""
@@ -445,4 +477,3 @@ class ImprovedCommandQueue:
 
 # 싱글톤 인스턴스
 command_queue = ImprovedCommandQueue()
-
