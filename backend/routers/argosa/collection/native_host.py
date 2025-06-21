@@ -181,9 +181,11 @@ class ImprovedNativeHost:
             encoded = self.encode_message(message)
             sys.stdout.buffer.write(encoded)
             sys.stdout.buffer.flush()
-            logger.info(f"Sent to extension: {message.get('type')}")
+            logger.info(f"Sent to extension: {message.get('type')} (size: {len(encoded)})")
+            logger.debug(f"Full message: {message}")
         except Exception as e:
             logger.error(f"Failed to send message: {e}")
+            logger.error(traceback.format_exc())
     
     def encode_message(self, message: Dict[str, Any]) -> bytes:
         """메시지 인코딩"""
@@ -380,44 +382,78 @@ class ImprovedNativeHost:
     
     async def read_stdin(self):
         """stdin에서 메시지 읽기"""
-        buffer = b''
+        logger.info("Starting stdin reader...")
         
-        while self.running:
-            try:
-                chunk = await asyncio.get_event_loop().run_in_executor(
-                    None, 
-                    lambda: sys.stdin.buffer.read(1024)
+        # 동기 방식으로 읽기 (Windows에서 더 안정적)
+        def read_stdin_sync():
+            buffer = b''
+            
+            while self.running:
+                try:
+                    # 4바이트 길이 헤더 읽기
+                    while len(buffer) < 4:
+                        chunk = sys.stdin.buffer.read(1)
+                        if not chunk:
+                            logger.info("Extension disconnected - no data")
+                            return None
+                        buffer += chunk
+                    
+                    # 메시지 길이 추출
+                    message_length = struct.unpack('I', buffer[:4])[0]
+                    logger.debug(f"Message length: {message_length}")
+                    
+                    # 메시지 본문 읽기
+                    buffer = b''
+                    while len(buffer) < message_length:
+                        remaining = message_length - len(buffer)
+                        chunk = sys.stdin.buffer.read(remaining)
+                        if not chunk:
+                            logger.error("Extension disconnected while reading message")
+                            return None
+                        buffer += chunk
+                    
+                    # 메시지 디코드
+                    try:
+                        message = json.loads(buffer.decode('utf-8'))
+                        logger.info(f"Received from extension: {message}")
+                        return message
+                    except Exception as e:
+                        logger.error(f"Failed to decode message: {e}")
+                        logger.error(f"Raw data: {buffer}")
+                        continue
+                        
+                except Exception as e:
+                    logger.error(f"Error in read_stdin_sync: {e}")
+                    logger.error(traceback.format_exc())
+                    return None
+        
+        # 비동기로 실행
+        try:
+            while self.running:
+                message = await asyncio.get_event_loop().run_in_executor(
+                    None, read_stdin_sync
                 )
                 
-                if not chunk:
-                    logger.info("Extension disconnected")
+                if message is None:
+                    logger.info("Stdin reader stopping - no message")
                     self.running = False
                     break
                 
-                buffer += chunk
-                
                 # 메시지 처리
-                while len(buffer) >= 4:
-                    message_length = struct.unpack('I', buffer[:4])[0]
+                try:
+                    response = await self.handle_extension_message(message)
+                    if response:
+                        await self.send_to_extension(response)
+                except Exception as e:
+                    logger.error(f"Error handling message: {e}")
+                    logger.error(traceback.format_exc())
                     
-                    if len(buffer) >= 4 + message_length:
-                        message_data = buffer[4:4 + message_length]
-                        buffer = buffer[4 + message_length:]
-                        
-                        try:
-                            message = json.loads(message_data.decode('utf-8'))
-                            response = await self.handle_extension_message(message)
-                            if response:
-                                await self.send_to_extension(response)
-                        except Exception as e:
-                            logger.error(f"Failed to process message: {e}")
-                    else:
-                        break
-                        
-            except Exception as e:
-                logger.error(f"Error reading stdin: {e}")
-                self.running = False
-                break
+        except Exception as e:
+            logger.error(f"Fatal error in read_stdin: {e}")
+            logger.error(traceback.format_exc())
+            self.running = False
+        
+        logger.info("Stdin reader stopped")
     
     async def run(self):
         """메인 실행"""
@@ -427,12 +463,12 @@ class ImprovedNativeHost:
             await self.initialize_session()
             
             # 태스크 실행
-            tasks = [
-                asyncio.create_task(self.read_stdin()),
-                asyncio.create_task(self.command_polling_loop())
-            ]
+            stdin_task = asyncio.create_task(self.read_stdin())
+            polling_task = asyncio.create_task(self.command_polling_loop())
             
-            await asyncio.gather(*tasks)
+            logger.info("Tasks created - waiting for stdin and command polling")
+            
+            await asyncio.gather(stdin_task, polling_task)
             
         except KeyboardInterrupt:
             logger.info("Interrupted by user")
