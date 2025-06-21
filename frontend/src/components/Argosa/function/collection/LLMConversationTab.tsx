@@ -1,3 +1,4 @@
+
 /**
  * LLMConversationTab.tsx
  */
@@ -121,7 +122,7 @@ const PLATFORMS: Record<string, LLMConfig> = {
     url: 'https://chat.openai.com',
     enabled: true,
     icon: 'GPT',
-    color: '#10a37f'
+    color: '#374151'  // gray-700
   },
   claude: {
     key: 'claude',
@@ -130,7 +131,7 @@ const PLATFORMS: Record<string, LLMConfig> = {
     url: 'https://claude.ai',
     enabled: true,
     icon: 'C',
-    color: '#6366f1'
+    color: '#374151'  // gray-700
   },
   gemini: {
     key: 'gemini',
@@ -139,7 +140,7 @@ const PLATFORMS: Record<string, LLMConfig> = {
     url: 'https://gemini.google.com',
     enabled: false,
     icon: 'G',
-    color: '#4285f4'
+    color: '#374151'  // gray-700
   },
   deepseek: {
     key: 'deepseek',
@@ -148,7 +149,7 @@ const PLATFORMS: Record<string, LLMConfig> = {
     url: 'https://chat.deepseek.com',
     enabled: false,
     icon: 'DS',
-    color: '#5b21b6'
+    color: '#374151'  // gray-700
   },
   grok: {
     key: 'grok',
@@ -157,7 +158,7 @@ const PLATFORMS: Record<string, LLMConfig> = {
     url: 'https://grok.x.ai',
     enabled: false,
     icon: 'X',
-    color: '#1f2937'
+    color: '#374151'  // gray-700
   },
   perplexity: {
     key: 'perplexity',
@@ -166,7 +167,7 @@ const PLATFORMS: Record<string, LLMConfig> = {
     url: 'https://www.perplexity.ai',
     enabled: false,
     icon: 'P',
-    color: '#10b981'
+    color: '#374151'  // gray-700
   }
 };
 
@@ -740,47 +741,21 @@ export default function LLMConversationTab({
   // ==================== Render ====================
   
   // System not ready check
-  if (systemState.system_status !== 'ready' && systemState.system_status !== 'collecting') {
-    return (
-      <div className="flex items-center justify-center h-[400px]">
-        <Card className="max-w-md">
-          <CardContent className="p-6 text-center">
-            <AlertCircle className="h-12 w-12 text-orange-500 mx-auto mb-4" />
-            <h3 className="text-lg font-semibold mb-2">System Initializing</h3>
-            <p className="text-sm text-gray-600 mb-4">
-              Please wait for all components to be ready before collecting data.
-            </p>
-            <div className="text-left text-sm space-y-2">
-              <div className="flex items-center gap-2">
-                {isBackendConnected ? (
-                  <CheckCircle className="h-4 w-4 text-green-500" />
-                ) : (
-                  <AlertCircle className="h-4 w-4 text-gray-400" />
-                )}
-                <span>Backend Connection</span>
-              </div>
-              <div className="flex items-center gap-2">
-                {systemState.firefox_status === 'ready' ? (
-                  <CheckCircle className="h-4 w-4 text-green-500" />
-                ) : (
-                  <AlertCircle className="h-4 w-4 text-gray-400" />
-                )}
-                <span>Firefox Browser</span>
-              </div>
-              <div className="flex items-center gap-2">
-                {systemState.extension_status === 'connected' ? (
-                  <CheckCircle className="h-4 w-4 text-green-500" />
-                ) : (
-                  <AlertCircle className="h-4 w-4 text-gray-400" />
-                )}
-                <span>Browser Extension</span>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-      </div>
-    );
-  }
+if (!isBackendConnected) {
+  return (
+    <div className="flex items-center justify-center h-[400px]">
+      <Card className="max-w-md">
+        <CardContent className="p-6 text-center">
+          <AlertCircle className="h-12 w-12 text-orange-500 mx-auto mb-4" />
+          <h3 className="text-lg font-semibold mb-2">Backend Not Connected</h3>
+          <p className="text-sm text-gray-600 mb-4">
+            Please ensure the backend server is running.
+          </p>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
   
   return (
     <div className="grid lg:grid-cols-3 gap-6">
