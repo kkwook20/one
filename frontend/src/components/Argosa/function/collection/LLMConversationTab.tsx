@@ -395,12 +395,28 @@ export default function LLMConversationTab({
     const config = PLATFORMS[platform];
     if (!config || openingLoginPlatform) return;
     
+    // 여기에 추가
+    if (systemState.extension_status === 'disconnected') {
+      onError(`Waiting for Extension connection...`);
+      
+      let waited = 0;
+      while (systemState.extension_status === 'disconnected' && waited < 15) {
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        waited++;
+      }
+      
+      if (systemState.extension_status === 'disconnected') {
+        onError(`Extension not connected. Please check Firefox.`);
+        return;
+      }
+    }
+    
     console.log(`🔐 Opening login for ${platform}`);
     setOpeningLoginPlatform(platform);
     
     try {
       // ensure_firefox 엔드포인트 사용
-      const response = await fetch(`${apiBaseUrl}/data/sessions/ensure_firefox`, {
+       const response = await fetch(`${apiBaseUrl}/data/sessions/ensure_firefox`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

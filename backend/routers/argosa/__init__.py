@@ -60,12 +60,14 @@ except ImportError as e:
 
 # Import sub-routers
 try:
-    from .data_collection import router as collection_router
+    from .data_collection import router as collection_router, initialize as data_collection_init, shutdown as data_collection_shutdown
     router.include_router(collection_router, prefix="/data", tags=["Data Collection"])
     logger.info("[Argosa] data_collection router loaded successfully")
 except ImportError as e:
     logger.error(f"[Argosa] Failed to import data_collection: {e}")
     traceback.print_exc()
+    data_collection_init = None
+    data_collection_shutdown = None
     
     # Collection 서브모듈들 추가
     try:
@@ -270,9 +272,11 @@ async def initialize():
     
     # Initialize data_collection
     try:
-        from .data_collection import initialize as init_collection
-        await init_collection()
-        logger.info("[Argosa] data_collection initialized")
+        if data_collection_init:
+            await data_collection_init()
+            logger.info("[Argosa] data_collection initialized")
+        else:
+            logger.error("[Argosa] data_collection initialize function not available")
         
         # Initialize collection submodules
         try:
