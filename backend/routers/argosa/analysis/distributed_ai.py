@@ -8,8 +8,8 @@ import logging
 from datetime import datetime
 import hashlib
 
-from .lm_studio_manager import lm_studio_manager, LMStudioInstance, TaskType
-from .network_discovery import network_discovery, NetworkDevice
+from .lm_studio_manager import lm_studio_manager, LMStudioInstance, TaskType, LMStudioManager
+from .network_discovery import network_discovery, NetworkDevice, NetworkDiscovery
 
 logger = logging.getLogger(__name__)
 

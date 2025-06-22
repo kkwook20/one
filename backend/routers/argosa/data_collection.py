@@ -143,33 +143,13 @@ class FirefoxManager:
         self.running = False
         self.firefox_path = r"C:\Program Files\Firefox Developer Edition\firefox.exe"
         self.profile_path = r'F:\ONE_AI\firefox-profile'
+        self.main_loop = None  # 메인 이벤트 루프 저장
         
-    async def check_and_start(self):
-        """Firefox 상태 확인 및 시작"""
-        firefox_running = any(p.name().lower().startswith('firefox') for p in psutil.process_iter())
-        
-        if not firefox_running:
-            logger.info("Firefox not running, starting...")
-            try:
-                subprocess.Popen([self.firefox_path, '-profile', self.profile_path])
-                await self.state_manager.update_state("firefox_status", "opening")
-                await asyncio.sleep(5)
-                await self.state_manager.update_state("firefox_status", "ready")
-                
-                return {"firefox_started": True, "firefox_status": "ready"}
-            except Exception as e:
-                logger.error(f"Failed to start Firefox: {e}")
-                await self.state_manager.update_state("firefox_status", "error")
-                return {"firefox_started": False, "firefox_status": "error", "error": str(e)}
-        else:
-            logger.info("Firefox already running")
-            await self.state_manager.update_state("firefox_status", "ready")
-            return {"firefox_started": False, "firefox_status": "ready", "already_running": True}
-    
     def start_monitor(self):
         """모니터링 시작"""
         if not self.running:
             self.running = True
+            self.main_loop = asyncio.get_event_loop()  # 메인 루프 저장
             self.monitor_thread = threading.Thread(target=self._monitor_loop, daemon=True)
             self.monitor_thread.start()
             logger.info("Firefox monitor started")
@@ -187,13 +167,13 @@ class FirefoxManager:
                     logger.info(f"Firefox CLOSED! (was tracking PIDs: {firefox_pids})")
                     asyncio.run_coroutine_threadsafe(
                         self._handle_firefox_closed(),
-                        asyncio.get_event_loop()
+                        self.main_loop  # 저장된 메인 루프 사용
                     )
                 elif current_pids and not firefox_pids:  # Firefox 시작
                     logger.info(f"Firefox STARTED! (PIDs: {current_pids})")
                     asyncio.run_coroutine_threadsafe(
                         self.state_manager.update_state("firefox_status", "ready"),
-                        asyncio.get_event_loop()
+                        self.main_loop  # 저장된 메인 루프 사용
                     )
                 
                 firefox_pids = current_pids
@@ -806,6 +786,16 @@ async def handle_native_message(message: Dict[str, Any]):
             
             return {"status": "error", "message": error_msg}
             
+        elif msg_type == "heartbeat":
+            # Extension heartbeat 처리
+            await state_manager.update_state("extension_last_seen", datetime.now().isoformat())
+            return {"status": "ok"}
+            
+        elif msg_type == "extension_heartbeat":
+            # Backend 직접 heartbeat 처리
+            await state_manager.update_state("extension_last_seen", datetime.now().isoformat())
+            return {"status": "ok"}
+            
         else:
             logger.warning(f"Unknown message type: {msg_type}")
             return {"status": "unknown", "type": msg_type}
@@ -814,7 +804,7 @@ async def handle_native_message(message: Dict[str, Any]):
         logger.error(f"Native message handling error: {e}")
         await metrics.increment_counter("native_message.error")
         return {"status": "error", "message": str(e)}
-
+    
 # 에러 처리가 적용된 명령 처리 함수
 @error_handler.with_error_handling(
     severity=ErrorSeverity.HIGH,

@@ -8,6 +8,7 @@ import asyncio
 import os
 import threading
 import traceback
+import logging
 from typing import Dict
 from datetime import datetime
 
@@ -383,28 +384,21 @@ async def debug_llm_tracker():
 
 if __name__ == "__main__":
     import uvicorn
+    import logging
     
-    # 빠른 종료를 위한 설정
-    os.environ['PYTHONUNBUFFERED'] = '1'
+    # 모든 uvicorn 관련 로거 비활성화
+    logging.getLogger("uvicorn").setLevel(logging.WARNING)
+    logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+    logging.getLogger("uvicorn.error").setLevel(logging.INFO)
     
-    # Pydantic 경고 억제
-    import warnings
-    warnings.filterwarnings("ignore", category=UserWarning, module="pydantic")
+    # 또는 특정 핸들러 제거
+    uvicorn_logger = logging.getLogger("uvicorn.access")
+    uvicorn_logger.handlers = []
+    uvicorn_logger.propagate = False
     
-    print("[Main] Starting server...", flush=True)
-    print("[Main] Python version:", sys.version, flush=True)
-    print("[Main] Working directory:", os.getcwd(), flush=True)
-    print("[Main] Available systems: OneAI, Argosa, NeuroNet", flush=True)
-    print("[Main] Recursion limit set to:", sys.getrecursionlimit(), flush=True)
-    
-    # uvicorn 설정 (디버깅 모드)
     uvicorn.run(
-        app, 
-        host="0.0.0.0", 
+        app,
+        host="0.0.0.0",
         port=8000,
-        log_level="debug",  # info -> debug로 변경
-        access_log=True,    # False -> True로 변경
-        use_colors=True,
-        reload=False,
-        workers=1
+        log_level="warning"
     )

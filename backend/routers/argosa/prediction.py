@@ -8,7 +8,7 @@ import uuid
 import json
 
 # RAG imports
-from ...services.rag_service import rag_service, module_integration, Document, RAGQuery
+from services.rag_service import rag_service, module_integration, Document, RAGQuery
 
 router = APIRouter()
 

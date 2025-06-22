@@ -100,6 +100,7 @@ const Settings: React.FC<SettingsProps> = ({
   const [networkInstances, setNetworkInstances] = React.useState<NetworkInstance[]>([]);
   const [selectedInstance, setSelectedInstance] = React.useState<string | null>(null);
   const [instanceModels, setInstanceModels] = React.useState<Record<string, string[]>>({});
+  const [selectedModels, setSelectedModels] = React.useState<Record<string, string>>({});
   const [manualHost, setManualHost] = React.useState("");
   const [manualPort, setManualPort] = React.useState("1234");
   
@@ -119,7 +120,7 @@ const Settings: React.FC<SettingsProps> = ({
       const response = await fetch(`${API_BASE_URL}/api/argosa/analysis/lm-studio/discover`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ subnet: null }) // 자동 감지
+        body: JSON.stringify({ subnet: null }) // null이면 자동 감지
       });
       
       const data = await response.json();
@@ -286,24 +287,31 @@ const Settings: React.FC<SettingsProps> = ({
         <TabsContent value="models" className="space-y-4">
           <Card>
             <CardHeader>
-              <CardTitle>Default Model</CardTitle>
-              <CardDescription>Model used for agents without specific configuration</CardDescription>
+              <CardTitle>Analyst Model</CardTitle>
+              <CardDescription>Primary model for data analysis and insights generation</CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="space-y-2">
-                <Label htmlFor="default-model">Default Model</Label>
+                <Label htmlFor="default-model">Analyst Model</Label>
                 <Select
                   value={modelConfig.default}
                   onValueChange={(value) => onUpdateModelConfig({ ...modelConfig, default: value })}
                 >
                   <SelectTrigger id="default-model">
-                    <SelectValue />
+                    <SelectValue placeholder="Select a model" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="qwen2.5-72b-instruct">Qwen2.5 72B Instruct</SelectItem>
-                    <SelectItem value="gpt-4o">GPT-4o</SelectItem>
-                    <SelectItem value="claude-3-opus">Claude 3 Opus</SelectItem>
-                    <SelectItem value="deepseek-v2">DeepSeek V2</SelectItem>
+                    {availableModels.length > 0 ? (
+                      availableModels.map((model) => (
+                        <SelectItem key={model} value={model}>
+                          {model}
+                        </SelectItem>
+                      ))
+                    ) : (
+                      <SelectItem value="no-models" disabled>
+                        No models available
+                      </SelectItem>
+                    )}
                   </SelectContent>
                 </Select>
               </div>
@@ -587,7 +595,7 @@ const Settings: React.FC<SettingsProps> = ({
           </Card>
           
           {/* Instance Pool */}
-          <Card>
+          <Card className="shadow-sm">
             <CardHeader>
               <CardTitle className="text-lg">Instance Pool</CardTitle>
               <CardDescription>
@@ -596,82 +604,86 @@ const Settings: React.FC<SettingsProps> = ({
             </CardHeader>
             <CardContent>
               <ScrollArea className="h-[400px]">
-                <div className="space-y-2">
+                <div className="space-y-4 px-6 py-4">
                   {networkInstances.map((instance) => (
                     <div
                       key={instance.id}
-                      className={`p-4 rounded-lg border transition-all cursor-pointer ${
+                      className={`group cursor-pointer transition-all rounded-lg border ${
                         selectedInstance === instance.id 
-                          ? 'border-primary bg-accent' 
-                          : 'hover:bg-accent/50'
-                      }`}
+                          ? 'ring-1 ring-slate-800/80 dark:ring-slate-700/80 bg-slate-50/70 dark:bg-slate-900/10 border-transparent' 
+                          : 'border-foreground/12 hover:bg-background/50 dark:hover:bg-slate-900/5'
+                      } p-4`}
                       onClick={() => handleSelectInstance(instance.id)}
                     >
                       <div className="flex items-center justify-between">
                         <div className="flex items-center gap-3">
-                          <div className="relative">
+                          <span className={`p-2 rounded-md ${
+                            instance.status === "connected" 
+                              ? 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-400' 
+                              : instance.status === "checking" 
+                                ? 'bg-amber-50 dark:bg-amber-500/10 text-amber-700 dark:text-amber-400' 
+                                : 'bg-destructive/10 text-destructive'
+                          }`}>
                             <Monitor className="w-5 h-5" />
-                            {instance.is_local && (
-                              <Badge variant="secondary" className="absolute -top-2 -right-2 text-xs px-1">
-                                Local
-                              </Badge>
-                            )}
-                          </div>
+                          </span>
                           <div>
-                            <div className="font-medium flex items-center gap-2">
+                            <p className="font-medium leading-none">
                               {instance.hostname}
                               {instance.hostname !== instance.ip && (
-                                <span className="text-xs text-muted-foreground">
-                                  ({instance.ip})
-                                </span>
+                                <span className="text-xs text-muted-foreground ml-1">({instance.ip})</span>
                               )}
-                            </div>
-                            <div className="text-sm text-muted-foreground">
-                              Port {instance.port}
-                            </div>
+                            </p>
+                            <p className="text-xs text-muted-foreground mt-1">Port {instance.port}</p>
                           </div>
+                          {instance.is_local && (
+                            <Badge variant="secondary" className="h-5 px-2 text-[10px] font-normal">
+                              Local
+                            </Badge>
+                          )}
                         </div>
                         
                         <div className="flex items-center gap-2">
                           {instance.status === "connected" && (
-                            <Badge variant="outline" className="text-xs">
+                            <Badge variant="secondary" className="text-xs font-normal">
                               {instance.models.length} models
                             </Badge>
                           )}
                           
-                          <div className="flex items-center gap-1">
-                            {instance.status === "connected" && (
-                              <CheckCircle className="w-4 h-4 text-green-500" />
-                            )}
-                            {instance.status === "disconnected" && (
-                              <XCircle className="w-4 h-4 text-red-500" />
-                            )}
-                            {instance.status === "checking" && (
-                              <Loader2 className="w-4 h-4 animate-spin text-yellow-500" />
-                            )}
+                          {instance.status === "connected" && (
+                            <CheckCircle className="w-4 h-4 text-emerald-500" />
+                          )}
+                          {instance.status === "disconnected" && (
+                            <XCircle className="w-4 h-4 text-destructive" />
+                          )}
+                          {instance.status === "checking" && (
+                            <Loader2 className="w-4 h-4 animate-spin text-amber-500" />
+                          )}
+                          
+                          <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                            <Button
+                              size="icon"
+                              variant="ghost"
+                              className="h-8 w-8"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                testInstanceConnection(instance.id);
+                              }}
+                            >
+                              <RefreshCw className="w-4 h-4" />
+                            </Button>
+                            
+                            <Button
+                              size="icon"
+                              variant="ghost"
+                              className="h-8 w-8"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleRemoveInstance(instance.id);
+                              }}
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </Button>
                           </div>
-                          
-                          <Button
-                            size="icon"
-                            variant="ghost"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              testInstanceConnection(instance.id);
-                            }}
-                          >
-                            <RefreshCw className="w-4 h-4" />
-                          </Button>
-                          
-                          <Button
-                            size="icon"
-                            variant="ghost"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleRemoveInstance(instance.id);
-                            }}
-                          >
-                            <Trash2 className="w-4 h-4" />
-                          </Button>
                         </div>
                       </div>
                       
@@ -679,8 +691,9 @@ const Settings: React.FC<SettingsProps> = ({
                         <div className="mt-3 pt-3 border-t">
                           <Label className="text-sm">Available Models</Label>
                           <Select
-                            value={instance.current_model || instance.models[0]}
+                            value={selectedModels[instance.id] || instance.current_model || instance.models[0]}
                             onValueChange={(model) => {
+                              setSelectedModels(prev => ({ ...prev, [instance.id]: model }));
                               onUpdateLMStudioConfig({
                                 ...lmStudioConfig,
                                 model
@@ -728,7 +741,7 @@ const Settings: React.FC<SettingsProps> = ({
           
           {/* Connection Status */}
           {selectedInstance && (
-            <Card>
+            <Card className="shadow-sm">
               <CardHeader>
                 <CardTitle className="text-lg">Active Connection</CardTitle>
               </CardHeader>

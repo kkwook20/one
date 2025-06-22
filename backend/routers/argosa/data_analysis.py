@@ -22,7 +22,6 @@ from langgraph.checkpoint.memory import MemorySaver
 
 # 프로젝트 내부 imports
 from services.rag_service import rag_service, module_integration, Document, RAGQuery
-from services.data_collection import comprehensive_data_collector
 
 # 분리된 모듈 imports
 from .analysis import (
@@ -670,24 +669,25 @@ class EnhancedAgentSystem:
         """데이터 수집 노드"""
         print("[분석 워크플로우] 데이터 수집 중...")
         
-        # 수집할 소스 결정
         sources = state.get("data_sources", [])
+        data = {}
         
-        # 컨텍스트 준비
-        context = {
-            "objective": state.get("analysis_objective", ""),
-            "constraints": state.get("constraints", []),
-            "priority": state.get("priority", "normal"),
-            "requires_login": state.get("requires_login", False),
-            "domains": state.get("target_domains", [])
-        }
+        # 기존 모듈 활용
+        if "web" in sources:
+            from routers.argosa.collection.web_crawler_agent import web_crawler_system
+            data["web"] = await web_crawler_system.crawl_website({
+                "url": state.get("search_query", ""),
+                "max_depth": 2
+            })
         
-        # comprehensive_data_collector를 통한 통합 수집
-        data = await comprehensive_data_collector.collect_data(
-            sources=sources,
-            query=state.get("search_query", state.get("analysis_objective", "")),
-            context=context
-        )
+        if "llm" in sources:
+            from routers.argosa.collection.llm_query_service import llm_service
+            data["llm"] = await llm_service.query_llm({
+                "query": state.get("search_query", ""),
+                "platform": "all"
+            })
+        
+        # 다른 소스들도 필요시 추가
         
         state["collected_data"] = data
         state["current_phase"] = "data_collected"
