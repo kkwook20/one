@@ -1,3 +1,4 @@
+// frontend/src/components/Argosa/function/DataAnalysis.tsx
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { motion } from "framer-motion";
 import { Button } from "@/components/ui/button";

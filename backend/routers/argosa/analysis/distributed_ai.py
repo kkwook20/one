@@ -1,3 +1,4 @@
+# backend/routers/argosa/analysis/distributed_ai.py
 """분산 AI 실행 시스템"""
 
 import asyncio
@@ -7,8 +8,8 @@ import logging
 from datetime import datetime
 import hashlib
 
-from .lm_studio_manager import LMStudioManager, LMStudioInstance, TaskType
-from .network_discovery import NetworkDiscovery, NetworkDevice
+from .lm_studio_manager import lm_studio_manager, LMStudioInstance, TaskType
+from .network_discovery import network_discovery, NetworkDevice
 
 logger = logging.getLogger(__name__)
 

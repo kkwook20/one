@@ -92,14 +92,16 @@ except ImportError as e:
 try:
     from .data_analysis import router as analysis_router
     router.include_router(analysis_router, prefix="/analysis", tags=["Data Analysis"])
-except ImportError:
-    logger.info("[Argosa] data_analysis module not found")
+except ImportError as e:
+    logger.error(f"[Argosa] Failed to import data_analysis: {e}")
+    traceback.print_exc()
 
 try:
     from .prediction import router as prediction_router
     router.include_router(prediction_router, prefix="/predictions", tags=["Prediction"])
-except ImportError:
-    logger.info("[Argosa] prediction module not found")
+except ImportError as e:
+    logger.error(f"[Argosa] Failed to import prediction: {e}")
+    traceback.print_exc()
 
 try:
     from .scheduling import router as scheduling_router
@@ -110,8 +112,9 @@ except ImportError:
 try:
     from .code_analysis import router as code_router
     router.include_router(code_router, prefix="/code", tags=["Code Analysis"])
-except ImportError:
-    logger.info("[Argosa] code_analysis module not found")
+except ImportError as e:
+    logger.error(f"[Argosa] Failed to import code_analysis: {e}")
+    traceback.print_exc()
 
 try:
     from .user_input import router as user_router

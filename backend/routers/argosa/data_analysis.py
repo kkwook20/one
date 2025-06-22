@@ -19,11 +19,11 @@ from dataclasses import dataclass, asdict
 import logging
 import httpx
 from langgraph.graph import StateGraph, END
-from langgraph.checkpoint import MemorySaver
+from langgraph.checkpoint.memory import MemorySaver
 
 # 프로젝트 내부 imports
-from ...services.rag_service import rag_service, module_integration, Document, RAGQuery
-from ...services.data_collection import comprehensive_data_collector
+from services.rag_service import rag_service, module_integration, Document, RAGQuery
+from services.data_collection import comprehensive_data_collector
 
 # 분리된 모듈 imports
 from .analysis import (
@@ -1643,9 +1643,10 @@ async def quick_insight(request: Dict[str, Any]):
 # ===== 분산 AI 실행 관련 엔드포인트 (개선됨) =====
 
 @router.post("/lm-studio/discover")
-async def discover_lm_studios(subnet: Optional[str] = None):
+async def discover_lm_studios(data: Dict[str, Any]):
     """네트워크에서 LM Studio 인스턴스 검색"""
     
+    subnet = data.get("subnet")  # 기존: subnet: Optional[str] = None
     devices = await network_discovery.scan_network(subnet)
     
     # 발견된 인스턴스 자동 추가
@@ -1809,6 +1810,14 @@ async def get_task_status(task_id: str):
         "error": task.error if task.status == "failed" else None
     }
 
+@router.post("/analysis/lm-studio/discover")
+async def discover_lm_studio_instances():
+    try:
+        devices = await network_discovery.scan_network()
+        return [device.__dict__ for device in devices]
+    except Exception as e:
+        logger.exception("LM Studio 네트워크 검색 실패")
+        raise HTTPException(status_code=500, detail=str(e))
 # ===== 헬퍼 함수 =====
 
 async def cleanup_old_workflows():

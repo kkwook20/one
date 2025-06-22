@@ -76,64 +76,34 @@ class LLMConversationCollector:
         
         if platform not in self.platforms:
             raise ValueError(f"Unsupported platform: {platform}")
-        # conversation_saver 사용
-        try:
-            from ..shared.conversation_saver import conversation_saver
-            
-            result = await conversation_saver.save_conversations(
-                platform=platform,
-                conversations=conversations,
-                metadata={
-                    **metadata,
-                    "source": "llm_collector",
-                    "timestamp": timestamp or datetime.now().isoformat()
-                }
-            )
-            
-            # 히스토리 업데이트
-            self.collection_history[platform] = {
-                "last_sync": datetime.now().isoformat(),
-                "conversation_count": result.get("count", 0),
-                "excluded_llm_count": result.get("excluded_llm_count", 0)
-            }
-            
-            return result
-            
-        except Exception as e:
-            logger.error(f"Failed to save conversations: {e}")
-            raise        
         
-        # LLM tracker 사용 (여기에 추가)
-        try:
-            from ..shared.llm_tracker import llm_tracker
-            filtered_result = await llm_tracker.filter_conversations(conversations, platform)
-            conversations = filtered_result['conversations']
-            excluded_count = filtered_result['excluded_count']
-        except ImportError:
-            # llm_tracker 없으면 기존 로직 사용
-            filtered_conversations = []
-            excluded_count = 0
-        
-        # LLM 대화 필터링
+        # LLM 필터링
         filtered_conversations = []
         excluded_count = 0
         
-        for conv in conversations:
-            conv_id = conv.get("id", "")
-            conv_metadata = conv.get("metadata", {})
-            
-            # 여러 방법으로 LLM 대화 체크
-            is_llm = (
-                self.is_llm_conversation(conv_id) or
-                conv_metadata.get("source") == "llm_query" or
-                conv_metadata.get("is_llm_query", False)
-            )
-            
-            if is_llm:
-                excluded_count += 1
-                logger.debug(f"Excluding LLM conversation: {conv_id} - {conv.get('title', 'Untitled')}")
-            else:
-                filtered_conversations.append(conv)
+        # LLM tracker 사용 시도
+        try:
+            from ..shared.llm_tracker import llm_tracker
+            filtered_result = await llm_tracker.filter_conversations(conversations, platform)
+            filtered_conversations = filtered_result['conversations']
+            excluded_count = filtered_result['excluded_count']
+        except ImportError:
+            # llm_tracker 없으면 기본 필터링
+            for conv in conversations:
+                conv_id = conv.get("id", "")
+                conv_metadata = conv.get("metadata", {})
+                
+                is_llm = (
+                    self.is_llm_conversation(conv_id) or
+                    conv_metadata.get("source") == "llm_query" or
+                    conv_metadata.get("is_llm_query", False)
+                )
+                
+                if is_llm:
+                    excluded_count += 1
+                    logger.debug(f"Excluding LLM conversation: {conv_id}")
+                else:
+                    filtered_conversations.append(conv)
         
         if excluded_count > 0:
             logger.info(f"Excluded {excluded_count} LLM-generated conversations")
@@ -149,59 +119,39 @@ class LLMConversationCollector:
                 "message": "All conversations were LLM-generated and excluded"
             }
         
-        platform_path = LLM_DATA_PATH / platform
-        timestamp = timestamp or datetime.now().isoformat()
-        
-        # 파일명 생성
-        date_str = datetime.now().strftime("%Y-%m-%d")
-        file_count = len(list(platform_path.glob(f"{date_str}_*.json")))
-        filename = f"{date_str}_conversation_{file_count + 1}.json"
-        
-        # 대화 데이터 구성
-        save_data = {
-            "platform": platform,
-            "timestamp": timestamp,
-            "conversations": filtered_conversations,
-            "metadata": {
-                "count": len(filtered_conversations),
-                "excluded_llm_count": excluded_count,
-                "total_before_filter": len(conversations),
-                "collected_at": datetime.now().isoformat(),
-                **metadata
-            }
-        }
-        
-        # 파일 저장
-        file_path = platform_path / filename
-        temp_path = file_path.with_suffix('.tmp')
-
+        # conversation_saver 사용하여 저장
         try:
-            with open(temp_path, 'w', encoding='utf-8') as f:
-                json.dump(save_data, f, ensure_ascii=False, indent=2)
+            from ..shared.conversation_saver import conversation_saver
+            result = await conversation_saver.save_conversations(
+                platform=platform,
+                conversations=filtered_conversations,
+                metadata={
+                    "excluded_llm_count": excluded_count,
+                    "total_before_filter": len(conversations),
+                    **metadata
+                }
+            )
             
-            temp_path.replace(file_path)
+            # 히스토리 업데이트
+            self.collection_history[platform] = {
+                "last_sync": datetime.now().isoformat(),
+                "conversation_count": result.get("count", 0),
+                "excluded_llm_count": excluded_count,
+                "last_file": result.get("filename", "")
+            }
+            
+            # 결과에 excluded_llm_count 추가
+            return {
+                **result,
+                "excluded_llm_count": excluded_count
+            }
+            
+        except ImportError:
+            logger.error("conversation_saver not available")
+            raise RuntimeError("conversation_saver module is required")
         except Exception as e:
-            if temp_path.exists():
-                temp_path.unlink()
-            raise e
-        
-        logger.info(f"Saved {len(filtered_conversations)} conversations to {filename}")
-        
-        # 히스토리 업데이트
-        self.collection_history[platform] = {
-            "last_sync": datetime.now().isoformat(),
-            "last_file": filename,
-            "conversation_count": len(filtered_conversations),
-            "excluded_llm_count": excluded_count
-        }
-        
-        return {
-            "success": True,
-            "filename": filename,
-            "count": len(filtered_conversations),
-            "excluded_llm_count": excluded_count,
-            "path": str(file_path)
-        }
+            logger.error(f"Failed to save conversations: {e}")
+            raise
     
     async def get_conversations(self, platform: str, date: str = None, 
                               limit: int = None, include_llm: bool = False) -> List[ConversationData]:
@@ -520,13 +470,6 @@ router = APIRouter(prefix="/llm/conversations", tags=["llm_conversations"])
 
 # 전역 컬렉터 인스턴스
 collector = LLMConversationCollector()
-
-# conversation_saver에 컬렉터 등록
-try:
-    from ..shared.conversation_saver import conversation_saver
-    conversation_saver.set_collector(collector)
-except ImportError:
-    logger.warning("Failed to register with conversation_saver")
 
 @router.post("/save")
 async def save_conversations(request: ConversationSaveRequest):

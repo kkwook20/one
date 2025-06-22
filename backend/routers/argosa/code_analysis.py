@@ -19,9 +19,9 @@ import traceback
 import logging
 
 # 기존 imports
-from ...services.rag_service import rag_service, module_integration, Document, RAGQuery
-from .data_analysis import enhanced_agent_system, EnhancedAgentType
-from .data_collection import comprehensive_data_collector
+from services.rag_service import rag_service, module_integration, Document, RAGQuery
+from routers.argosa.data_analysis import enhanced_agent_system, EnhancedAgentType
+from routers.argosa.data_collection import comprehensive_data_collector
 
 router = APIRouter()
 logger = logging.getLogger(__name__)

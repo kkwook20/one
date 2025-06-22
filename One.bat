@@ -6,7 +6,7 @@ echo cd /d "%cd%\backend" > "%TEMP%\start-backend.cmd"
 echo echo [BACKEND SERVER - FastAPI] >> "%TEMP%\start-backend.cmd"
 echo echo Port: 8000 >> "%TEMP%\start-backend.cmd"
 echo echo. >> "%TEMP%\start-backend.cmd"
-echo uvicorn main:app --reload --host 0.0.0.0 --port 8000 --log-level debug >> "%TEMP%\start-backend.cmd"
+echo uvicorn main:app --reload --host 0.0.0.0 --port 8000 >> "%TEMP%\start-backend.cmd"
 
 :: Frontend 스크립트 생성
 echo cd /d "%cd%\frontend" > "%TEMP%\start-frontend.cmd"

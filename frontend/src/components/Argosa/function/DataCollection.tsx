@@ -1,6 +1,4 @@
-/**
- * DataCollection.tsx - 메인 파일 (깜빡임 문제 수정)
- */
+// frontend/src/components/Argosa/function/DataCollection.tsx 
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";

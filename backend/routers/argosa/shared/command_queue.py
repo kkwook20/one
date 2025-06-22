@@ -216,22 +216,24 @@ class ImprovedCommandQueue:
         return False
     
     async def get_pending_commands(self, limit: int = 10) -> List[Dict[str, Any]]:
-        """대기 중인 명령 목록 - Native Host용 명령은 큐에서 제거"""
+        """대기 중인 명령 목록 - 명령을 제거하지 않고 상태만 변경"""
         async with self._lock:
             native_commands = []
-            remaining_queue = []
             
-            # 큐를 순회하며 Native Host 명령 추출
-            while self._queue and len(native_commands) < limit:
-                cmd = heapq.heappop(self._queue)
+            # 큐를 순회하되 제거하지 않음
+            for cmd in self._queue:
                 if COMMAND_TARGETS.get(cmd.type, 'backend') == 'native_host':
-                    native_commands.append(self._command_to_dict(cmd))
-                else:
-                    remaining_queue.append(cmd)
+                    if cmd.status == CommandStatus.QUEUED:  # QUEUED 상태인 것만
+                        cmd.status = CommandStatus.PROCESSING  # 상태 변경
+                        self._processing[cmd.id] = cmd  # 처리 중 목록에 추가
+                        native_commands.append(self._command_to_dict(cmd))
+                        
+                        if len(native_commands) >= limit:
+                            break
             
-            # 나머지를 다시 큐에 넣기
-            for cmd in remaining_queue:
-                heapq.heappush(self._queue, cmd)
+            # 처리 중으로 표시된 명령들은 큐에서 제거
+            self._queue = [cmd for cmd in self._queue if cmd.id not in self._processing]
+            heapq.heapify(self._queue)
             
             return native_commands
     

@@ -4,6 +4,7 @@ import json
 import struct
 import asyncio
 import logging
+from logging.handlers import RotatingFileHandler
 import os
 from typing import Dict, Any, Optional, List, Set
 import traceback
@@ -17,15 +18,22 @@ log_dir = os.path.join(os.getenv('PROGRAMDATA', 'C:\\ProgramData'), 'Argosa')
 os.makedirs(log_dir, exist_ok=True)
 log_path = os.path.join(log_dir, 'native_host.log')
 
-logging.basicConfig(
-    level=logging.DEBUG,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler(log_path, mode='a', encoding='utf-8'),
-    ]
+# RotatingFileHandler 설정
+# maxBytes: 10MB, backupCount: 5개 파일 유지
+handler = RotatingFileHandler(
+    log_path,
+    maxBytes=10*1024*1024,  # 10MB
+    backupCount=5,  # 5개의 백업 파일 유지
+    encoding='utf-8'
 )
 
+handler.setFormatter(logging.Formatter(
+    '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+))
+
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
+logger.addHandler(handler)
 
 # Windows 바이너리 모드 설정
 if sys.platform == "win32":
@@ -199,6 +207,12 @@ class ImprovedNativeHost:
         msg_id = message.get('id', 'no-id')
         data = message.get('data', {})
         
+        # heartbeat는 DEBUG 레벨로만 로깅
+        if msg_type == 'heartbeat':
+            logger.debug(f"Heartbeat received: {data.get('timestamp')}")
+            await self.notify_backend('native/message', message)
+            return None
+        
         logger.info(f"Handling extension message: type={msg_type}, id={msg_id}")
         
         try:
@@ -222,7 +236,6 @@ class ImprovedNativeHost:
                     'id': msg_id,
                     'status': 'ready',
                     'capabilities': ['collect', 'llm_query', 'session_check', 'open_login_page']
-                    # 'check_all_sessions': True 제거
                 }
             
             elif msg_type == 'init_ack':
@@ -401,7 +414,10 @@ class ImprovedNativeHost:
                     
                     # 메시지 길이 추출
                     message_length = struct.unpack('I', buffer[:4])[0]
-                    logger.debug(f"Message length: {message_length}")
+                    
+                    # heartbeat가 아닌 경우만 길이 로깅
+                    if message_length != 261:  # heartbeat는 보통 261 바이트
+                        logger.debug(f"Message length: {message_length}")
                     
                     # 메시지 본문 읽기
                     buffer = b''
@@ -416,7 +432,11 @@ class ImprovedNativeHost:
                     # 메시지 디코드
                     try:
                         message = json.loads(buffer.decode('utf-8'))
-                        logger.info(f"Received from extension: {message}")
+                        
+                        # heartbeat가 아닌 경우만 전체 메시지 로깅
+                        if message.get('type') != 'heartbeat':
+                            logger.info(f"Received from extension: {message}")
+                        
                         return message
                     except Exception as e:
                         logger.error(f"Failed to decode message: {e}")

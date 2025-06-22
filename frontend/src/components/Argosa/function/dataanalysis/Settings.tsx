@@ -1,3 +1,4 @@
+// frontend/src/components/Argosa/function/dataanalysis/Settings.tsx
 import React, { useEffect, useState, useCallback } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -44,6 +45,9 @@ import {
   Loader2,
 } from "lucide-react";
 import type { AIModelConfig, EnhancedAgentType, LMStudioConfig } from "../DataAnalysis";
+
+// API Base URL
+const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
 
 interface NetworkInstance {
   id: string;
@@ -112,7 +116,7 @@ const Settings: React.FC<SettingsProps> = ({
   const handleNetworkScan = async () => {
     setIsScanning(true);
     try {
-      const response = await fetch('/api/argosa/data-analysis/lm-studio/discover', {
+      const response = await fetch(`${API_BASE_URL}/api/argosa/analysis/lm-studio/discover`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ subnet: null }) // 자동 감지
@@ -147,7 +151,7 @@ const Settings: React.FC<SettingsProps> = ({
     ));
     
     try {
-      const response = await fetch(`/api/argosa/data-analysis/lm-studio/instance/${instanceId}/test`, {
+      const response = await fetch(`${API_BASE_URL}/api/argosa/analysis/lm-studio/instance/${instanceId}/test`, {
         method: 'POST'
       });
       
@@ -177,7 +181,7 @@ const Settings: React.FC<SettingsProps> = ({
     if (!manualHost) return;
     
     try {
-      const response = await fetch('/api/argosa/data-analysis/lm-studio/add-instance', {
+      const response = await fetch(`${API_BASE_URL}/api/argosa/analysis/lm-studio/add-instance`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
@@ -211,7 +215,7 @@ const Settings: React.FC<SettingsProps> = ({
   // 인스턴스 제거
   const handleRemoveInstance = async (instanceId: string) => {
     try {
-      await fetch(`/api/argosa/data-analysis/lm-studio/instance/${instanceId}`, {
+      await fetch(`${API_BASE_URL}/api/argosa/analysis/lm-studio/instance/${instanceId}`, {
         method: 'DELETE'
       });
       
@@ -241,7 +245,7 @@ const Settings: React.FC<SettingsProps> = ({
   useEffect(() => {
     const loadInstances = async () => {
       try {
-        const response = await fetch('/api/argosa/data-analysis/lm-studio/instances');
+        const response = await fetch(`${API_BASE_URL}/api/argosa/analysis/lm-studio/instances`);
         const data = await response.json();
         
         const instances: NetworkInstance[] = data.instances.map((inst: any) => ({

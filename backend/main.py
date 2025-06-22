@@ -11,6 +11,9 @@ import traceback
 from typing import Dict
 from datetime import datetime
 
+# 재귀 깊이 증가 (conversation 저장 시 재귀 문제 방지)
+sys.setrecursionlimit(5000)
+
 # 버퍼링 비활성화 - 로그 즉시 출력
 sys.stdout = sys.stderr = sys.__stdout__
 
@@ -197,6 +200,26 @@ async def startup_event():
         try:
             await argosa_initialize()
             print("[Startup] Argosa initialized successfully", flush=True)
+            
+            # Argosa 초기화 후 LLM tracker와 conversation_saver 연결
+            try:
+                from routers.argosa.shared.llm_tracker import llm_tracker
+                from routers.argosa.shared.conversation_saver import conversation_saver
+                
+                conversation_saver.set_llm_tracker(llm_tracker)
+                print("[Startup] LLM tracker registered with conversation_saver", flush=True)
+                
+                # LLM tracker 통계 출력
+                stats = await llm_tracker.get_stats()
+                print(f"[Startup] LLM tracker stats: {stats['total_tracked']} tracked conversations", flush=True)
+                
+            except ImportError as e:
+                print(f"[Startup] Warning: Could not setup LLM tracker integration: {e}", flush=True)
+                # LLM tracker는 선택적이므로 계속 진행
+            except Exception as e:
+                print(f"[Startup] Error setting up LLM tracker: {e}", flush=True)
+                print(f"[Startup] Traceback: {traceback.format_exc()}", flush=True)
+            
         except Exception as e:
             print(f"[Startup] Argosa initialization error: {e}", flush=True)
             print(f"[Startup] Traceback: {traceback.format_exc()}", flush=True)
@@ -279,10 +302,19 @@ async def shutdown_handler():
             except Exception as e:
                 print(f"[Shutdown] OneAI error: {e}", flush=True)
         
-        # Argosa shutdown
+        # Argosa shutdown with LLM tracker cleanup
         async def quick_argosa_shutdown():
             try:
                 print("[Shutdown] Shutting down Argosa...", flush=True)
+                
+                # LLM tracker 상태 저장 (옵션)
+                try:
+                    from routers.argosa.shared.llm_tracker import llm_tracker
+                    await llm_tracker._save_state()
+                    print("[Shutdown] LLM tracker state saved", flush=True)
+                except:
+                    pass  # 실패해도 계속 진행
+                
                 await asyncio.wait_for(argosa_shutdown(), timeout=1.0)
                 print("[Shutdown] Argosa shutdown completed", flush=True)
             except asyncio.TimeoutError:
@@ -333,6 +365,22 @@ async def debug_routes():
             })
     return {"routes": routes}
 
+@app.get("/debug/llm-tracker")
+async def debug_llm_tracker():
+    """LLM tracker 상태 확인"""
+    try:
+        from routers.argosa.shared.llm_tracker import llm_tracker
+        stats = await llm_tracker.get_stats()
+        return {
+            "status": "operational",
+            "stats": stats
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": str(e)
+        }
+
 if __name__ == "__main__":
     import uvicorn
     
@@ -347,6 +395,7 @@ if __name__ == "__main__":
     print("[Main] Python version:", sys.version, flush=True)
     print("[Main] Working directory:", os.getcwd(), flush=True)
     print("[Main] Available systems: OneAI, Argosa, NeuroNet", flush=True)
+    print("[Main] Recursion limit set to:", sys.getrecursionlimit(), flush=True)
     
     # uvicorn 설정 (디버깅 모드)
     uvicorn.run(
