@@ -1,4 +1,3 @@
-# backend/routers/argosa/data_analysis.py 
 """데이터 분석 및 AI 에이전트 시스템 라우터"""
 
 from fastapi import APIRouter, HTTPException, WebSocket, BackgroundTasks
@@ -1810,14 +1809,6 @@ async def get_task_status(task_id: str):
         "error": task.error if task.status == "failed" else None
     }
 
-@router.post("/analysis/lm-studio/discover")
-async def discover_lm_studio_instances():
-    try:
-        devices = await network_discovery.scan_network()
-        return [device.__dict__ for device in devices]
-    except Exception as e:
-        logger.exception("LM Studio 네트워크 검색 실패")
-        raise HTTPException(status_code=500, detail=str(e))
 # ===== 헬퍼 함수 =====
 
 async def cleanup_old_workflows():
