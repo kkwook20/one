@@ -1,0 +1,67 @@
+{
+  "ai_models": {
+    "default": null,
+    "specialized": {}
+  },
+  "lm_studio_config": {
+    "endpoint": "http://localhost:1234/v1/chat/completions",
+    "model": "local-model",
+    "temperature": 0.7,
+    "maxTokens": 2000
+  },
+  "network_instances": [
+    {
+      "id": "localhost:1234",
+      "host": "localhost",
+      "port": 1234,
+      "enabled": true,
+      "priority": 1,
+      "tags": [],
+      "max_concurrent_tasks": 5,
+      "last_connected": "2025-06-24T00:39:45.357975",
+      "performance_history": [],
+      "notes": ""
+    },
+    {
+      "id": "127.0.0.1:1234",
+      "host": "127.0.0.1",
+      "port": 1234,
+      "enabled": true,
+      "priority": 1,
+      "tags": [],
+      "max_concurrent_tasks": 5,
+      "last_connected": "2025-06-24T02:19:51.027530",
+      "performance_history": [],
+      "notes": ""
+    }
+  ],
+  "distributed_settings": {
+    "enabled": true,
+    "auto_discover": false,
+    "instance_selection": "performance",
+    "max_retries": 3,
+    "timeout": 60
+  },
+  "ui_preferences": {
+    "dark_mode": false,
+    "auto_refresh": true,
+    "debug_mode": false,
+    "metrics_update_interval": 5
+  },
+  "performance": {
+    "response_time_threshold": 5000,
+    "max_concurrent_requests": 10,
+    "cache_duration": 60,
+    "batch_processing": true,
+    "response_streaming": true,
+    "gpu_acceleration": false
+  },
+  "system": {
+    "update_interval": 5,
+    "max_chart_data_points": 100,
+    "history_retention_days": 30,
+    "cache_ttl_seconds": 3600,
+    "agent_timeout_seconds": 300,
+    "retry_count": 3
+  }
+}

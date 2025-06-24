@@ -7,6 +7,15 @@ from enum import Enum
 import asyncio
 import httpx
 import logging
+from datetime import datetime
+
+from .configs import (
+    NetworkInstanceConfig, 
+    get_network_instances, 
+    save_network_instance,
+    remove_network_instance,
+    update_instance_performance
+)
 
 logger = logging.getLogger(__name__)
 
@@ -64,10 +73,22 @@ class LMStudioInstance:
     current_model: Optional[str] = None
     capabilities: Dict[str, Any] = field(default_factory=dict)
     performance_score: float = 0.0
+    enabled: bool = True  # 분산 실행 참여 여부
+    is_registered: bool = False  # 등록 여부 (분산 실행에 등록된 인스턴스)
+    priority: int = 1  # 우선순위
+    tags: List[str] = field(default_factory=list)  # 태그
+    max_concurrent_tasks: int = 5
+    current_load: int = 0  # 현재 실행 중인 작업 수
+    notes: str = ""  # 사용자 메모
+    hostname: Optional[str] = None  # 호스트명
     
     def __post_init__(self):
         self.endpoint = f"http://{self.host}:{self.port}/v1"
         self.is_local = self.host in ["localhost", "127.0.0.1"]
+        # localhost의 경우 ID 정규화
+        if self.is_local:
+            self.id = "localhost:1234"
+            self.hostname = "localhost"
 
 class LMStudioManager:
     """LM Studio 관리자"""
@@ -136,23 +157,82 @@ class LMStudioManager:
         self.instances: Dict[str, LMStudioInstance] = {}
         self.http_client = httpx.AsyncClient(timeout=30.0)
         self.optimal_settings_cache = {}
+        self._load_saved_instances()
         
+    def _load_saved_instances(self):
+        """저장된 인스턴스 로드"""
+        saved_instances = get_network_instances()
+        for inst_config in saved_instances:
+            instance = LMStudioInstance(
+                id=inst_config.id,
+                host=inst_config.host,
+                port=inst_config.port,
+                enabled=inst_config.enabled,
+                is_registered=getattr(inst_config, 'is_registered', False),  # 안전하게 로드
+                priority=inst_config.priority,
+                tags=inst_config.tags,
+                max_concurrent_tasks=inst_config.max_concurrent_tasks,
+                notes=getattr(inst_config, 'notes', ""),
+                hostname=getattr(inst_config, 'hostname', inst_config.host)
+            )
+            self.instances[instance.id] = instance
+            logger.info(f"Loaded saved instance: {instance.id} (registered: {instance.is_registered})")
+    
     async def add_instance(self, host: str, port: int = 1234) -> LMStudioInstance:
         """LM Studio 인스턴스 추가"""
-        instance = LMStudioInstance(
-            id=f"{host}:{port}",
-            host=host,
-            port=port
-        )
+        instance_id = f"{host}:{port}"
+        
+        # localhost 정규화
+        if host in ["localhost", "127.0.0.1"] and port == 1234:
+            instance_id = "localhost:1234"
+        
+        # 이미 존재하는 경우
+        if instance_id in self.instances:
+            instance = self.instances[instance_id]
+        else:
+            instance = LMStudioInstance(
+                id=instance_id,
+                host=host,
+                port=port,
+                hostname=host
+            )
         
         # 연결 테스트 및 정보 수집
         if await self.test_connection(instance):
             await self.get_instance_info(instance)
             self.instances[instance.id] = instance
-            logger.info(f"Added LM Studio instance: {instance.id}")
+            
+            # 설정에 저장
+            self._save_instance_config(instance)
+            
+            logger.info(f"Added and saved LM Studio instance: {instance.id}")
         
         return instance
     
+    def _save_instance_config(self, instance: LMStudioInstance):
+        """인스턴스 설정 저장"""
+        # localhost의 경우 항상 정규화된 ID 사용
+        if instance.is_local:
+            instance.id = "localhost:1234"
+            instance.host = "localhost"
+        
+        config = NetworkInstanceConfig({
+            "id": instance.id,
+            "host": instance.host,
+            "hostname": instance.hostname or instance.host,
+            "port": instance.port,
+            "enabled": instance.enabled,
+            "is_registered": instance.is_registered,
+            "priority": instance.priority,
+            "tags": instance.tags,
+            "max_concurrent_tasks": instance.max_concurrent_tasks,
+            "notes": instance.notes,
+            "is_local": instance.is_local,
+            "last_connected": datetime.now().isoformat()
+        })
+        save_network_instance(config)
+        logger.info(f"Saved instance config: {instance.id} (registered: {instance.is_registered})")
+
     async def test_connection(self, instance: LMStudioInstance) -> bool:
         """연결 테스트"""
         try:
@@ -211,6 +291,118 @@ class LMStudioManager:
             score += min(ram_gb / 64, 0.5)  # 64GB 기준
         
         return score
+    
+    def set_instance_enabled(self, instance_id: str, enabled: bool) -> bool:
+        """인스턴스 활성화/비활성화"""
+        if instance_id in self.instances:
+            self.instances[instance_id].enabled = enabled
+            self._save_instance_config(self.instances[instance_id])
+            logger.info(f"Instance {instance_id} enabled: {enabled}")
+            return True
+        return False
+    
+    def set_instance_registered(self, instance_id: str, registered: bool) -> bool:
+        """인스턴스 등록 상태 변경"""
+        logger.info(f"Setting instance {instance_id} registered: {registered}")
+        
+        # localhost 처리 - 다양한 형태의 ID 처리
+        instance = None
+        
+        # 직접 ID로 찾기
+        if instance_id in self.instances:
+            instance = self.instances[instance_id]
+        else:
+            # localhost의 다양한 형태 확인
+            localhost_ids = ["localhost:1234", "127.0.0.1:1234", "localhost", "127.0.0.1"]
+            
+            # ID가 localhost 형태인 경우
+            if any(instance_id.startswith(lid) for lid in localhost_ids):
+                # is_local이 True인 인스턴스 찾기
+                for inst_id, inst in self.instances.items():
+                    if inst.is_local:
+                        instance = inst
+                        instance_id = inst.id  # 정규화된 ID 사용
+                        logger.info(f"Found localhost instance with normalized ID: {inst.id}")
+                        break
+            
+            # 그래도 못 찾았으면 host로 찾기
+            if not instance:
+                for inst_id, inst in self.instances.items():
+                    if (inst.host in ["localhost", "127.0.0.1"] and 
+                        inst.port == 1234):
+                        instance = inst
+                        instance_id = inst.id
+                        logger.info(f"Found instance by host/port: {inst.id}")
+                        break
+        
+        if instance:
+            instance.is_registered = registered
+            instance.enabled = registered  # 등록하면 활성화도 함께
+            self._save_instance_config(instance)
+            logger.info(f"Instance {instance.id} registered: {registered}")
+            return True
+        
+        logger.error(f"Instance not found: {instance_id}")
+        logger.info(f"Available instances: {list(self.instances.keys())}")
+        return False
+
+    def update_instance_priority(self, instance_id: str, priority: int) -> bool:
+        """인스턴스 우선순위 업데이트"""
+        if instance_id in self.instances:
+            self.instances[instance_id].priority = priority
+            self._save_instance_config(self.instances[instance_id])
+            return True
+        return False
+    
+    def update_instance_tags(self, instance_id: str, tags: List[str]) -> bool:
+        """인스턴스 태그 업데이트"""
+        if instance_id in self.instances:
+            self.instances[instance_id].tags = tags
+            self._save_instance_config(self.instances[instance_id])
+            return True
+        return False
+    
+    def update_instance_settings(self, instance_id: str, settings: Dict[str, Any]) -> bool:
+        """인스턴스 설정 업데이트"""
+        if instance_id in self.instances:
+            instance = self.instances[instance_id]
+            
+            # 업데이트 가능한 필드들
+            if 'enabled' in settings:
+                instance.enabled = settings['enabled']
+            if 'priority' in settings:
+                instance.priority = settings['priority']
+            if 'tags' in settings:
+                instance.tags = settings['tags']
+            if 'max_concurrent_tasks' in settings:
+                instance.max_concurrent_tasks = settings['max_concurrent_tasks']
+            if 'notes' in settings:
+                instance.notes = settings['notes']
+            
+            self._save_instance_config(instance)
+            return True
+        return False
+    
+    def get_enabled_instances(self) -> List[LMStudioInstance]:
+        """활성화된 인스턴스만 반환"""
+        return [
+            inst for inst in self.instances.values()
+            if inst.enabled and inst.status == "connected"
+        ]
+    
+    def get_registered_instances(self) -> List[LMStudioInstance]:
+        """등록된 인스턴스만 반환"""
+        return [
+            inst for inst in self.instances.values()
+            if inst.is_registered
+        ]
+    
+    def get_instances_by_tag(self, tag: str) -> List[LMStudioInstance]:
+        """특정 태그를 가진 인스턴스 반환"""
+        return [
+            inst for inst in self.instances.values()
+            if tag in inst.tags and inst.enabled and inst.status == "connected"
+        ]
     
     async def get_optimal_settings(
         self,
@@ -319,14 +511,23 @@ class LMStudioManager:
     async def select_best_instance(
         self,
         model_name: str,
-        task_complexity: float = 0.5
+        task_complexity: float = 0.5,
+        required_tags: List[str] = None
     ) -> Optional[LMStudioInstance]:
         """작업에 가장 적합한 인스턴스 선택"""
         
+        # 활성화된 인스턴스만 고려
         available_instances = [
-            inst for inst in self.instances.values()
-            if inst.status == "connected" and model_name in inst.available_models
+            inst for inst in self.get_enabled_instances()
+            if model_name in inst.available_models
         ]
+        
+        # 태그 필터링
+        if required_tags:
+            available_instances = [
+                inst for inst in available_instances
+                if any(tag in inst.tags for tag in required_tags)
+            ]
         
         if not available_instances:
             return None
@@ -334,7 +535,11 @@ class LMStudioManager:
         # 점수 계산
         scored_instances = []
         for instance in available_instances:
-            score = instance.performance_score
+            score = instance.performance_score * instance.priority
+            
+            # 현재 부하 고려
+            load_factor = 1 - (instance.current_load / instance.max_concurrent_tasks)
+            score *= load_factor
             
             # 복잡한 작업은 고성능 인스턴스 선호
             if task_complexity > 0.7:
@@ -343,10 +548,6 @@ class LMStudioManager:
             # 로컬 인스턴스 가산점
             if instance.is_local:
                 score *= 1.2
-            
-            # 현재 부하 고려 (구현 필요)
-            # load = await self.get_instance_load(instance)
-            # score *= (1 - load)
             
             scored_instances.append((score, instance))
         
@@ -362,6 +563,9 @@ class LMStudioManager:
     ) -> Dict[str, Any]:
         """특정 인스턴스에서 실행"""
         
+        # 부하 증가
+        instance.current_load += 1
+        
         # 모델 로드 확인
         if instance.current_model != settings.get("model"):
             await self.load_model_on_instance(
@@ -372,6 +576,8 @@ class LMStudioManager:
         
         # 실행
         try:
+            start_time = datetime.now()
+            
             response = await self.http_client.post(
                 f"{instance.endpoint}/chat/completions",
                 json={
@@ -384,13 +590,33 @@ class LMStudioManager:
             )
             
             if response.status_code == 200:
+                # 성능 기록
+                elapsed = (datetime.now() - start_time).total_seconds()
+                update_instance_performance(instance.id, {
+                    "response_time": elapsed,
+                    "success": True,
+                    "model": settings["model"],
+                    "task_type": settings.get("task_type", "unknown")
+                })
+                
                 return response.json()
             else:
                 raise Exception(f"API error: {response.status_code}")
                 
         except Exception as e:
             logger.error(f"Execution failed on {instance.id}: {e}")
+            
+            # 실패 기록
+            update_instance_performance(instance.id, {
+                "response_time": None,
+                "success": False,
+                "error": str(e)
+            })
+            
             raise
+        finally:
+            # 부하 감소
+            instance.current_load = max(0, instance.current_load - 1)
     
     async def load_model_on_instance(
         self,
@@ -419,6 +645,42 @@ class LMStudioManager:
             # 실제로는 LM Studio가 자동으로 모델을 로드하므로
             # 이 부분은 선택적
             instance.current_model = model_name
+    
+    async def call_llm(
+        self,
+        prompt: str,
+        model: Optional[str] = None,
+        instance_id: Optional[str] = None,
+        temperature: float = 0.7,
+        max_tokens: int = 2000
+    ) -> Dict[str, Any]:
+        """직접 LLM 호출 (단순화된 버전)"""
+        
+        # 인스턴스 선택
+        if instance_id and instance_id in self.instances:
+            instance = self.instances[instance_id]
+        else:
+            # 가장 좋은 인스턴스 선택
+            instance = await self.select_best_instance(model or "default")
+        
+        if not instance or instance.status != "connected":
+            raise Exception("No connected LM Studio instance available")
+        
+        # 모델 선택
+        if not model:
+            model = instance.current_model or instance.available_models[0]
+        
+        # 설정
+        settings = {
+            "model": model,
+            "sampling": {
+                "temperature": temperature
+            },
+            "max_tokens": max_tokens
+        }
+        
+        # 실행
+        return await self.execute_on_instance(instance, prompt, settings)
 
 # 전역 인스턴스
 lm_studio_manager = LMStudioManager()

@@ -4,12 +4,17 @@ import { motion } from "framer-motion";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 import {
   Bot,
   GitBranch,
   LayoutDashboard,
   LineChart as LineChartIcon,
   Settings,
+  AlertCircle,
+  Wifi,
+  WifiOff,
 } from "lucide-react";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import _ from "lodash";
@@ -449,8 +454,9 @@ const DataAnalysis: React.FC = () => {
   const [isConnected, setIsConnected] = useState(false);
   
   // UI State
-  const [selectedView, setSelectedView] = useState<"dashboard" | "workflows" | "agents" | "analytics" | "settings">("dashboard");
+  const [activeTab, setActiveTab] = useState("dashboard");
   const [isDarkMode, setIsDarkMode] = useState(false);
+  const [backendError, setBackendError] = useState<string | null>(null);
   
   // Real-time State
   const [messages, setMessages] = useState<Message[]>([]);
@@ -497,6 +503,7 @@ const DataAnalysis: React.FC = () => {
       
       ws.onopen = () => {
         setIsConnected(true);
+        setBackendError(null);
         console.log("WebSocket connected");
         
         // Subscribe to updates
@@ -513,6 +520,7 @@ const DataAnalysis: React.FC = () => {
       
       ws.onerror = (error) => {
         console.error("WebSocket error:", error);
+        setBackendError('WebSocket connection error');
       };
       
       ws.onclose = () => {
@@ -528,6 +536,7 @@ const DataAnalysis: React.FC = () => {
       wsRef.current = ws;
     } catch (error) {
       console.error("Failed to connect WebSocket:", error);
+      setBackendError('Cannot connect to backend server');
     }
   }, []);
   
@@ -931,162 +940,171 @@ const DataAnalysis: React.FC = () => {
   // ===== Render =====
   
   return (
-    <TooltipProvider>
-      <div className={`min-h-screen ${isDarkMode ? 'dark' : ''}`}>
-        <div className="flex h-screen bg-background">
-          {/* Sidebar */}
-          <div className="w-64 border-r bg-card">
-            <div className="flex h-full flex-col">
-              <div className="p-6">
-                <h1 className="text-2xl font-bold tracking-tight">AI Analysis Hub</h1>
-                <p className="text-sm text-muted-foreground mt-1">Multi-Agent System</p>
-              </div>
-              
-              <nav className="flex-1 space-y-1 px-3">
-                <Button
-                  variant={selectedView === "dashboard" ? "secondary" : "ghost"}
-                  className="w-full justify-start"
-                  onClick={() => setSelectedView("dashboard")}
-                >
-                  <LayoutDashboard className="mr-2 h-4 w-4" />
-                  Dashboard
-                </Button>
-                
-                <Button
-                  variant={selectedView === "workflows" ? "secondary" : "ghost"}
-                  className="w-full justify-start"
-                  onClick={() => setSelectedView("workflows")}
-                >
-                  <GitBranch className="mr-2 h-4 w-4" />
-                  Workflows
-                  {workflows.filter(w => w.status === "executing").length > 0 && (
-                    <Badge variant="secondary" className="ml-auto">
-                      {workflows.filter(w => w.status === "executing").length}
-                    </Badge>
-                  )}
-                </Button>
-                
-                <Button
-                  variant={selectedView === "agents" ? "secondary" : "ghost"}
-                  className="w-full justify-start"
-                  onClick={() => setSelectedView("agents")}
-                >
-                  <Bot className="mr-2 h-4 w-4" />
-                  Agents
-                  {agents.filter(a => a.status === "busy").length > 0 && (
-                    <Badge variant="secondary" className="ml-auto">
-                      {agents.filter(a => a.status === "busy").length}
-                    </Badge>
-                  )}
-                </Button>
-                
-                <Button
-                  variant={selectedView === "analytics" ? "secondary" : "ghost"}
-                  className="w-full justify-start"
-                  onClick={() => setSelectedView("analytics")}
-                >
-                  <LineChartIcon className="mr-2 h-4 w-4" />
-                  Analytics
-                </Button>
-                
-                <Button
-                  variant={selectedView === "settings" ? "secondary" : "ghost"}
-                  className="w-full justify-start"
-                  onClick={() => setSelectedView("settings")}
-                >
-                  <Settings className="mr-2 h-4 w-4" />
-                  Settings
-                </Button>
-              </nav>
-              
-              <div className="p-3">
-                <Card>
-                  <CardContent className="p-4">
-                    <div className="flex items-center space-x-2">
-                      <div className={`h-2 w-2 rounded-full ${isConnected ? 'bg-green-500' : 'bg-red-500'}`} />
-                      <span className="text-sm font-medium">
-                        {isConnected ? 'Connected' : 'Disconnected'}
-                      </span>
-                    </div>
-                    <div className="mt-2 text-xs text-muted-foreground">
-                      <div>Active Sessions: {systemMetrics?.websocketConnections || 0}</div>
-                      <div>Cached Results: {systemMetrics?.cachedResults || 0}</div>
-                    </div>
-                  </CardContent>
-                </Card>
-              </div>
-            </div>
+    <div className="h-full w-full flex flex-col text-gray-800">
+      {/* Header */}
+      <header className="border-b bg-white/80 backdrop-blur-xl flex-shrink-0">
+        <div className="flex items-center justify-between p-6">
+          <div>
+            <h1 className="text-2xl font-semibold tracking-tight">AI Analysis Hub</h1>
+            <p className="text-sm text-gray-600">Multi-Agent System for Data Analysis</p>
           </div>
-          
-          {/* Main Content */}
-          <div className="flex-1 overflow-auto">
-            <div className="p-8">
-              {selectedView === "dashboard" && (
-                <Dashboard
-                  agents={agents}
-                  workflows={workflows}
-                  systemMetrics={systemMetrics}
-                  performanceData={performanceData}
-                  workflowDistribution={workflowDistribution}
-                  messages={messages}
-                  onCreateWorkflow={() => setSelectedView("workflows")}
-                  onRefreshData={fetchMetrics}
-                />
-              )}
-              {selectedView === "workflows" && (
-                <Workflows
-                  workflows={workflows}
-                  activeWorkflow={activeWorkflow}
-                  WORKFLOW_PHASES={WORKFLOW_PHASES}
-                  onCreateWorkflow={createWorkflow}
-                  onSelectWorkflow={setActiveWorkflow}
-                  onRefreshWorkflows={fetchWorkflows}
-                />
-              )}
-              {selectedView === "agents" && (
-                <Agents
-                  agents={agents}
-                  AGENT_CONFIGS={AGENT_CONFIGS}
-                  onAskAgent={askAgent}
-                  onRefreshAgents={fetchAgents}
-                />
-              )}
-              {selectedView === "analytics" && (
-                <Analytics
-                  agents={agents}
-                  workflows={workflows}
-                  performanceData={performanceData}
-                  workflowDistribution={workflowDistribution}
-                  agentUtilization={agentUtilization}
-                  realtimeData={realtimeData}
-                  COLORS={COLORS}
-                  WORKFLOW_PHASES={WORKFLOW_PHASES}
-                  plannerLogs={plannerLogs}
-                  activePlans={activePlans}
-                />
-              )}
-              {selectedView === "settings" && (
-                <SettingsView
-                  modelConfig={modelConfig}
-                  lmStudioConfig={lmStudioConfig}
-                  connectionStatus={connectionStatus}
-                  availableModels={availableModels}
-                  savedConfigs={savedConfigs}
-                  isDarkMode={isDarkMode}
-                  AGENT_CONFIGS={AGENT_CONFIGS}
-                  RECOMMENDED_MODELS={RECOMMENDED_MODELS}
-                  onConfigureModels={configureModels}
-                  onUpdateModelConfig={setModelConfig}
-                  onUpdateLMStudioConfig={setLmStudioConfig}
-                  onCheckConnection={checkLMStudioConnection}
-                  onToggleDarkMode={setIsDarkMode}
-                />
-              )}
+          <div className="flex items-center gap-4">
+            {/* Status Indicators */}
+            <div className="flex items-center gap-3 px-4 py-2 bg-slate-50 rounded-lg border border-slate-200">
+              {/* Backend Status */}
+              <div className="flex items-center gap-2">
+                {isConnected ? (
+                  <div className="flex items-center gap-1.5">
+                    <div className="w-2 h-2 bg-blue-500 rounded-full shadow-sm shadow-blue-500/50"></div>
+                    <span className="text-xs font-medium text-gray-700">Backend</span>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-1.5">
+                    <div className="w-2 h-2 bg-slate-300 rounded-full"></div>
+                    <span className="text-xs font-medium text-slate-400">Backend</span>
+                  </div>
+                )}
+              </div>
+              
+              <div className="w-px h-4 bg-slate-200"></div>
+              
+              {/* Active Agents */}
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-medium text-gray-700">
+                  {agents.filter(a => a.status === "busy").length}/{agents.length} Agents
+                </span>
+              </div>
+              
+              <div className="w-px h-4 bg-slate-200"></div>
+              
+              {/* Active Workflows */}
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-medium text-gray-700">
+                  {workflows.filter(w => w.status === "executing").length} Workflows
+                </span>
+              </div>
             </div>
           </div>
         </div>
-      </div>
-    </TooltipProvider>
+      </header>
+
+      {/* Main Content */}
+      <main className="flex-1 overflow-y-auto p-6">
+        <div className="max-w-[1600px] mx-auto">
+          {/* Backend Error Alert */}
+          {backendError && (
+            <Alert variant="destructive" className="mb-6">
+              <AlertCircle className="h-4 w-4" />
+              <AlertDescription>
+                <strong>Backend Connection Error:</strong> {backendError}
+                <br />
+                <span className="text-sm">
+                  Run backend server: <code className="bg-red-100 px-1 rounded">python main.py</code>
+                </span>
+              </AlertDescription>
+            </Alert>
+          )}
+
+          {/* Main Tabs */}
+          <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
+            <TabsList className="grid w-full grid-cols-5">
+              <TabsTrigger value="dashboard">
+                <LayoutDashboard className="h-4 w-4 mr-2" />
+                Dashboard
+              </TabsTrigger>
+              <TabsTrigger value="workflows" className="relative">
+                <GitBranch className="h-4 w-4 mr-2" />
+                Workflows
+                {workflows.filter(w => w.status === "executing").length > 0 && (
+                  <span className="absolute -top-1 -right-1 flex h-3 w-3">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
+                    <span className="relative inline-flex rounded-full h-3 w-3 bg-blue-500"></span>
+                  </span>
+                )}
+              </TabsTrigger>
+              <TabsTrigger value="agents">
+                <Bot className="h-4 w-4 mr-2" />
+                Agents
+              </TabsTrigger>
+              <TabsTrigger value="analytics">
+                <LineChartIcon className="h-4 w-4 mr-2" />
+                Analytics
+              </TabsTrigger>
+              <TabsTrigger value="settings">
+                <Settings className="h-4 w-4 mr-2" />
+                Settings
+              </TabsTrigger>
+            </TabsList>
+
+            <TabsContent value="dashboard">
+              <Dashboard
+                agents={agents}
+                workflows={workflows}
+                systemMetrics={systemMetrics}
+                performanceData={performanceData}
+                workflowDistribution={workflowDistribution}
+                messages={messages}
+                onCreateWorkflow={() => setActiveTab("workflows")}
+                onRefreshData={fetchMetrics}
+              />
+            </TabsContent>
+
+            <TabsContent value="workflows">
+              <Workflows
+                workflows={workflows}
+                activeWorkflow={activeWorkflow}
+                WORKFLOW_PHASES={WORKFLOW_PHASES}
+                onCreateWorkflow={createWorkflow}
+                onSelectWorkflow={setActiveWorkflow}
+                onRefreshWorkflows={fetchWorkflows}
+              />
+            </TabsContent>
+
+            <TabsContent value="agents">
+              <Agents
+                agents={agents}
+                AGENT_CONFIGS={AGENT_CONFIGS}
+                onAskAgent={askAgent}
+                onRefreshAgents={fetchAgents}
+              />
+            </TabsContent>
+
+            <TabsContent value="analytics">
+              <Analytics
+                agents={agents}
+                workflows={workflows}
+                performanceData={performanceData}
+                workflowDistribution={workflowDistribution}
+                agentUtilization={agentUtilization}
+                realtimeData={realtimeData}
+                COLORS={COLORS}
+                WORKFLOW_PHASES={WORKFLOW_PHASES}
+                plannerLogs={plannerLogs}
+                activePlans={activePlans}
+              />
+            </TabsContent>
+
+            <TabsContent value="settings">
+              <SettingsView
+                modelConfig={modelConfig}
+                lmStudioConfig={lmStudioConfig}
+                connectionStatus={connectionStatus}
+                availableModels={availableModels}
+                savedConfigs={savedConfigs}
+                isDarkMode={isDarkMode}
+                AGENT_CONFIGS={AGENT_CONFIGS}
+                RECOMMENDED_MODELS={RECOMMENDED_MODELS}
+                onConfigureModels={configureModels}
+                onUpdateModelConfig={setModelConfig}
+                onUpdateLMStudioConfig={setLmStudioConfig}
+                onCheckConnection={checkLMStudioConnection}
+                onToggleDarkMode={setIsDarkMode}
+              />
+            </TabsContent>
+          </Tabs>
+        </div>
+      </main>
+    </div>
   );
 };
 

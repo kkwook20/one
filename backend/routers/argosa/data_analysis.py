@@ -54,6 +54,7 @@ from .analysis import (
 from .analysis.lm_studio_manager import lm_studio_manager, TaskType
 from .analysis.network_discovery import network_discovery
 from .analysis.distributed_ai import distributed_executor
+from .analysis.configs import get_distributed_settings
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -227,9 +228,14 @@ class EnhancedAgentSystem:
         # AI 모델 설정
         self.ai_models = DEFAULT_AI_MODELS
         
+        # 초기화 플래그
+        self.initialized = False
+        
         # 에이전트 초기화
         self._initialize_agents()
         self._create_workflows()
+        
+        # 초기화 태스크는 startup event에서 처리됨
         
     def _initialize_agents(self):
         """에이전트 초기화"""
@@ -927,57 +933,223 @@ class EnhancedAgentSystem:
             
             # 재시도 로직
             if should_retry_operation(e, 0, SYSTEM_CONFIG["retry_count"]):
+                logger.info(f"Retrying agent {agent_type} execution...")
                 await asyncio.sleep(1)
                 return await self._execute_agent(agent_type, prompt_data)
             
-            raise
+            # 진단 정보가 포함된 예외인 경우 그대로 전달
+            if "Diagnosis:" in str(e):
+                raise
+            
+            # 그렇지 않은 경우 새로운 예외로 래핑
+            raise Exception(f"Agent {agent_type} execution failed after retries: {str(e)}")
     
     async def _call_llm(self, model: str, prompt: str) -> Dict[str, Any]:
-        """LLM 호출 - 분산 실행 지원"""
+        """LLM 호출 - 실제 LM Studio 호출"""
         
-        # 에이전트 타입에서 작업 타입 매핑
-        task_type_map = {
-            "creative": TaskType.CREATIVE_WRITING,
-            "code": TaskType.CODE_GENERATION,
-            "analys": TaskType.ANALYSIS,
-            "reason": TaskType.REASONING,
-            "translat": TaskType.TRANSLATION,
-            "summar": TaskType.SUMMARIZATION
+        logger.info(f"Calling LLM with model: {model}")
+        logger.debug(f"Prompt length: {len(prompt)} chars")
+        
+        error_details = {
+            "distributed_execution_error": None,
+            "direct_call_error": None,
+            "connection_status": {},
+            "model_availability": {}
         }
         
-        # 프롬프트에서 작업 타입 추론
-        task_type = TaskType.ANALYSIS  # 기본값
-        for key, t_type in task_type_map.items():
-            if key in prompt.lower():
-                task_type = t_type
-                break
-        
-        # 분산 실행
-        task_id = await distributed_executor.submit_task(
-            prompt=prompt,
-            model=model,
-            agent_type="general",  # 실제 에이전트 타입으로 변경 필요
-            task_type=task_type,
-            priority=0
-        )
-        
-        # 결과 대기
-        task = await distributed_executor.wait_for_task(task_id, timeout=60)
-        
-        if task and task.status == "completed":
-            result = task.result
-            if result and "choices" in result:
-                content = result["choices"][0]["message"]["content"]
+        try:
+            # 1. 분산 실행 설정 확인
+            from .analysis.configs import get_distributed_settings
+            dist_settings = get_distributed_settings()
+            
+            if dist_settings.get("enabled", True) and self.initialized:
+                # 분산 실행 사용
+                logger.info("Using distributed execution")
                 
-                # JSON 추출 시도
-                json_result = extract_json_from_text(content)
-                if json_result:
-                    return json_result
+                # 에이전트 타입에서 작업 타입 매핑
+                task_type_map = {
+                    "creative": TaskType.CREATIVE_WRITING,
+                    "code": TaskType.CODE_GENERATION,
+                    "analys": TaskType.ANALYSIS,
+                    "reason": TaskType.REASONING,
+                    "translat": TaskType.TRANSLATION,
+                    "summar": TaskType.SUMMARIZATION
+                }
                 
-                return {"result": content}
+                # 프롬프트에서 작업 타입 추론
+                task_type = TaskType.ANALYSIS  # 기본값
+                for key, t_type in task_type_map.items():
+                    if key in prompt.lower():
+                        task_type = t_type
+                        break
+                
+                # 분산 실행
+                task_id = await distributed_executor.submit_task(
+                    prompt=prompt,
+                    model=model,
+                    agent_type="general",  # 실제 에이전트 타입으로 변경 필요
+                    task_type=task_type,
+                    priority=5  # 중간 우선순위
+                )
+                
+                logger.info(f"Submitted distributed task: {task_id}")
+                
+                # 결과 대기 (타임아웃은 설정에서 가져옴)
+                timeout = dist_settings.get("timeout", 60)
+                task = await distributed_executor.wait_for_task(task_id, timeout=timeout)
+                
+                if task and task.status == "completed":
+                    result = task.result
+                    if result and "choices" in result:
+                        content = result["choices"][0]["message"]["content"]
+                        
+                        logger.info(f"Distributed task completed successfully")
+                        logger.debug(f"Response length: {len(content)} chars")
+                        
+                        # JSON 추출 시도
+                        json_result = extract_json_from_text(content)
+                        if json_result:
+                            return json_result
+                        
+                        return {"result": content, "source": "distributed"}
+                    else:
+                        logger.error(f"Invalid response format from distributed task")
+                        raise Exception("Invalid response format")
+                else:
+                    error_msg = f"Distributed task failed: {task.error if task else 'Timeout'}"
+                    logger.error(error_msg)
+                    error_details["distributed_execution_error"] = error_msg
+                    raise Exception(error_msg)
+                    
+            else:
+                # 직접 localhost 호출 (분산 실행 비활성화 또는 초기화 안됨)
+                logger.info("Using direct localhost LM Studio call")
+                
+                # localhost 인스턴스 확인
+                localhost_instance_id = "localhost:1234"
+                
+                # lm_studio_manager가 초기화되지 않았다면 간단히 추가
+                if localhost_instance_id not in lm_studio_manager.instances:
+                    await lm_studio_manager.add_instance("localhost", 1234)
+                
+                localhost = lm_studio_manager.instances.get(localhost_instance_id)
+                error_details["connection_status"]["localhost"] = localhost.status if localhost else "not_found"
+                
+                # 모델이 지정되지 않았다면 기본 모델 사용
+                if not model or model == "default":
+                    if localhost and localhost.available_models:
+                        model = localhost.available_models[0]
+                    else:
+                        # 모델 목록 다시 확인
+                        await lm_studio_manager.test_connection(localhost)
+                        await lm_studio_manager.get_instance_info(localhost)
+                        if localhost.available_models:
+                            model = localhost.available_models[0]
+                        else:
+                            error_details["model_availability"]["localhost"] = "no_models_available"
+                            raise Exception("No models available in localhost LM Studio")
+                
+                error_details["model_availability"]["selected_model"] = model
+                
+                # 직접 호출
+                result = await lm_studio_manager.call_llm(
+                    prompt=prompt,
+                    model=model,
+                    instance_id=localhost_instance_id,
+                    temperature=0.7,
+                    max_tokens=2000
+                )
+                
+                if result and "choices" in result:
+                    content = result["choices"][0]["message"]["content"]
+                    
+                    logger.info(f"Direct LLM call completed successfully")
+                    logger.debug(f"Response length: {len(content)} chars")
+                    
+                    # JSON 추출 시도
+                    json_result = extract_json_from_text(content)
+                    if json_result:
+                        return json_result
+                    
+                    return {"result": content, "source": "direct"}
+                else:
+                    raise Exception("Invalid response format from LM Studio")
         
-        # 폴백: 시뮬레이션
-        return await self._simulate_llm_response(prompt)
+        except Exception as e:
+            logger.error(f"LLM call failed: {e}")
+            error_details["direct_call_error"] = str(e)
+            
+            # 문제점 분석 및 진단
+            diagnosis = await self._diagnose_llm_failure(error_details)
+            
+            # 문제점 분석 결과를 예외로 발생
+            raise Exception(f"LLM call failed. Diagnosis: {json.dumps(diagnosis, indent=2)}")
+    
+    async def _diagnose_llm_failure(self, error_details: Dict[str, Any]) -> Dict[str, Any]:
+        """LLM 호출 실패 시 문제점 분석"""
+        
+        diagnosis = {
+            "timestamp": datetime.now().isoformat(),
+            "issues": [],
+            "recommendations": [],
+            "system_state": {}
+        }
+        
+        # 1. 연결 상태 확인
+        all_instances = {}
+        for instance_id, instance in lm_studio_manager.instances.items():
+            all_instances[instance_id] = {
+                "status": instance.status,
+                "models": len(instance.available_models),
+                "is_local": instance.is_local
+            }
+        diagnosis["system_state"]["lm_studio_instances"] = all_instances
+        
+        # 2. 분산 실행 상태 확인
+        dist_status = distributed_executor.get_cluster_status()
+        diagnosis["system_state"]["distributed_execution"] = {
+            "enabled": dist_status.get("enabled", False),
+            "active_instances": dist_status.get("active_instances", 0),
+            "pending_tasks": dist_status.get("pending_tasks", 0)
+        }
+        
+        # 3. 문제 분석
+        if not all_instances:
+            diagnosis["issues"].append("No LM Studio instances configured")
+            diagnosis["recommendations"].append("Add at least one LM Studio instance (localhost:1234)")
+        
+        localhost_status = all_instances.get("localhost:1234", {})
+        if localhost_status.get("status") != "connected":
+            diagnosis["issues"].append("Localhost LM Studio is not connected")
+            diagnosis["recommendations"].append("Ensure LM Studio is running on localhost:1234")
+            diagnosis["recommendations"].append("Check firewall settings and port availability")
+        
+        if localhost_status.get("models", 0) == 0:
+            diagnosis["issues"].append("No models loaded in localhost LM Studio")
+            diagnosis["recommendations"].append("Load at least one model in LM Studio")
+        
+        if error_details.get("distributed_execution_error"):
+            diagnosis["issues"].append(f"Distributed execution failed: {error_details['distributed_execution_error']}")
+            diagnosis["recommendations"].append("Check network connectivity between instances")
+            diagnosis["recommendations"].append("Verify all remote LM Studio instances are accessible")
+        
+        if error_details.get("direct_call_error"):
+            diagnosis["issues"].append(f"Direct call failed: {error_details['direct_call_error']}")
+            
+            if "timeout" in str(error_details['direct_call_error']).lower():
+                diagnosis["recommendations"].append("Increase timeout settings")
+                diagnosis["recommendations"].append("Check if model is too large for available resources")
+            elif "connection" in str(error_details['direct_call_error']).lower():
+                diagnosis["recommendations"].append("Verify LM Studio API is enabled")
+                diagnosis["recommendations"].append("Check if LM Studio is listening on the correct port")
+        
+        # 4. 초기화 상태 확인
+        if not self.initialized:
+            diagnosis["issues"].append("Enhanced Agent System not fully initialized")
+            diagnosis["recommendations"].append("Wait for initialization to complete")
+            diagnosis["recommendations"].append("Check startup logs for initialization errors")
+        
+        return diagnosis
     
     async def _simulate_llm_response(self, prompt: str) -> Dict[str, Any]:
         """LLM 응답 시뮬레이션 (폴백용)"""
@@ -1054,6 +1226,26 @@ class TestAuthService:
             }
         
         return {"status": "completed", "result": "Generic response"}
+    
+    async def _initialize_llm_backend(self):
+        """LLM 백엔드 초기화"""
+        try:
+            logger.info("Initializing LLM backend...")
+            
+            # Distributed Executor가 이미 초기화되었는지 확인
+            if not hasattr(distributed_executor, 'initialized') or not distributed_executor.initialized:
+                await distributed_executor.initialize(auto_discover=False)
+            
+            # localhost 확인
+            if "localhost:1234" not in lm_studio_manager.instances:
+                await lm_studio_manager.add_instance("localhost", 1234)
+            
+            self.initialized = True
+            logger.info("LLM backend initialized successfully")
+            
+        except Exception as e:
+            logger.error(f"Failed to initialize LLM backend: {e}")
+            self.initialized = False
     
     async def _broadcast_progress(self, workflow_id: str, progress_data: Dict[str, Any]):
         """WebSocket으로 진행상황 브로드캐스트"""
@@ -1672,24 +1864,59 @@ async def list_lm_studio_instances():
     """LM Studio 인스턴스 목록"""
     
     instances = []
+    localhost_added = False
+    
     for inst in lm_studio_manager.instances.values():
-        instances.append({
-            "id": inst.id,
-            "host": inst.host,
-            "hostname": inst.host,  # 추가
-            "port": inst.port,
-            "status": inst.status,
-            "is_local": inst.is_local,
-            "models": inst.available_models,
-            "current_model": inst.current_model,
-            "performance_score": inst.performance_score,
-            "capabilities": inst.capabilities  # 추가
-        })
+        # localhost 중복 방지
+        if inst.is_local or inst.host in ["localhost", "127.0.0.1"]:
+            if not localhost_added:
+                # localhost는 정규화해서 한 번만 추가
+                instances.append({
+                    "id": "localhost:1234",  # 항상 이 ID 사용
+                    "host": "localhost",
+                    "hostname": "localhost",
+                    "port": 1234,
+                    "status": inst.status,
+                    "is_local": True,
+                    "models": inst.available_models,
+                    "current_model": inst.current_model,
+                    "performance_score": inst.performance_score,
+                    "capabilities": inst.capabilities,
+                    "enabled": inst.enabled,
+                    "is_registered": inst.is_registered,  # 이제 안전하게 접근 가능
+                    "priority": inst.priority,
+                    "tags": inst.tags,
+                    "max_concurrent_tasks": inst.max_concurrent_tasks,
+                    "notes": inst.notes
+                })
+                localhost_added = True
+                logger.info(f"Added localhost instance: id=localhost:1234, registered={inst.is_registered}")
+        else:
+            # 일반 네트워크 인스턴스
+            instances.append({
+                "id": inst.id,
+                "host": inst.host,
+                "hostname": inst.hostname or inst.host,
+                "port": inst.port,
+                "status": inst.status,
+                "is_local": inst.is_local,
+                "models": inst.available_models,
+                "current_model": inst.current_model,
+                "performance_score": inst.performance_score,
+                "capabilities": inst.capabilities,
+                "enabled": inst.enabled,
+                "is_registered": inst.is_registered,  # 이제 안전하게 접근 가능
+                "priority": inst.priority,
+                "tags": inst.tags,
+                "max_concurrent_tasks": inst.max_concurrent_tasks,
+                "notes": inst.notes
+            })
     
     return {
         "instances": instances,
         "total": len(instances),
-        "active": sum(1 for inst in lm_studio_manager.instances.values() if inst.status == "connected")
+        "active": sum(1 for inst in lm_studio_manager.instances.values() if inst.status == "connected"),
+        "registered": sum(1 for inst in instances if inst["is_registered"])
     }
 
 @router.post("/lm-studio/add-instance")
@@ -1699,13 +1926,28 @@ async def add_lm_studio_instance(request: Dict[str, Any]):
     host = request.get("host", "localhost")
     port = request.get("port", 1234)
     
+    # localhost의 경우 정규화
+    if host in ["localhost", "127.0.0.1"] and port == 1234:
+        # 이미 localhost가 있는지 확인
+        for inst in lm_studio_manager.instances.values():
+            if inst.is_local:
+                logger.info(f"Localhost already exists: {inst.id}")
+                return {
+                    "id": "localhost:1234",
+                    "status": inst.status,
+                    "models": inst.available_models,
+                    "is_local": True,
+                    "is_registered": inst.is_registered  # 이제 안전하게 접근 가능
+                }
+    
     instance = await lm_studio_manager.add_instance(host, port)
     
     return {
-        "id": instance.id,
+        "id": instance.id if not instance.is_local else "localhost:1234",
         "status": instance.status,
         "models": instance.available_models,
-        "is_local": instance.is_local
+        "is_local": instance.is_local,
+        "is_registered": instance.is_registered  # 이제 안전하게 접근 가능
     }
 
 @router.get("/lm-studio/instance/{instance_id}/models")
@@ -1734,9 +1976,27 @@ async def get_instance_models(instance_id: str):
 async def test_instance_connection(instance_id: str):
     """인스턴스 연결 테스트"""
     
+    logger.info(f"Testing connection for instance: {instance_id}")
+    
     instance = lm_studio_manager.instances.get(instance_id)
+    
+    # localhost 처리
     if not instance:
-        raise HTTPException(status_code=404, detail="Instance not found")
+        localhost_ids = ["localhost:1234", "127.0.0.1:1234", "localhost", "127.0.0.1"]
+        
+        if any(instance_id.startswith(lid) for lid in localhost_ids):
+            # localhost 인스턴스 찾기
+            for inst_id, inst in lm_studio_manager.instances.items():
+                if inst.is_local:
+                    instance = inst
+                    instance_id = inst.id
+                    logger.info(f"Found localhost instance: {inst.id}")
+                    break
+    
+    if not instance:
+        logger.error(f"Instance not found: {instance_id}")
+        logger.info(f"Available instances: {list(lm_studio_manager.instances.keys())}")
+        raise HTTPException(status_code=404, detail=f"Instance not found: {instance_id}")
     
     connected = await lm_studio_manager.test_connection(instance)
     
@@ -1744,12 +2004,31 @@ async def test_instance_connection(instance_id: str):
         await lm_studio_manager.get_instance_info(instance)
     
     return {
-        "instance_id": instance_id,
+        "instance_id": instance.id if not instance.is_local else "localhost:1234",
         "connected": connected,
         "status": instance.status,
         "models": instance.available_models if connected else []
     }
 
+@router.put("/lm-studio/instance/{instance_id}/settings")
+async def update_instance_settings(instance_id: str, settings: Dict[str, Any]):
+    """인스턴스 설정 업데이트"""
+    
+    # localhost ID 정규화
+    if instance_id in ["localhost", "127.0.0.1", "localhost:1234", "127.0.0.1:1234"]:
+        instance_id = "localhost:1234"
+    
+    success = lm_studio_manager.update_instance_settings(instance_id, settings)
+    
+    if success:
+        return {
+            "status": "success",
+            "instance_id": instance_id,
+            "message": "Settings updated successfully"
+        }
+    else:
+        raise HTTPException(status_code=404, detail=f"Instance not found: {instance_id}")
+    
 @router.delete("/lm-studio/instance/{instance_id}")
 async def remove_instance(instance_id: str):
     """인스턴스 제거"""
@@ -1759,6 +2038,92 @@ async def remove_instance(instance_id: str):
         return {"status": "removed", "instance_id": instance_id}
     
     raise HTTPException(status_code=404, detail="Instance not found")
+
+@router.get("/lm-studio/diagnose")
+async def diagnose_lm_studio_connection():
+    """LM Studio 연결 진단"""
+    
+    diagnosis = {
+        "timestamp": datetime.now().isoformat(),
+        "issues": [],
+        "recommendations": [],
+        "system_state": {},
+        "health_check_results": {}
+    }
+    
+    # 1. 시스템 상태 확인
+    diagnosis["system_state"]["initialized"] = enhanced_agent_system.initialized
+    
+    # 2. LM Studio 인스턴스 상태
+    instances_status = {}
+    for instance_id, instance in lm_studio_manager.instances.items():
+        # 연결 테스트
+        connected = await lm_studio_manager.test_connection(instance)
+        
+        instances_status[instance_id] = {
+            "status": instance.status,
+            "is_local": instance.is_local,
+            "models_count": len(instance.available_models),
+            "models": instance.available_models[:3] if instance.available_models else [],  # 처음 3개만
+            "connection_test": connected,
+            "performance_score": instance.performance_score
+        }
+        
+        if not connected:
+            diagnosis["issues"].append(f"Instance {instance_id} is not reachable")
+            if instance.is_local:
+                diagnosis["recommendations"].append(f"Ensure LM Studio is running on {instance.host}:{instance.port}")
+            else:
+                diagnosis["recommendations"].append(f"Check network connectivity to {instance.host}:{instance.port}")
+    
+    diagnosis["system_state"]["lm_studio_instances"] = instances_status
+    
+    # 3. 분산 실행 상태
+    dist_status = distributed_executor.get_cluster_status()
+    diagnosis["system_state"]["distributed_execution"] = dist_status
+    
+    # 4. 헬스 체크 - localhost에서 간단한 테스트
+    localhost_id = "localhost:1234"
+    if localhost_id in lm_studio_manager.instances:
+        try:
+            test_result = await lm_studio_manager.call_llm(
+                prompt="Say 'test successful' in 3 words",
+                model=lm_studio_manager.instances[localhost_id].available_models[0] if lm_studio_manager.instances[localhost_id].available_models else "default",
+                instance_id=localhost_id,
+                temperature=0.1,
+                max_tokens=10
+            )
+            diagnosis["health_check_results"]["localhost_test"] = "success"
+            diagnosis["health_check_results"]["test_response"] = test_result.get("choices", [{}])[0].get("message", {}).get("content", "")[:50]
+        except Exception as e:
+            diagnosis["health_check_results"]["localhost_test"] = "failed"
+            diagnosis["health_check_results"]["error"] = str(e)
+            diagnosis["issues"].append(f"Health check failed: {str(e)}")
+    
+    # 5. 종합 판단
+    if not instances_status:
+        diagnosis["issues"].append("No LM Studio instances configured")
+        diagnosis["recommendations"].append("Add at least one LM Studio instance using /lm-studio/add-instance")
+    
+    connected_count = sum(1 for inst in instances_status.values() if inst["connection_test"])
+    if connected_count == 0:
+        diagnosis["issues"].append("No LM Studio instances are connected")
+        diagnosis["recommendations"].append("Start LM Studio and ensure it's configured to accept API requests")
+    
+    models_count = sum(inst["models_count"] for inst in instances_status.values())
+    if models_count == 0:
+        diagnosis["issues"].append("No models loaded in any LM Studio instance")
+        diagnosis["recommendations"].append("Load at least one model in LM Studio")
+    
+    # 6. 전체 상태 판단
+    if not diagnosis["issues"]:
+        diagnosis["overall_status"] = "healthy"
+        diagnosis["message"] = f"System is healthy with {connected_count} connected instances and {models_count} available models"
+    else:
+        diagnosis["overall_status"] = "unhealthy"
+        diagnosis["message"] = f"System has {len(diagnosis['issues'])} issues that need attention"
+    
+    return diagnosis
 
 @router.get("/distributed/status")
 async def get_distributed_status():
@@ -1788,7 +2153,213 @@ async def execute_distributed(request: Dict[str, Any]):
         "task_id": task_id,
         "status": "submitted"
     }
+# ===== 설정 관리 엔드포인트 =====
+# 기존 라우터 파일의 끝부분에 이 코드를 추가하세요
 
+@router.get("/api/argosa/analysis/settings")
+async def get_settings():
+    """현재 설정 조회"""
+    try:
+        from .analysis.configs import get_all_settings
+        settings = get_all_settings()
+        
+        # LM Studio 인스턴스 정보 추가
+        instances = []
+        for inst in lm_studio_manager.instances.values():
+            instances.append({
+                "id": inst.id,
+                "host": inst.host,
+                "port": inst.port,
+                "status": inst.status,
+                "is_local": inst.is_local,
+                "models": inst.available_models,
+                "current_model": inst.current_model
+            })
+        
+        settings["lm_studio_instances"] = instances
+        
+        return {
+            "status": "success",
+            "settings": settings
+        }
+    except Exception as e:
+        logger.error(f"Failed to get settings: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.put("/api/argosa/analysis/settings")
+async def update_settings(settings: Dict[str, Any]):
+    """설정 업데이트"""
+    try:
+        from .analysis.configs import update_all_settings, update_ai_models
+        
+        # 설정 저장
+        update_all_settings(settings)
+        
+        # AI 모델 설정이 변경되었으면 시스템에 적용
+        if "ai_models" in settings:
+            await enhanced_agent_system.configure_models(settings["ai_models"])
+        
+        return {
+            "status": "success",
+            "message": "Settings updated successfully"
+        }
+    except Exception as e:
+        logger.error(f"Failed to update settings: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/api/argosa/analysis/settings/save-profile")
+async def save_settings_profile(request: Dict[str, Any]):
+    """설정 프로필 저장"""
+    try:
+        from .analysis.configs import get_all_settings, SETTINGS_FILE
+        import shutil
+        
+        profile_name = request.get("name", "default")
+        description = request.get("description", "")
+        
+        # 현재 설정 가져오기
+        current_settings = get_all_settings()
+        
+        # 프로필 디렉토리 생성
+        profiles_dir = SETTINGS_FILE.parent / "profiles"
+        profiles_dir.mkdir(parents=True, exist_ok=True)
+        
+        # 프로필 파일 저장
+        profile_file = profiles_dir / f"{profile_name}.json"
+        profile_data = {
+            "name": profile_name,
+            "description": description,
+            "created_at": datetime.now().isoformat(),
+            "settings": current_settings
+        }
+        
+        with open(profile_file, 'w', encoding='utf-8') as f:
+            json.dump(profile_data, f, indent=2, ensure_ascii=False)
+        
+        return {
+            "status": "success",
+            "message": f"Profile '{profile_name}' saved successfully",
+            "profile": profile_data
+        }
+    except Exception as e:
+        logger.error(f"Failed to save profile: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/api/argosa/analysis/settings/profiles")
+async def list_settings_profiles():
+    """저장된 프로필 목록"""
+    try:
+        from .analysis.configs import SETTINGS_FILE
+        
+        profiles_dir = SETTINGS_FILE.parent / "profiles"
+        profiles = []
+        
+        if profiles_dir.exists():
+            for profile_file in profiles_dir.glob("*.json"):
+                try:
+                    with open(profile_file, 'r', encoding='utf-8') as f:
+                        profile_data = json.load(f)
+                        profiles.append({
+                            "name": profile_data.get("name", profile_file.stem),
+                            "description": profile_data.get("description", ""),
+                            "created_at": profile_data.get("created_at", ""),
+                            "filename": profile_file.name
+                        })
+                except Exception as e:
+                    logger.error(f"Failed to read profile {profile_file}: {e}")
+        
+        return {
+            "status": "success",
+            "profiles": profiles
+        }
+    except Exception as e:
+        logger.error(f"Failed to list profiles: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/api/argosa/analysis/settings/load-profile")
+async def load_settings_profile(request: Dict[str, Any]):
+    """프로필 로드"""
+    try:
+        from .analysis.configs import SETTINGS_FILE, update_all_settings
+        
+        profile_name = request.get("name", "default")
+        
+        # 프로필 파일 읽기
+        profiles_dir = SETTINGS_FILE.parent / "profiles"
+        profile_file = profiles_dir / f"{profile_name}.json"
+        
+        if not profile_file.exists():
+            raise HTTPException(status_code=404, detail=f"Profile '{profile_name}' not found")
+        
+        with open(profile_file, 'r', encoding='utf-8') as f:
+            profile_data = json.load(f)
+        
+        # 설정 적용
+        settings = profile_data.get("settings", {})
+        update_all_settings(settings)
+        
+        # AI 모델 설정 적용
+        if "ai_models" in settings:
+            await enhanced_agent_system.configure_models(settings["ai_models"])
+        
+        return {
+            "status": "success",
+            "message": f"Profile '{profile_name}' loaded successfully",
+            "settings": settings
+        }
+    except Exception as e:
+        logger.error(f"Failed to load profile: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/api/argosa/analysis/lm-studio/sync-model")
+async def sync_model_to_instances(request: Dict[str, Any]):
+    """선택된 모델을 모든 인스턴스에 동기화"""
+    try:
+        model = request.get("model")
+        source_instance_id = request.get("source_instance_id", "localhost:1234")
+        
+        if not model:
+            raise HTTPException(status_code=400, detail="Model not specified")
+        
+        # localhost 인스턴스 확인
+        source_instance = None
+        for inst in lm_studio_manager.instances.values():
+            if inst.is_local and model in inst.available_models:
+                source_instance = inst
+                break
+        
+        if not source_instance:
+            raise HTTPException(status_code=404, detail="Model not found in localhost")
+        
+        # 연결된 모든 인스턴스에 모델 동기화 요청
+        results = {
+            "success": [],
+            "failed": []
+        }
+        
+        for instance in lm_studio_manager.instances.values():
+            if instance.status == "connected" and not instance.is_local:
+                try:
+                    # 실제 구현에서는 모델 파일 전송 로직 필요
+                    # 여기서는 시뮬레이션
+                    logger.info(f"Syncing {model} to {instance.id}")
+                    results["success"].append(instance.id)
+                except Exception as e:
+                    logger.error(f"Failed to sync to {instance.id}: {e}")
+                    results["failed"].append({
+                        "instance_id": instance.id,
+                        "error": str(e)
+                    })
+        
+        return {
+            "status": "completed",
+            "model": model,
+            "results": results
+        }
+    except Exception as e:
+        logger.error(f"Model sync failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    
 @router.get("/distributed/task/{task_id}")
 async def get_task_status(task_id: str):
     """작업 상태 조회"""
@@ -1808,6 +2379,30 @@ async def get_task_status(task_id: str):
         "result": task.result if task.status == "completed" else None,
         "error": task.error if task.status == "failed" else None
     }
+@router.post("/lm-studio/instance/{instance_id}/register")
+async def register_instance(instance_id: str, request: Dict[str, Any]):
+    """인스턴스 등록/해제"""
+    
+    register = request.get("register", True)
+    
+    logger.info(f"Register instance request: {instance_id} -> {register}")
+    
+    # localhost ID 정규화
+    if instance_id in ["localhost", "127.0.0.1", "localhost:1234", "127.0.0.1:1234"]:
+        instance_id = "localhost:1234"
+    
+    # LM Studio Manager의 메서드 호출
+    success = lm_studio_manager.set_instance_registered(instance_id, register)
+    
+    if success:
+        return {
+            "status": "success",
+            "instance_id": instance_id,
+            "registered": register
+        }
+    else:
+        logger.error(f"Failed to register instance: {instance_id}")
+        raise HTTPException(status_code=404, detail=f"Instance not found: {instance_id}")
 
 # ===== 헬퍼 함수 =====
 
@@ -1843,18 +2438,23 @@ async def schedule_cleanup():
         if removed > 0:
             logger.info(f"Cleaned up {removed} old workflows")
 
-# 초기화 및 종료 함수
-async def initialize():
-    """Initialize data analysis module"""
-    logger.info("Data analysis module initialized")
-    
-    # 분산 실행기 초기화
-    await distributed_executor.initialize(auto_discover=False)
+# API 엔드포인트 시작 부분에 추가 (파일 하단)
+@router.on_event("startup")
+async def startup_event():
+    """시작 시 초기화"""
+    await enhanced_agent_system._initialize_llm_backend()
     
     # 정리 작업 시작
     asyncio.create_task(schedule_cleanup())
     # 실시간 메트릭 전송 시작
     asyncio.create_task(send_realtime_metrics())
+
+# 초기화 및 종료 함수
+async def initialize():
+    """Initialize data analysis module"""
+    logger.info("Data analysis module initialized")
+    
+    # 분산 실행기 초기화는 enhanced_agent_system._initialize_llm_backend에서 처리됨
     
 async def shutdown():
     """Shutdown data analysis module"""

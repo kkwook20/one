@@ -1,143 +1,311 @@
 # backend/routers/argosa/analysis/configs.py
-"""설정값과 상수 정의"""
+"""통합 설정 관리 시스템"""
 
-from enum import Enum
-from typing import Dict, List, Any
+import json
+from pathlib import Path
+from typing import Dict, Any, List, Optional
+from datetime import datetime
+import logging
+
+logger = logging.getLogger(__name__)
+
+# 설정 파일 경로
+SETTINGS_DIR = Path(__file__).parent / "settings"
+SETTINGS_DIR.mkdir(exist_ok=True)
+SETTINGS_FILE = SETTINGS_DIR / "analysis_settings.json"
+
+# 기본 설정
+DEFAULT_SETTINGS = {
+    "ai_models": {
+        "default": None,
+        "specialized": {}
+    },
+    "lm_studio_config": {
+        "endpoint": "http://localhost:1234/v1/chat/completions",
+        "model": "local-model",
+        "temperature": 0.7,
+        "maxTokens": 2000
+    },
+    "network_instances": [],  # 네트워크 인스턴스 저장
+    "distributed_settings": {
+        "enabled": True,
+        "auto_discover": False,
+        "instance_selection": "performance",  # performance, round_robin, manual
+        "max_retries": 3,
+        "timeout": 60
+    },
+    "ui_preferences": {
+        "dark_mode": False,
+        "auto_refresh": True,
+        "debug_mode": False,
+        "metrics_update_interval": 5
+    },
+    "performance": {
+        "response_time_threshold": 5000,
+        "max_concurrent_requests": 10,
+        "cache_duration": 60,
+        "batch_processing": True,
+        "response_streaming": True,
+        "gpu_acceleration": False
+    },
+    "system": {
+        "update_interval": 5,
+        "max_chart_data_points": 100,
+        "history_retention_days": 30,
+        "cache_ttl_seconds": 3600,
+        "agent_timeout_seconds": 300,
+        "retry_count": 3
+    }
+}
+
+class NetworkInstanceConfig:
+    """네트워크 인스턴스 설정"""
+    
+    def __init__(self, data: Dict[str, Any]):
+        self.id = data.get("id", "")
+        self.host = data.get("host", "")
+        self.hostname = data.get("hostname", self.host)  # 호스트명
+        self.port = data.get("port", 1234)
+        self.enabled = data.get("enabled", True)  # 분산 실행 참여 여부
+        self.is_registered = data.get("is_registered", False)  # 등록 여부
+        self.priority = data.get("priority", 1)  # 우선순위
+        self.tags = data.get("tags", [])  # 태그 (예: "gpu", "high-memory")
+        self.max_concurrent_tasks = data.get("max_concurrent_tasks", 5)
+        self.last_connected = data.get("last_connected")
+        self.performance_history = data.get("performance_history", [])
+        self.notes = data.get("notes", "")
+        self.is_local = data.get("is_local", False)  # localhost 여부
+        
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "id": self.id,
+            "host": self.host,
+            "hostname": self.hostname,
+            "port": self.port,
+            "enabled": self.enabled,
+            "is_registered": self.is_registered,
+            "priority": self.priority,
+            "tags": self.tags,
+            "max_concurrent_tasks": self.max_concurrent_tasks,
+            "last_connected": self.last_connected,
+            "performance_history": self.performance_history[-100:],  # 최근 100개만
+            "notes": self.notes,
+            "is_local": self.is_local
+        }
+
+def load_settings() -> Dict[str, Any]:
+    """설정 로드"""
+    if SETTINGS_FILE.exists():
+        try:
+            with open(SETTINGS_FILE, 'r', encoding='utf-8') as f:
+                settings = json.load(f)
+                # 기본값과 병합
+                for key, default_value in DEFAULT_SETTINGS.items():
+                    if key not in settings:
+                        settings[key] = default_value
+                    elif isinstance(default_value, dict):
+                        # 중첩된 딕셔너리 병합
+                        for sub_key, sub_value in default_value.items():
+                            if sub_key not in settings[key]:
+                                settings[key][sub_key] = sub_value
+                return settings
+        except Exception as e:
+            logger.error(f"Failed to load settings: {e}")
+    
+    return DEFAULT_SETTINGS.copy()
+
+def save_settings(settings: Dict[str, Any]) -> bool:
+    """설정 저장"""
+    try:
+        with open(SETTINGS_FILE, 'w', encoding='utf-8') as f:
+            json.dump(settings, f, indent=2, ensure_ascii=False)
+        return True
+    except Exception as e:
+        logger.error(f"Failed to save settings: {e}")
+        return False
+
+def get_network_instances() -> List[NetworkInstanceConfig]:
+    """네트워크 인스턴스 목록 가져오기"""
+    settings = load_settings()
+    instances = []
+    for inst_data in settings.get("network_instances", []):
+        instances.append(NetworkInstanceConfig(inst_data))
+    return instances
+
+def save_network_instance(instance: NetworkInstanceConfig) -> bool:
+    """네트워크 인스턴스 저장/업데이트"""
+    settings = load_settings()
+    instances = settings.get("network_instances", [])
+    
+    # 기존 인스턴스 찾기
+    found = False
+    for i, inst in enumerate(instances):
+        if inst.get("id") == instance.id:
+            instances[i] = instance.to_dict()
+            found = True
+            break
+    
+    if not found:
+        instances.append(instance.to_dict())
+    
+    settings["network_instances"] = instances
+    return save_settings(settings)
+
+def remove_network_instance(instance_id: str) -> bool:
+    """네트워크 인스턴스 제거"""
+    settings = load_settings()
+    instances = settings.get("network_instances", [])
+    
+    settings["network_instances"] = [
+        inst for inst in instances if inst.get("id") != instance_id
+    ]
+    
+    return save_settings(settings)
+
+def get_enabled_instances() -> List[NetworkInstanceConfig]:
+    """활성화된 인스턴스만 가져오기"""
+    return [inst for inst in get_network_instances() if inst.enabled]
+
+def get_registered_instances() -> List[NetworkInstanceConfig]:
+    """등록된 인스턴스만 가져오기"""
+    return [inst for inst in get_network_instances() if inst.is_registered]
+
+def update_instance_performance(instance_id: str, metrics: Dict[str, Any]) -> bool:
+    """인스턴스 성능 기록 업데이트"""
+    settings = load_settings()
+    instances = settings.get("network_instances", [])
+    
+    for inst in instances:
+        if inst.get("id") == instance_id:
+            history = inst.get("performance_history", [])
+            history.append({
+                "timestamp": datetime.now().isoformat(),
+                "response_time": metrics.get("response_time"),
+                "success": metrics.get("success", True),
+                "model": metrics.get("model"),
+                "task_type": metrics.get("task_type")
+            })
+            inst["performance_history"] = history[-100:]  # 최근 100개만
+            break
+    
+    settings["network_instances"] = instances
+    return save_settings(settings)
+
+def get_ai_models() -> Dict[str, Any]:
+    """AI 모델 설정 가져오기"""
+    settings = load_settings()
+    return settings.get("ai_models", DEFAULT_SETTINGS["ai_models"])
+
+def update_ai_models(models: Dict[str, Any]) -> bool:
+    """AI 모델 설정 업데이트"""
+    settings = load_settings()
+    settings["ai_models"] = models
+    return save_settings(settings)
+
+def get_distributed_settings() -> Dict[str, Any]:
+    """분산 실행 설정 가져오기"""
+    settings = load_settings()
+    return settings.get("distributed_settings", DEFAULT_SETTINGS["distributed_settings"])
+
+def update_distributed_settings(dist_settings: Dict[str, Any]) -> bool:
+    """분산 실행 설정 업데이트"""
+    settings = load_settings()
+    settings["distributed_settings"] = dist_settings
+    return save_settings(settings)
+
+def get_all_settings() -> Dict[str, Any]:
+    """모든 설정 가져오기"""
+    return load_settings()
+
+def update_all_settings(new_settings: Dict[str, Any]) -> bool:
+    """모든 설정 업데이트"""
+    # 기본 설정과 병합
+    settings = DEFAULT_SETTINGS.copy()
+    for key, value in new_settings.items():
+        if key in settings:
+            if isinstance(value, dict) and isinstance(settings[key], dict):
+                settings[key].update(value)
+            else:
+                settings[key] = value
+    
+    return save_settings(settings)
 
 # 에이전트 타입 정의
-class EnhancedAgentType(str, Enum):
-    """통합 AI 에이전트 타입"""
-    # 데이터 분석 에이전트
+from enum import Enum
+
+class EnhancedAgentType(Enum):
+    """향상된 에이전트 타입"""
     ANALYST = "analyst"
     PREDICTOR = "predictor"
     OPTIMIZER = "optimizer"
     ANOMALY_DETECTOR = "anomaly_detector"
-    
-    # 코드 작업 에이전트
     ARCHITECT = "architect"
     CODE_ANALYZER = "code_analyzer"
     CODE_GENERATOR = "code_generator"
     CODE_REVIEWER = "code_reviewer"
     IMPLEMENTER = "implementer"
-    TESTER = "test_designer"
+    TEST_DESIGNER = "test_designer"
     REFACTORER = "refactorer"
     INTEGRATOR = "integrator"
-    
-    # 의사결정 에이전트
     STRATEGIST = "strategist"
     RISK_ASSESSOR = "risk_assessor"
     PLANNER = "planner"
     REASONER = "reasoner"
     DECISION_MAKER = "decision_maker"
-    
-    # 검색 에이전트
     WEB_SEARCHER = "web_searcher"
     DOC_SEARCHER = "doc_searcher"
-    
-    # 협업 조정자
     COORDINATOR = "coordinator"
+    TESTER = "tester"
 
-# 에이전트 UI 설정
+# 에이전트 설정
 AGENT_CONFIGS = {
     EnhancedAgentType.ANALYST: {
         "name": "Data Analysis Expert",
-        "capabilities": ["statistical_analysis", "pattern_recognition", "insight_generation"],
-        "description": "Analyzes data patterns and generates insights"
+        "capabilities": ["pattern_recognition", "statistical_analysis", "data_visualization"],
+        "max_context": 4096,
+        "temperature": 0.7
     },
-    EnhancedAgentType.PREDICTOR: {
-        "name": "Prediction Specialist",
-        "capabilities": ["forecasting", "trend_analysis", "scenario_planning"],
-        "description": "Forecasts trends and future outcomes"
-    },
-    EnhancedAgentType.OPTIMIZER: {
-        "name": "Optimization Engine",
-        "capabilities": ["resource_optimization", "process_improvement", "efficiency_analysis"],
-        "description": "Optimizes processes and resources"
-    },
-    EnhancedAgentType.ANOMALY_DETECTOR: {
-        "name": "Anomaly Detector",
-        "capabilities": ["outlier_detection", "pattern_deviation", "alert_generation"],
-        "description": "Identifies unusual patterns and outliers"
+    EnhancedAgentType.CODE_GENERATOR: {
+        "name": "Code Generation Specialist", 
+        "capabilities": ["code_generation", "api_integration", "algorithm_design"],
+        "max_context": 8192,
+        "temperature": 0.3
     },
     EnhancedAgentType.ARCHITECT: {
         "name": "Software Architect",
-        "capabilities": ["system_design", "pattern_selection", "scalability_planning"],
-        "description": "Designs system architecture and structure"
-    },
-    EnhancedAgentType.CODE_ANALYZER: {
-        "name": "Code Analysis Specialist",
-        "capabilities": ["ast_analysis", "complexity_analysis", "dependency_mapping"],
-        "description": "Analyzes code quality and patterns"
-    },
-    EnhancedAgentType.CODE_GENERATOR: {
-        "name": "Code Generation Specialist",
-        "capabilities": ["code_synthesis", "pattern_application", "api_design"],
-        "description": "Generates code based on specifications"
+        "capabilities": ["system_design", "architecture_patterns", "technology_selection"],
+        "max_context": 4096,
+        "temperature": 0.5
     },
     EnhancedAgentType.CODE_REVIEWER: {
         "name": "Code Review Specialist",
-        "capabilities": ["quality_check", "security_review", "performance_analysis"],
-        "description": "Reviews code for quality and best practices"
-    },
-    EnhancedAgentType.IMPLEMENTER: {
-        "name": "Implementation Specialist",
-        "capabilities": ["detailed_implementation", "optimization", "integration"],
-        "description": "Implements detailed solutions"
-    },
-    EnhancedAgentType.TESTER: {
-        "name": "Test Design Specialist",
-        "capabilities": ["test_planning", "test_generation", "coverage_analysis"],
-        "description": "Designs comprehensive test strategies"
-    },
-    EnhancedAgentType.REFACTORER: {
-        "name": "Refactoring Expert",
-        "capabilities": ["code_improvement", "debt_reduction", "modernization"],
-        "description": "Improves code structure and quality"
-    },
-    EnhancedAgentType.INTEGRATOR: {
-        "name": "Integration Specialist",
-        "capabilities": ["api_integration", "system_bridging", "protocol_adaptation"],
-        "description": "Integrates components and systems"
+        "capabilities": ["code_review", "best_practices", "security_analysis"],
+        "max_context": 8192,
+        "temperature": 0.3
     },
     EnhancedAgentType.STRATEGIST: {
         "name": "Strategic Planning Expert",
-        "capabilities": ["decision_analysis", "scenario_planning", "risk_assessment"],
-        "description": "Develops strategic plans and recommendations"
-    },
-    EnhancedAgentType.RISK_ASSESSOR: {
-        "name": "Risk Assessment Expert",
-        "capabilities": ["risk_identification", "impact_analysis", "mitigation_planning"],
-        "description": "Evaluates and mitigates risks"
+        "capabilities": ["strategic_analysis", "roadmap_creation", "risk_assessment"],
+        "max_context": 4096,
+        "temperature": 0.6
     },
     EnhancedAgentType.PLANNER: {
         "name": "Task Planning Specialist",
-        "capabilities": ["task_decomposition", "dependency_analysis", "resource_planning"],
-        "description": "Plans and organizes tasks efficiently"
+        "capabilities": ["task_breakdown", "dependency_analysis", "timeline_estimation"],
+        "max_context": 4096,
+        "temperature": 0.5
     },
-    EnhancedAgentType.REASONER: {
-        "name": "Reasoning Engine",
-        "capabilities": ["logical_analysis", "inference", "problem_solving"],
-        "description": "Provides logical reasoning and analysis"
+    EnhancedAgentType.TESTER: {
+        "name": "Test Design Specialist",
+        "capabilities": ["test_generation", "coverage_analysis", "test_strategy"],
+        "max_context": 8192,
+        "temperature": 0.4
     },
     EnhancedAgentType.DECISION_MAKER: {
         "name": "Decision Making Expert",
-        "capabilities": ["decision_analysis", "criteria_evaluation", "option_comparison"],
-        "description": "Makes informed decisions based on data"
-    },
-    EnhancedAgentType.WEB_SEARCHER: {
-        "name": "Web Search Specialist",
-        "capabilities": ["web_crawling", "information_extraction", "source_validation"],
-        "description": "Searches and retrieves web information"
-    },
-    EnhancedAgentType.DOC_SEARCHER: {
-        "name": "Document Search Expert",
-        "capabilities": ["document_retrieval", "content_indexing", "relevance_ranking"],
-        "description": "Searches internal documents and knowledge"
-    },
-    EnhancedAgentType.COORDINATOR: {
-        "name": "Collaboration Coordinator",
-        "capabilities": ["task_distribution", "communication_management", "conflict_resolution"],
-        "description": "Coordinates multi-agent collaboration"
+        "capabilities": ["decision_analysis", "option_evaluation", "recommendation"],
+        "max_context": 4096,
+        "temperature": 0.4
     }
 }
 
@@ -150,12 +318,9 @@ WORKFLOW_PHASES = {
         {"id": "architecture_designed", "name": "Architecture Designed", "progress": 30},
         {"id": "tasks_decomposed", "name": "Tasks Decomposed", "progress": 40},
         {"id": "code_generation", "name": "Code Generation", "progress": 50},
-        {"id": "code_generation_complete", "name": "Code Generation Complete", "progress": 70},
         {"id": "code_integrated", "name": "Code Integrated", "progress": 80},
         {"id": "tests_generated", "name": "Tests Generated", "progress": 90},
-        {"id": "validation_complete", "name": "Validation Complete", "progress": 95},
-        {"id": "completed", "name": "Completed", "progress": 100},
-        {"id": "needs_improvement", "name": "Needs Improvement", "progress": 60}
+        {"id": "completed", "name": "Completed", "progress": 100}
     ],
     "analysis": [
         {"id": "initialized", "name": "Initialized", "progress": 0},
@@ -167,51 +332,38 @@ WORKFLOW_PHASES = {
     ]
 }
 
-# AI 모델 기본 설정
+# 기본 AI 모델 설정
 DEFAULT_AI_MODELS = {
-    "default": "llama-3.1-70b-instruct",
+    "default": None,  # 시작 시 설정됨
     "specialized": {
-        EnhancedAgentType.ARCHITECT: "qwen2.5-72b-instruct",
-        EnhancedAgentType.CODE_GENERATOR: "deepseek-coder-33b-instruct",
-        EnhancedAgentType.CODE_REVIEWER: "deepseek-r1-distill-qwen-32b",
-        EnhancedAgentType.IMPLEMENTER: "wizardcoder-33b-v2",
-        EnhancedAgentType.ANALYST: "llama-3.1-70b-instruct",
-        EnhancedAgentType.STRATEGIST: "gpt-4o",
+        EnhancedAgentType.CODE_GENERATOR: None,
+        EnhancedAgentType.ANALYST: None,
+        EnhancedAgentType.ARCHITECT: None
     }
 }
 
-# 웹 검색 트리거 패턴
+# 웹 검색 패턴
 WEB_SEARCH_PATTERNS = {
-    "time_sensitive": [
-        "최신", "현재", "오늘", "이번주", "최근",
-        "current", "latest", "today", "recent", "now"
-    ],
-    "external_data": [
-        "시장 가격", "주가", "환율", "날씨", "뉴스",
-        "market price", "stock", "exchange rate", "weather", "news"
-    ],
-    "comparison": [
-        "비교", "대조", "경쟁사", "벤치마크",
-        "compare", "versus", "competitor", "benchmark"
-    ]
+    "realtime": ["current", "latest", "today", "now", "실시간", "최신"],
+    "statistics": ["statistics", "data", "numbers", "통계", "데이터"],
+    "comparison": ["vs", "versus", "compare", "비교", "대비"],
+    "external": ["market", "industry", "competitor", "시장", "업계", "경쟁사"]
 }
 
 # 시스템 설정
 SYSTEM_CONFIG = {
-    "max_concurrent_workflows": 10,
-    "workflow_timeout_hours": 24,
+    "cache_ttl_seconds": 3600,
     "agent_timeout_seconds": 300,
     "retry_count": 3,
-    "cache_ttl_seconds": 3600,
-    "websocket_ping_interval": 30,
-    "metrics_update_interval": 5
+    "metrics_update_interval": 5,
+    "max_workflow_history": 100
 }
 
 # 에러 메시지
 ERROR_MESSAGES = {
     "workflow_not_found": "Workflow not found",
-    "agent_not_available": "Agent is not available",
-    "timeout": "Operation timed out",
+    "agent_not_available": "Agent not available",
     "invalid_request": "Invalid request format",
-    "rate_limit": "Rate limit exceeded"
+    "timeout": "Operation timed out",
+    "llm_connection_failed": "Failed to connect to LLM"
 }

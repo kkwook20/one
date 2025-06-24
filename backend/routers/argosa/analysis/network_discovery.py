@@ -34,7 +34,7 @@ class NetworkDiscovery:
         self,
         subnet: Optional[str] = None,
         port: int = 1234,
-        timeout: float = 0.5  # 더 빠른 스캔
+        timeout: float = 0.5
     ) -> List[NetworkDevice]:
         """네트워크 스캔"""
         
@@ -46,8 +46,7 @@ class NetworkDiscovery:
         self.discovered_devices.clear()
         
         try:
-            # 1. 로컬호스트 체크 (중복 방지)
-            await self._check_host("127.0.0.1", port, timeout, "localhost")
+            # 1. localhost는 별도로 처리하지 않음 (이미 LM Studio Manager에서 처리)
             
             # 2. 모든 네트워크 인터페이스에서 서브넷 수집
             all_subnets = set()
@@ -82,14 +81,14 @@ class NetworkDiscovery:
                 logger.info(f"Scanning subnet: {subnet}")
                 await self._scan_subnet(subnet, port, timeout)
             
-            # LM Studio 실행 중인 장치만 필터
+            # LM Studio 실행 중인 장치만 필터 (localhost 제외)
             lm_studio_devices = [
                 device for device in self.discovered_devices.values()
-                if device.is_lm_studio
+                if device.is_lm_studio and device.ip not in ["127.0.0.1", "localhost"]
             ]
             
             logger.info(f"Total scanned: {len(self.discovered_devices)}")
-            logger.info(f"Found {len(lm_studio_devices)} LM Studio instances")
+            logger.info(f"Found {len(lm_studio_devices)} LM Studio instances (excluding localhost)")
             
             return lm_studio_devices
             
@@ -108,64 +107,27 @@ class NetworkDiscovery:
             priority_ips = self._get_priority_ips(subnet)
             tasks = []
             for ip in priority_ips:
-                if not self._is_already_discovered(str(ip), port):
+                # localhost IP는 스킵
+                if str(ip) not in ["127.0.0.1", "::1"]:
                     tasks.append(self._check_host(str(ip), port, timeout))
             
             if tasks:
                 await asyncio.gather(*tasks, return_exceptions=True)
-            
-            # 나머지 IP 스캔 스킵 (빠른 스캔을 위해)
-            # 필요시 아래 주석 해제
-            '''
-            remaining_ips = []
-            for ip in network.hosts():
-                ip_str = str(ip)
-                if ip_str not in priority_ips and not self._is_already_discovered(ip_str, port):
-                    remaining_ips.append(ip_str)
-            
-            # 10개씩 배치 처리하고 0.1초 대기
-            for i in range(0, len(remaining_ips), 10):
-                batch = remaining_ips[i:i+10]
-                tasks = [self._check_host(ip, port, timeout) for ip in batch]
-                await asyncio.gather(*tasks, return_exceptions=True)
-                
-                # 배치 간 대기 시간
-                if i + 10 < len(remaining_ips):
-                    await asyncio.sleep(0.1)
-            '''
                 
         except Exception as e:
             logger.error(f"Subnet scan error for {subnet}: {e}")
     
-    def _is_already_discovered(self, ip: str, port: int) -> bool:
-        """이미 발견된 장치인지 확인"""
-        # IP로 확인
-        if ip in self.discovered_devices:
-            return True
-        
-        # localhost/127.0.0.1 중복 확인
-        if ip in ["127.0.0.1", "localhost"]:
-            return "127.0.0.1" in self.discovered_devices or "localhost" in self.discovered_devices
-        
-        return False
-    
     async def _check_host(self, host: str, port: int, timeout: float, hostname: Optional[str] = None):
         """LM Studio API 체크"""
         
-        # 이미 체크한 호스트는 스킵
-        if self._is_already_discovered(host, port):
+        # localhost는 스킵
+        if host in ["localhost", "127.0.0.1", "::1"]:
             return
-        
-        # localhost와 127.0.0.1은 같은 것으로 처리
-        if host == "localhost" or hostname == "localhost":
-            if "127.0.0.1" in self.discovered_devices:
-                return
         
         device = NetworkDevice(ip=host, port=port, hostname=hostname)
         url = f"http://{host}:{port}/v1/models"
         
-        # 디버그 로그 추가
-        logger.info(f"Checking {host}:{port}...")
+        logger.debug(f"Checking {host}:{port}...")
         
         try:
             start_time = asyncio.get_event_loop().time()
@@ -184,14 +146,7 @@ class NetworkDiscovery:
                         except:
                             device.hostname = host
                     
-                    # 127.0.0.1과 localhost는 통합
-                    if host in ["127.0.0.1", "localhost"]:
-                        device.ip = "127.0.0.1"
-                        device.hostname = "localhost"
-                        self.discovered_devices["127.0.0.1"] = device
-                    else:
-                        self.discovered_devices[host] = device
-                    
+                    self.discovered_devices[host] = device
                     logger.info(f"✓ Found LM Studio at {host} ({device.hostname}) - {device.response_time*1000:.0f}ms")
                 else:
                     logger.debug(f"Non-200 response from {host}:{port} - Status: {response.status_code}")
@@ -240,7 +195,7 @@ class NetworkDiscovery:
             network = ipaddress.ip_network(subnet, strict=False)
             base = str(network.network_address).rsplit('.', 1)[0]
             
-            # 일반적인 데스크톱/서버 IP (104 포함)
+            # 일반적인 데스크톱/서버 IP (localhost 제외)
             priority_suffixes = [1, 2, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 200, 254]
             return [f"{base}.{suffix}" for suffix in priority_suffixes]
         except:
@@ -248,12 +203,11 @@ class NetworkDiscovery:
     
     async def check_specific_host(self, host: str, port: int = 1234) -> Optional[NetworkDevice]:
         """특정 호스트 체크"""
+        # localhost는 None 반환
+        if host in ["localhost", "127.0.0.1", "::1"]:
+            return None
+            
         await self._check_host(host, port, 3.0)
-        
-        # localhost/127.0.0.1 처리
-        if host in ["localhost", "127.0.0.1"]:
-            return self.discovered_devices.get("127.0.0.1")
-        
         return self.discovered_devices.get(host)
     
     async def monitor_devices(self, interval: int = 30):
@@ -276,10 +230,10 @@ class NetworkDiscovery:
             await asyncio.sleep(interval)
     
     def get_active_devices(self) -> List[NetworkDevice]:
-        """활성 장치 목록"""
+        """활성 장치 목록 (localhost 제외)"""
         return [
             device for device in self.discovered_devices.values()
-            if device.is_lm_studio
+            if device.is_lm_studio and device.ip not in ["127.0.0.1", "localhost"]
         ]
 
 # 전역 인스턴스
