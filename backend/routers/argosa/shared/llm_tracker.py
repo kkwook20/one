@@ -30,7 +30,7 @@ class LLMTracker:
                     self._tracked_ids = set(data.get('tracked_ids', []))
                     self._metadata = data.get('metadata', {})
                     self._platform_stats = data.get('platform_stats', {})
-                    logger.info(f"Loaded {len(self._tracked_ids)} tracked LLM conversations")
+                    logger.debug(f"Loaded {len(self._tracked_ids)} tracked LLM conversations")
         except Exception as e:
             logger.error(f"Failed to load LLM tracking state: {e}")
     

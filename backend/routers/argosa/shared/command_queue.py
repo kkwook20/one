@@ -90,7 +90,7 @@ class ImprovedCommandQueue:
         """큐 초기화 및 워커 시작"""
         await self._load_state()
         self._worker_task = asyncio.create_task(self._worker_loop())
-        logger.info("Command queue initialized")
+        logger.debug("Command queue initialized")
     
     async def shutdown(self):
         """큐 종료"""
@@ -108,7 +108,7 @@ class ImprovedCommandQueue:
                         handler: Callable[[Command], Awaitable[Dict[str, Any]]]):
         """명령 핸들러 등록"""
         self._handlers[command_type] = handler
-        logger.info(f"Registered handler for command type: {command_type}")
+        logger.debug(f"Registered handler for command type: {command_type}")
     
     async def enqueue(
         self,
@@ -441,7 +441,7 @@ class ImprovedCommandQueue:
                 # 통계 복원
                 self._stats.update(state.get('stats', {}))
                 
-                logger.info(f"Loaded {len(self._queue)} pending commands from state")
+                logger.debug(f"Loaded {len(self._queue)} pending commands from state")
                 
         except Exception as e:
             logger.error(f"Failed to load command queue state: {e}")

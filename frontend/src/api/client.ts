@@ -46,6 +46,22 @@ const projectsApi = axios.create({
 
 // One AI API methods (기존 기능 포함)
 export const oneAIClient = {
+  // Projects
+  getProjects: () =>
+    oneAIApi.get('/projects'),
+  
+  createProject: (data: any) =>
+    oneAIApi.post('/projects', data),
+  
+  deleteProject: (projectId: string) =>
+    oneAIApi.delete(`/projects/${projectId}`),
+  
+  getProject: (projectId: string) =>
+    oneAIApi.get(`/projects/${projectId}`),
+  
+  updateProject: (projectId: string, data: any) =>
+    oneAIApi.put(`/projects/${projectId}`, data),
+
   // Models
   getModels: () => 
     oneAIApi.get('/models'),

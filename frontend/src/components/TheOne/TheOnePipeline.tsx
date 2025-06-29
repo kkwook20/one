@@ -36,6 +36,8 @@ import {
   FolderPlus,
 } from 'lucide-react';
 
+// shadcn UI components removed to fix issues - will keep original styling for now
+
 // Types
 import { Node, Section, ExecutionLog } from '../../types';
 
@@ -190,7 +192,7 @@ function OneAIPipelineFlow() {
   }, []);
 
   // Core states
-  const [selectedGroup, setSelectedGroup] = useState<keyof typeof GROUPS>('preproduction');
+  const [selectedGroup, setSelectedGroup] = useState<keyof typeof GROUPS>('Control');
   const [selectedSection, setSelectedSection] = useState<string>('Script');
   const [sections, setSections] = useState<Section[]>([]);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
@@ -276,6 +278,7 @@ function OneAIPipelineFlow() {
           addLog({
             nodeId: 'system',
             nodeLabel: 'System',
+            level: 'error',
             type: 'error',
             message: `Failed to save section ${sectionData.name}`
           });
@@ -352,6 +355,7 @@ function OneAIPipelineFlow() {
     addLog({
       nodeId: 'system',
       nodeLabel: 'System',
+      level: 'info',
       type: 'info',
       message: `Connection removed: ${sourceId} → ${targetId}`
     });
@@ -415,6 +419,7 @@ function OneAIPipelineFlow() {
         addLog({
           nodeId: node.id,
           nodeLabel: node.label,
+          level: 'info',
           type: 'start',
           message: `Starting ${node.type} execution...`
         });
@@ -430,6 +435,7 @@ function OneAIPipelineFlow() {
             addLog({
               nodeId: node.id,
               nodeLabel: node.label,
+              level: 'error',
               type: 'error',
               message: `Execution failed: ${error.message}`
             });
@@ -449,6 +455,7 @@ function OneAIPipelineFlow() {
         addLog({
           nodeId: 'system',
           nodeLabel: 'System',
+          level: 'error',
           type: 'error',
           message: `${nodeToDelete.type} nodes cannot be deleted`
         });
@@ -498,6 +505,7 @@ function OneAIPipelineFlow() {
       addLog({
         nodeId: 'system',
         nodeLabel: 'System',
+        level: 'info',
         type: 'info',
         message: `Node "${nodeToDelete.label}" deleted`
       });
@@ -906,6 +914,7 @@ function OneAIPipelineFlow() {
       addLog({
         nodeId: 'system',
         nodeLabel: 'System',
+        level: 'info',
         type: 'info',
         message: 'Connection already exists'
       });
@@ -969,6 +978,7 @@ function OneAIPipelineFlow() {
     addLog({
       nodeId: 'system',
       nodeLabel: 'System',
+      level: 'info',
       type: 'info',
       message: 'Connection created'
     });
@@ -984,6 +994,7 @@ function OneAIPipelineFlow() {
         addLog({
           nodeId,
           nodeLabel: currentSection?.nodes.find(n => n.id === nodeId)?.label || 'Node',
+          level: 'success',
           type: 'complete',
           message: '✅ Execution completed successfully'
         });
@@ -1023,6 +1034,7 @@ function OneAIPipelineFlow() {
       addLog({
         nodeId,
         nodeLabel: currentSection?.nodes.find(n => n.id === nodeId)?.label || 'Node',
+        level: 'info',
         type: 'info',
         message: `📝 Output updated: ${typeof output === 'string' ? output.substring(0, 100) + '...' : 'Data received'}`
       });
@@ -1032,6 +1044,7 @@ function OneAIPipelineFlow() {
       addLog({
         nodeId,
         nodeLabel: currentSection?.nodes.find(n => n.id === nodeId)?.label || 'Node',
+        level: 'info',
         type: 'processing',
         message: '🔄 Processing with AI model...'
       });
@@ -1062,6 +1075,7 @@ function OneAIPipelineFlow() {
       addLog({
         nodeId,
         nodeLabel: currentSection?.nodes.find(n => n.id === nodeId)?.label || 'Node',
+        level: 'error',
         type: 'error',
         message: `❌ Error: ${error}`
       });
@@ -1122,6 +1136,7 @@ function OneAIPipelineFlow() {
             addLog({
               nodeId: 'system',
               nodeLabel: 'System',
+              level: 'info',
               type: 'info',
               message: `Undo performed`
             });
@@ -1149,6 +1164,7 @@ function OneAIPipelineFlow() {
       addLog({
         nodeId: 'system',
         nodeLabel: 'System',
+        level: 'error',
         type: 'error',
         message: `Only one ${nodeType} is allowed per section`
       });
@@ -1211,6 +1227,11 @@ function OneAIPipelineFlow() {
       type: nodeType as Node['type'],
       label: nodeLabel,
       position: { x: Math.round(position.x), y: Math.round(position.y) },
+      data: {
+        label: nodeLabel,
+        description: `${nodeType} node`,
+        config: {}
+      },
       isRunning: false,
       tasks: nodeType === 'worker' ? [
         { 
@@ -1280,6 +1301,7 @@ function OneAIPipelineFlow() {
       addLog({
         nodeId: 'system',
         nodeLabel: 'System',
+        level: 'error',
         type: 'error',
         message: 'Failed to save new node'
       });
@@ -1288,6 +1310,7 @@ function OneAIPipelineFlow() {
     addLog({
       nodeId: 'system',
       nodeLabel: 'System',
+      level: 'info',
       type: 'info',
       message: `Added ${newNode.label} at position (${newNode.position.x}, ${newNode.position.y})`
     });
@@ -1308,6 +1331,7 @@ function OneAIPipelineFlow() {
       addLog({
         nodeId: 'system',
         nodeLabel: 'System',
+        level: 'error',
         type: 'error',
         message: 'No input node found in the current section'
       });
@@ -1317,6 +1341,7 @@ function OneAIPipelineFlow() {
     addLog({
       nodeId: 'system',
       nodeLabel: 'System',
+      level: 'info',
       type: 'start',
       message: 'Starting flow execution...'
     });
@@ -1328,6 +1353,7 @@ function OneAIPipelineFlow() {
         addLog({
           nodeId: 'system',
           nodeLabel: 'System',
+          level: 'info',
           type: 'info',
           message: 'Flow execution initiated successfully'
         });
@@ -1337,6 +1363,7 @@ function OneAIPipelineFlow() {
       addLog({
         nodeId: 'system',
         nodeLabel: 'System',
+        level: 'error',
         type: 'error',
         message: `Failed to start flow execution: ${error.message}`
       });
@@ -1376,6 +1403,7 @@ function OneAIPipelineFlow() {
       addLog({
         nodeId: 'system',
         nodeLabel: 'System',
+        level: 'info',
         type: 'info',
         message: 'Section saved successfully'
       });
@@ -1384,6 +1412,7 @@ function OneAIPipelineFlow() {
       addLog({
         nodeId: 'system',
         nodeLabel: 'System',
+        level: 'error',
         type: 'error',
         message: 'Failed to save section'
       });
@@ -1618,6 +1647,7 @@ function OneAIPipelineFlow() {
             addLog({
               nodeId: 'system',
               nodeLabel: 'System',
+              level: 'error',
               type: 'error',
               message: 'Failed to load sections. Check if backend is running on port 8000.'
             });
@@ -1633,101 +1663,105 @@ function OneAIPipelineFlow() {
   return (
     <div className="flex flex-col h-full bg-gray-100">
       {/* Header */}
-      <div className="bg-white shadow-sm border-b">
-        <div className="flex items-center p-4">
-          <h1 className="text-2xl font-bold mr-8">One AI Pipeline</h1>
+      <div className="bg-white rounded-none border-b">
+        <div className="p-6">
+          <div className="flex items-center justify-between">
+            <h1 className="text-2xl font-bold">One AI Pipeline</h1>
+            
+            {/* Group Selector */}
+            <div className="flex gap-2">
+              {Object.keys(GROUPS).map(group => (
+                <button
+                  key={group}
+                  onClick={() => handleGroupChange(group as keyof typeof GROUPS)}
+                  className={`px-3 py-1 rounded transition-colors ${
+                    selectedGroup === group 
+                      ? 'bg-blue-500 text-white' 
+                      : 'bg-gray-100 hover:bg-gray-200'
+                  }`}
+                >
+                  {group.charAt(0).toUpperCase() + group.slice(1)}
+                </button>
+              ))}
+            </div>
           
-          {/* Group Selector */}
-          <div className="flex gap-2">
-            {Object.keys(GROUPS).map(group => (
+            <div className="flex items-center gap-2">
+              {isSaving && (
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  Saving...
+                </div>
+              )}
               <button
-                key={group}
-                onClick={() => handleGroupChange(group as keyof typeof GROUPS)}
-                className={`px-4 py-2 rounded transition-colors ${
-                  selectedGroup === group 
-                    ? 'bg-blue-500 text-white' 
-                    : 'bg-gray-200 hover:bg-gray-300'
-                }`}
+                onClick={() => window.location.reload()}
+                className="p-2 hover:bg-gray-100 rounded transition-colors"
+                title="Refresh"
               >
-                {group.charAt(0).toUpperCase() + group.slice(1)}
+                <RefreshCw className="w-4 h-4" />
               </button>
-            ))}
-          </div>
-          
-          <div className="ml-auto mr-4 flex items-center gap-2">
-            {isSaving && (
-              <div className="flex items-center gap-2 text-sm text-gray-600">
-                <Loader2 className="w-4 h-4 animate-spin" />
-                Saving...
-              </div>
-            )}
-            <button
-              onClick={() => window.location.reload()}
-              className="p-2 rounded hover:bg-gray-100"
-              title="Refresh"
-            >
-              <RefreshCw className="w-4 h-4" />
-            </button>
+            </div>
           </div>
         </div>
 
         {/* Section Tabs */}
-        <div className="flex gap-2 px-4 pb-2 items-center">
-          {sections
-            .filter(s => s.group === selectedGroup)
-            .map(section => (
+        <div className="px-6 pb-6">
+          <div className="flex gap-2 items-center">
+            {sections
+              .filter(s => s.group === selectedGroup)
+              .map(section => (
+                <button
+                  key={section.id}
+                  onClick={() => handleSectionChange(section.name)}
+                  className={`px-3 py-1 rounded transition-colors ${
+                    selectedSection === section.name 
+                      ? 'bg-blue-500 text-white' 
+                      : 'bg-gray-100 hover:bg-gray-200'
+                  }`}
+                >
+                  {section.name}
+                </button>
+              ))}
+            
+            <div className="ml-auto flex gap-2">
               <button
-                key={section.id}
-                onClick={() => handleSectionChange(section.name)}
-                className={`px-3 py-1 rounded text-sm transition-colors ${
-                  selectedSection === section.name
-                    ? 'bg-gray-800 text-white'
-                    : 'bg-gray-200 hover:bg-gray-300'
-                }`}
+                onClick={() => setShowProjectModal(true)}
+                className="flex items-center gap-2 px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600 transition-colors"
               >
-                {section.name}
+                <FolderPlus className="w-4 h-4" />
+                Create Project
               </button>
-            ))}
-          
-          <div className="ml-auto flex gap-2">
-            <button
-              onClick={() => setShowProjectModal(true)}
-              className="flex items-center gap-2 px-4 py-2 bg-purple-500 text-white rounded-md hover:bg-purple-600"
-            >
-              <FolderPlus className="w-4 h-4" />
-              Create Project
-            </button>
-            <button
-              onClick={handleManualSave}
-              disabled={isSaving}
-              className="flex items-center gap-2 px-3 py-1 bg-blue-500 text-white rounded text-sm hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {isSaving ? (
-                <>
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                  Saving...
-                </>
-              ) : (
-                <>
-                  <CheckCircle className="w-4 h-4" />
-                  Save
-                </>
-              )}
-            </button>
-            <button
-              onClick={playFlow}
-              className="flex items-center gap-2 px-3 py-1 bg-green-500 text-white rounded text-sm hover:bg-green-600"
-            >
-              <Play className="w-4 h-4" />
-              Play Flow
-            </button>
-            <button
-              onClick={() => setShowSettings(true)}
-              className="flex items-center gap-2 px-3 py-1 bg-gray-600 text-white rounded text-sm hover:bg-gray-700"
-            >
-              <Settings className="w-4 h-4" />
-              Settings
-            </button>
+              <button
+                onClick={handleManualSave}
+                disabled={isSaving}
+                className="flex items-center gap-2 px-4 py-2 border border-gray-300 rounded hover:bg-gray-50 transition-colors disabled:opacity-50"
+              >
+                {isSaving ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    Saving...
+                  </>
+                ) : (
+                  <>
+                    <CheckCircle className="w-4 h-4" />
+                    Save
+                  </>
+                )}
+              </button>
+              <button
+                onClick={playFlow}
+                className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 transition-colors"
+              >
+                <Play className="w-4 h-4" />
+                Play Flow
+              </button>
+              <button
+                onClick={() => setShowSettings(true)}
+                className="flex items-center gap-2 px-4 py-2 border border-gray-300 rounded hover:bg-gray-50 transition-colors"
+              >
+                <Settings className="w-4 h-4" />
+                Settings
+              </button>
+            </div>
           </div>
         </div>
       </div>
@@ -1776,7 +1810,7 @@ function OneAIPipelineFlow() {
             <Panel position="bottom-center" className="bg-white rounded-lg shadow-lg p-4">
               <div className="flex gap-4">
                 {NODE_TYPES
-                  .filter(nodeType => nodeType.type !== 'input' && nodeType.type !== 'output')
+                  .filter(nodeType => nodeType.type !== 'io-input' && nodeType.type !== 'io-output')
                   .map(nodeType => {
                     // supervisor와 planner는 섹션당 하나만 허용
                     const isDisabled = (nodeType.type === 'supervisor' || nodeType.type === 'planner') &&
@@ -1905,6 +1939,7 @@ function OneAIPipelineFlow() {
                   addLog({
                     nodeId: 'system',
                     nodeLabel: 'System',
+                    level: 'info',
                     type: 'info',
                     message: 'JSON copied to clipboard'
                   });
@@ -1928,40 +1963,45 @@ function OneAIPipelineFlow() {
       <div className={`fixed bottom-0 left-0 right-0 bg-white border-t shadow-lg transition-all duration-300 ${showLogs ? '' : 'translate-y-full'}`}
            style={{ height: showLogs ? `${logsHeight}px` : '0px' }}>
         {/* 로그 헤더 */}
-        <div className="flex items-center justify-between px-4 py-2 border-b bg-gray-50">
-          <div className="flex items-center gap-2">
-            <FileText className="w-4 h-4" />
-            <span className="font-medium">Execution Logs</span>
-            <span className="text-sm text-gray-500">({executionLogs.length})</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => setExecutionLogs([])}
-              className="text-sm text-gray-600 hover:text-gray-800"
-            >
-              Clear
-            </button>
-            <button
-              onClick={() => setShowLogs(prev => !prev)}
-              className="p-1 hover:bg-gray-200 rounded"
-            >
-              <ChevronDown className={`w-4 h-4 transform transition-transform ${showLogs ? '' : 'rotate-180'}`} />
-            </button>
+        <div className="p-4 pb-2 border-b">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <FileText className="w-4 h-4" />
+              <span className="font-semibold">Execution Logs</span>
+              <span className="bg-gray-200 text-gray-700 text-xs px-2 py-1 rounded">
+                {executionLogs.length}
+              </span>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                className="px-3 py-1 text-sm bg-gray-100 hover:bg-gray-200 rounded transition-colors"
+                onClick={() => setExecutionLogs([])}
+              >
+                Clear
+              </button>
+              <button
+                className="px-3 py-1 text-sm bg-gray-100 hover:bg-gray-200 rounded transition-colors"
+                onClick={() => setShowLogs(prev => !prev)}
+              >
+                <ChevronDown className={`w-4 h-4 transform transition-transform ${showLogs ? '' : 'rotate-180'}`} />
+              </button>
+            </div>
           </div>
         </div>
         
         {/* 로그 내용 */}
-        <div className="overflow-y-auto" style={{ height: `calc(${logsHeight}px - 40px)` }}>
-          {executionLogs.length === 0 ? (
-            <div className="text-center text-gray-500 py-4">No logs yet</div>
-          ) : (
-            <div className="p-2 space-y-1">
+        <div className="p-4">
+          <div className="execution-logs overflow-y-auto" style={{ height: `calc(${logsHeight}px - 120px)` }}>
+            {executionLogs.length === 0 ? (
+              <div className="text-center text-gray-500 py-4">No logs yet</div>
+            ) : (
+            <div className="space-y-2">
               {executionLogs.map(log => (
-                <div key={log.id} className="flex items-start gap-2 text-sm">
-                  <span className="text-gray-400 text-xs whitespace-nowrap">
+                <div key={log.id} className="flex items-start gap-3 p-2 rounded-lg bg-gray-50">
+                  <span className="text-gray-500 text-xs whitespace-nowrap mt-0.5">
                     {new Date(log.timestamp).toLocaleTimeString()}
                   </span>
-                  <span className={`flex-shrink-0 ${
+                  <div className={`flex-shrink-0 mt-0.5 ${
                     log.type === 'error' ? 'text-red-500' :
                     log.type === 'complete' ? 'text-green-500' :
                     log.type === 'start' ? 'text-blue-500' :
@@ -1973,13 +2013,16 @@ function OneAIPipelineFlow() {
                      log.type === 'start' ? <Play className="w-4 h-4" /> :
                      log.type === 'file_created' ? <FileText className="w-4 h-4" /> :
                      <Clock className="w-4 h-4" />}
+                  </div>
+                  <span className="bg-gray-200 text-gray-700 text-xs px-2 py-1 rounded border">
+                    {log.nodeLabel}
                   </span>
-                  <span className="font-medium">[{log.nodeLabel}]</span>
-                  <span className="text-gray-700">{log.message}</span>
+                  <span className="flex-1 text-sm">{log.message}</span>
                 </div>
               ))}
             </div>
           )}
+          </div>
         </div>
         
         {/* 리사이즈 핸들 */}
@@ -2009,10 +2052,10 @@ function OneAIPipelineFlow() {
       {!showLogs && executionLogs.length > 0 && (
         <button
           onClick={() => setShowLogs(true)}
-          className="fixed bottom-4 right-4 bg-white border shadow-lg rounded-lg px-3 py-2 flex items-center gap-2 hover:bg-gray-50"
+          className="fixed bottom-4 right-4 bg-white border border-gray-300 hover:bg-gray-50 px-4 py-2 rounded-lg shadow-lg flex items-center gap-2 transition-colors"
         >
           <FileText className="w-4 h-4" />
-          <span>Show Logs ({executionLogs.length})</span>
+          Show Logs ({executionLogs.length})
         </button>
       )}
 

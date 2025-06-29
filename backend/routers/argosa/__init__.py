@@ -31,19 +31,17 @@ __all__ = [
 try:
     from .data_collection import (
         native_command_manager,
-        session_manager,
-        state_manager
+        session_manager
     )
 except ImportError as e:
-    logger.warning(f"[Argosa] Failed to import core managers: {e}")
+    logger.debug(f"[Argosa] Core managers import: {e}")
     native_command_manager = None
     session_manager = None
-    state_manager = None
 
 try:
     from .collection.llm_conversation_collector import router as llm_conv_router
     router.include_router(llm_conv_router, prefix="/data", tags=["LLM Conversations"])
-    logger.info("[Argosa] llm_conversation_collector router loaded successfully")
+    logger.debug("[Argosa] llm_conversation_collector loaded")
 except ImportError as e:
     logger.error(f"[Argosa] Failed to import llm_conversation_collector: {e}")
 
@@ -62,7 +60,10 @@ except ImportError as e:
 try:
     from .data_collection import router as collection_router, initialize as data_collection_init, shutdown as data_collection_shutdown
     router.include_router(collection_router, prefix="/data", tags=["Data Collection"])
-    logger.info("[Argosa] data_collection router loaded successfully")
+    logger.debug("[Argosa] data_collection loaded")
+    
+    # web_crawler_agent가 로드되면 자동으로 검색 엔진 설정 엔드포인트가 추가됨
+    logger.debug("[Argosa] Search engine settings available")
 except ImportError as e:
     logger.error(f"[Argosa] Failed to import data_collection: {e}")
     traceback.print_exc()
@@ -87,6 +88,12 @@ except ImportError as e:
         router.include_router(crawler_router, prefix="/data", tags=["Web Crawler"])
     except ImportError:
         logger.info("[Argosa] web_crawler_agent module not found")
+    
+    try:
+        from .collection.youtube_analyzer import youtube_router
+        router.include_router(youtube_router, prefix="/data/youtube", tags=["YouTube"])
+    except ImportError:
+        logger.info("[Argosa] youtube_analyzer module not found")
 
 # 기타 모듈들
 try:
@@ -128,6 +135,13 @@ try:
 except ImportError:
     logger.info("[Argosa] db_center module not found")
 
+# Search engine settings endpoints are now handled by web_crawler_agent
+# The following endpoints are available through web_crawler_agent:
+# GET  /api/argosa/data/settings - Get crawler settings with API key masking
+# PUT  /api/argosa/data/settings - Update crawler settings
+# GET  /api/argosa/data/stats - Get search engine statistics
+# POST /api/argosa/data/stats/record - Record search statistics
+
 # Health check
 @router.get("/health")
 async def health_check():
@@ -157,6 +171,12 @@ async def health_check():
             modules_status["web_crawler_agent"] = "operational"
         except ImportError:
             modules_status["web_crawler_agent"] = "not_available"
+            
+        try:
+            from .collection import youtube_analyzer
+            modules_status["youtube_analyzer"] = "operational"
+        except ImportError:
+            modules_status["youtube_analyzer"] = "not_available"
             
     except ImportError:
         modules_status["data_collection"] = "not_available"
@@ -240,13 +260,13 @@ async def health_check():
 # Initialize function
 async def initialize():
     """Initialize Argosa system"""
-    logger.info("[Argosa] Initializing all modules...")
+    logger.debug("[Argosa] Initializing modules...")
     
     # Initialize shared services first (개선사항)
     if cache_manager:
         try:
             await cache_manager.initialize()
-            logger.info("[Argosa] cache_manager initialized")
+            logger.debug("[Argosa] cache_manager ready")
         except Exception as e:
             logger.error(f"[Argosa] Error initializing cache_manager: {e}")
     
@@ -262,14 +282,14 @@ async def initialize():
             except ImportError:
                 logger.info("[Argosa] Improved command handlers not available")
                 
-            logger.info("[Argosa] command_queue initialized")
+            logger.debug("[Argosa] command_queue ready")
         except Exception as e:
             logger.error(f"[Argosa] Error initializing command_queue: {e}")
     
     if metrics:
         try:
             await metrics.initialize()
-            logger.info("[Argosa] metrics collector initialized")
+            logger.debug("[Argosa] metrics ready")
         except Exception as e:
             logger.error(f"[Argosa] Error initializing metrics: {e}")
     
@@ -277,7 +297,7 @@ async def initialize():
     try:
         if data_collection_init:
             await data_collection_init()
-            logger.info("[Argosa] data_collection initialized")
+            logger.debug("[Argosa] data_collection ready")
         else:
             logger.error("[Argosa] data_collection initialize function not available")
         
@@ -302,6 +322,16 @@ async def initialize():
         except Exception as e:
             logger.error(f"[Argosa] Error initializing web_crawler_system: {e}")
             
+        try:
+            from .collection.youtube_analyzer import youtube_analyzer
+            if hasattr(youtube_analyzer, 'initialize'):
+                await youtube_analyzer.initialize()
+                logger.debug("[Argosa] youtube_analyzer ready")
+        except ImportError:
+            logger.info("[Argosa] youtube_analyzer module not available for initialization")
+        except Exception as e:
+            logger.error(f"[Argosa] Error initializing youtube_analyzer: {e}")
+            
     except ImportError:
         logger.warning("[Argosa] data_collection module not available for initialization")
     except Exception as e:
@@ -310,7 +340,7 @@ async def initialize():
     # Initialize other modules
     await _initialize_other_modules()
     
-    logger.info("[Argosa] Module initialization completed")
+    logger.info("[Argosa] System ready")
 
 async def _initialize_other_modules():
     """Initialize other modules"""
@@ -365,6 +395,16 @@ async def shutdown():
             pass
         except Exception as e:
             logger.error(f"[Argosa] Error shutting down web_crawler_system: {e}")
+            
+        try:
+            from .collection.youtube_analyzer import youtube_analyzer
+            if hasattr(youtube_analyzer, 'shutdown'):
+                await youtube_analyzer.shutdown()
+                logger.info("[Argosa] youtube_analyzer shut down")
+        except ImportError:
+            pass
+        except Exception as e:
+            logger.error(f"[Argosa] Error shutting down youtube_analyzer: {e}")
             
     except ImportError:
         pass

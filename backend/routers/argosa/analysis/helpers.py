@@ -287,3 +287,226 @@ def determine_next_workflow(
             return next_workflow
     
     return None
+
+# LLM 진단 관련 헬퍼
+async def diagnose_llm_failure(error_details: Dict[str, Any], lm_studio_manager: Any, distributed_executor: Any, initialized: bool) -> Dict[str, Any]:
+    """LLM 호출 실패 시 문제점 분석"""
+    
+    diagnosis = {
+        "timestamp": datetime.now().isoformat(),
+        "issues": [],
+        "recommendations": [],
+        "system_state": {}
+    }
+    
+    # 1. 연결 상태 확인
+    all_instances = {}
+    for instance_id, instance in lm_studio_manager.instances.items():
+        all_instances[instance_id] = {
+            "status": instance.status,
+            "models": len(instance.available_models),
+            "is_local": instance.is_local
+        }
+    diagnosis["system_state"]["lm_studio_instances"] = all_instances
+    
+    # 2. 분산 실행 상태 확인
+    dist_status = distributed_executor.get_cluster_status()
+    diagnosis["system_state"]["distributed_execution"] = {
+        "enabled": dist_status.get("enabled", False),
+        "active_instances": dist_status.get("active_instances", 0),
+        "pending_tasks": dist_status.get("pending_tasks", 0)
+    }
+    
+    # 3. 문제 분석
+    if not all_instances:
+        diagnosis["issues"].append("No LM Studio instances configured")
+        diagnosis["recommendations"].append("Add at least one LM Studio instance (localhost:1234)")
+    
+    localhost_status = all_instances.get("localhost:1234", {})
+    if localhost_status.get("status") != "connected":
+        diagnosis["issues"].append("Localhost LM Studio is not connected")
+        diagnosis["recommendations"].append("Ensure LM Studio is running on localhost:1234")
+        diagnosis["recommendations"].append("Check firewall settings and port availability")
+    
+    if localhost_status.get("models", 0) == 0:
+        diagnosis["issues"].append("No models loaded in localhost LM Studio")
+        diagnosis["recommendations"].append("Load at least one model in LM Studio")
+    
+    if error_details.get("distributed_execution_error"):
+        diagnosis["issues"].append(f"Distributed execution failed: {error_details['distributed_execution_error']}")
+        diagnosis["recommendations"].append("Check network connectivity between instances")
+        diagnosis["recommendations"].append("Verify all remote LM Studio instances are accessible")
+    
+    if error_details.get("direct_call_error"):
+        diagnosis["issues"].append(f"Direct call failed: {error_details['direct_call_error']}")
+        
+        if "timeout" in str(error_details['direct_call_error']).lower():
+            diagnosis["recommendations"].append("Increase timeout settings")
+            diagnosis["recommendations"].append("Check if model is too large for available resources")
+        elif "connection" in str(error_details['direct_call_error']).lower():
+            diagnosis["recommendations"].append("Verify LM Studio API is enabled")
+            diagnosis["recommendations"].append("Check if LM Studio is listening on the correct port")
+    
+    # 4. 초기화 상태 확인
+    if not initialized:
+        diagnosis["issues"].append("Enhanced Agent System not fully initialized")
+        diagnosis["recommendations"].append("Wait for initialization to complete")
+        diagnosis["recommendations"].append("Check startup logs for initialization errors")
+    
+    return diagnosis
+
+async def simulate_llm_response(prompt: str) -> Dict[str, Any]:
+    """LLM 응답 시뮬레이션 (폴백용)"""
+    
+    # 시뮬레이션
+    await asyncio.sleep(1)
+    
+    # 프롬프트에서 JSON 추출 시도
+    json_result = extract_json_from_text(prompt)
+    if json_result:
+        return json_result
+    
+    # 모델별 기본 응답
+    if "architect" in prompt.lower():
+        return {
+            "components": [
+                {"name": "AuthService", "type": "service", "responsibility": "Authentication"},
+                {"name": "UserRepository", "type": "repository", "responsibility": "User data access"}
+            ],
+            "integration_strategy": "RESTful API with JWT",
+            "data_flow": "Client -> API Gateway -> Service -> Repository -> Database"
+        }
+    elif "generate" in prompt.lower() and "code" in prompt.lower():
+        return {
+            "code": """class AuthService:
+    def __init__(self, user_repository: UserRepository):
+        self.user_repository = user_repository
+    
+    async def authenticate(self, credentials: dict) -> dict:
+        user = await self.user_repository.find_by_username(credentials['username'])
+        if user and verify_password(credentials['password'], user.password_hash):
+            return generate_jwt_token(user)
+        raise AuthenticationError('Invalid credentials')""",
+            "explanation": "Authentication service with dependency injection"
+        }
+    elif "review" in prompt.lower():
+        return {
+            "approved": True,
+            "score": 85,
+            "issues": [],
+            "suggestions": ["Consider adding rate limiting", "Add logging for failed attempts"]
+        }
+    elif "test" in prompt.lower():
+        return {
+            "code": """import pytest
+from unittest.mock import AsyncMock
+
+class TestAuthService:
+    @pytest.mark.asyncio
+    async def test_authenticate_success(self):
+        # Test implementation
+        pass""",
+            "estimated_coverage": 85
+        }
+    elif "decision" in prompt.lower() and "web search" in prompt.lower():
+        return {
+            "decision": "needs_web_search",
+            "confidence": 0.8,
+            "reasoning": "Real-time data may be required for accurate analysis"
+        }
+    elif "analyze" in prompt.lower():
+        return {
+            "summary": "Analysis complete",
+            "patterns": ["Pattern 1", "Pattern 2"],
+            "insights": ["Insight 1", "Insight 2"],
+            "recommendations": ["Recommendation 1", "Recommendation 2"]
+        }
+    elif "plan" in prompt.lower():
+        return {
+            "tasks": [
+                {"description": "Task 1", "priority": "high", "complexity": "medium"},
+                {"description": "Task 2", "priority": "normal", "complexity": "low"}
+            ]
+        }
+    
+    return {"status": "completed", "result": "Generic response"}
+
+async def simulate_integration(integration_type: str) -> Dict[str, Any]:
+    """통합 작업 시뮬레이션"""
+    
+    await asyncio.sleep(2)
+    
+    return {
+        "status": "success",
+        "integration_type": integration_type,
+        "message": f"{integration_type} integration simulated",
+        "artifacts": {
+            "files_created": ["service.py", "test_service.py"],
+            "files_modified": ["__init__.py", "requirements.txt"]
+        },
+        "summary": "Integration completed successfully"
+    }
+
+# 워크플로우 정리 관련
+async def cleanup_old_workflows(active_workflows: Dict[str, Any], retention_days: int = 1) -> int:
+    """오래된 워크플로우 정리"""
+    
+    current_time = datetime.now()
+    workflows_to_remove = []
+    
+    for workflow_id, state in active_workflows.items():
+        # 워크플로우 ID에서 타임스탬프 추출
+        try:
+            timestamp = float(workflow_id.split("_")[1])
+            created_time = datetime.fromtimestamp(timestamp)
+            
+            # 지정된 기간 이상 된 워크플로우 제거
+            if (current_time - created_time).days >= retention_days:
+                workflows_to_remove.append(workflow_id)
+        except:
+            continue
+    
+    for workflow_id in workflows_to_remove:
+        del active_workflows[workflow_id]
+        logger.info(f"Cleaned up old workflow: {workflow_id}")
+    
+    return len(workflows_to_remove)
+
+# 실시간 메트릭 생성
+def generate_realtime_metrics(agents: Dict[str, Any]) -> Dict[str, Any]:
+    """실시간 메트릭 데이터 생성"""
+    
+    realtime_data = {
+        "timestamp": datetime.now().isoformat()
+    }
+    
+    for agent_type, agent in agents.items():
+        if agent["status"] == "busy":
+            # 실행 중인 에이전트의 효율성
+            efficiency = calculate_agent_efficiency(
+                agent["performance_metrics"]["success_rate"],
+                agent["performance_metrics"]["average_time"]
+            )
+            realtime_data[str(agent_type)] = efficiency
+    
+    return realtime_data
+
+async def send_realtime_metrics(enhanced_agent_system: Any, system_config: Dict[str, Any]):
+    """주기적으로 실시간 메트릭 전송"""
+    while True:
+        await asyncio.sleep(system_config["metrics_update_interval"])  # 5초마다
+        
+        # 실시간 데이터 생성
+        realtime_data = generate_realtime_metrics(enhanced_agent_system.agents)
+        
+        # 모든 WebSocket 클라이언트에 전송
+        message = {
+            "type": "realtime_data",
+            "data": realtime_data
+        }
+        
+        for ws_id, websocket in enhanced_agent_system.websocket_connections.items():
+            try:
+                await websocket.send_json(message)
+            except:
+                pass

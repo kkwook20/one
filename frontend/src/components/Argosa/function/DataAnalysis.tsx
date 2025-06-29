@@ -603,8 +603,9 @@ const DataAnalysis: React.FC = () => {
       setAgents(agentList);
     } catch (error) {
       console.error("Failed to fetch agents:", error);
-      // Use mock data for development
-      setAgents(generateMockAgents());
+      // Don't use mock data - show empty state instead
+      setAgents([]);
+      setBackendError('Failed to fetch agents from backend');
     }
   };
   
@@ -618,7 +619,7 @@ const DataAnalysis: React.FC = () => {
         name: `Workflow ${wf.workflow_id.slice(-8)}`,
         type: wf.type,
         status: wf.current_phase === "completed" ? "completed" : "executing",
-        progress: getProgressFromPhase(wf.type, wf.current_phase),
+        progress: wf.progress || 0,
         createdAt: new Date(parseFloat(wf.created_at) * 1000).toISOString(),
         updatedAt: new Date().toISOString(),
         state: wf,
@@ -627,8 +628,8 @@ const DataAnalysis: React.FC = () => {
       setWorkflows(workflowList);
     } catch (error) {
       console.error("Failed to fetch workflows:", error);
-      // Use mock data for development
-      setWorkflows(generateMockWorkflows());
+      // Don't use mock data - show empty state instead
+      setWorkflows([]);
     }
   };
   
@@ -642,16 +643,16 @@ const DataAnalysis: React.FC = () => {
       updateChartData(data);
     } catch (error) {
       console.error("Failed to fetch metrics:", error);
-      // Use mock data for development
-      const mockMetrics = {
-        activeWorkflows: workflows.length,
-        activeTasks: agents.filter(a => a.status === "busy").length,
-        cachedResults: 42,
-        websocketConnections: isConnected ? 1 : 0,
-        agentPerformance: generateMockAgentPerformance()
+      // Don't use mock data - use empty metrics
+      const emptyMetrics = {
+        activeWorkflows: 0,
+        activeTasks: 0,
+        cachedResults: 0,
+        websocketConnections: 0,
+        agentPerformance: {}
       };
-      setSystemMetrics(mockMetrics);
-      updateChartData(mockMetrics);
+      setSystemMetrics(emptyMetrics);
+      updateChartData(emptyMetrics);
     }
   };
   
@@ -663,9 +664,10 @@ const DataAnalysis: React.FC = () => {
     businessGoals: string[],
     priority: "low" | "normal" | "high" | "critical"
   ) => {
-    const request: AnalysisRequest = {
-      analysisType,
+    const request = {
+      analysis_type: analysisType,
       objective: analysisObjective,
+      data_source: dataSources.length > 0 ? dataSources[0] : null,
       parameters: {
         data_sources: dataSources,
         business_goals: businessGoals,
@@ -676,46 +678,69 @@ const DataAnalysis: React.FC = () => {
       },
       constraints,
       priority,
+      enable_web_search: false,
+      search_sources: [],
+      search_depth: "normal"
     };
+    
+    console.log("Creating workflow with request:", request);
+    
+    // First test if the API is accessible
+    try {
+      const testResponse = await fetch("/api/argosa/analysis/test");
+      console.log("Test endpoint response:", testResponse.status);
+      if (!testResponse.ok) {
+        console.error("Test endpoint failed, API might not be accessible");
+      }
+    } catch (e) {
+      console.error("Failed to reach test endpoint:", e);
+    }
     
     try {
       const response = await fetch("/api/argosa/analysis/workflow/create", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { 
+          "Content-Type": "application/json",
+          "Accept": "application/json"
+        },
         body: JSON.stringify(request),
       });
+      
+      console.log("Response status:", response.status);
+      
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error("Error response:", errorText);
+        let errorData;
+        try {
+          errorData = JSON.parse(errorText);
+        } catch {
+          errorData = { detail: errorText || response.statusText };
+        }
+        throw new Error(errorData.detail || 'Failed to create workflow');
+      }
       
       const data = await response.json();
       
       // Execute workflow
-      await fetch(`/api/argosa/analysis/workflow/${data.workflow_id}/execute`, {
+      const execResponse = await fetch(`/api/argosa/analysis/workflow/${data.workflow_id}/execute`, {
         method: "POST",
       });
       
+      if (!execResponse.ok) {
+        console.error("Failed to execute workflow");
+      }
+      
       // Refresh workflows
       await fetchWorkflows();
+      
+      // Clear error if successful
+      setBackendError(null);
     } catch (error) {
       console.error("Failed to create workflow:", error);
-      // Add mock workflow for development
-      const mockWorkflow: Workflow = {
-        id: `wf_${Date.now()}`,
-        name: `Workflow ${Date.now().toString().slice(-8)}`,
-        type: analysisType === "code" ? "code" : "analysis",
-        status: "executing",
-        progress: 0,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-        state: {
-          workflowId: `wf_${Date.now()}`,
-          analysisType,
-          currentPhase: "initialized",
-          dataSources,
-          analysisObjective,
-          constraints,
-          businessGoals,
-        } as AnalysisWorkflowState
-      };
-      setWorkflows(prev => [...prev, mockWorkflow]);
+      // Don't create mock workflow - show error instead
+      const errorMessage = error instanceof Error ? error.message : 'Please check backend connection.';
+      setBackendError(`Failed to create workflow: ${errorMessage}`);
     }
   };
   
@@ -735,12 +760,8 @@ const DataAnalysis: React.FC = () => {
       return data.response;
     } catch (error) {
       console.error("Failed to ask agent:", error);
-      // Return mock response for development
-      return {
-        answer: `This is a mock response from ${agentType} agent for: ${question}`,
-        confidence: 0.95,
-        sources: ["internal knowledge base", "analysis results"],
-      };
+      // Don't return mock response - throw error instead
+      throw new Error('Failed to communicate with agent. Please check backend connection.');
     }
   };
   

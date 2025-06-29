@@ -1,34 +1,57 @@
-# backend/routers/argosa/data_collection.py - 전체 코드
+# backend/routers/argosa/data_collection.py - 전체 코드 (수정된 버전)
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, HTTPException
 from typing import Dict, List, Optional, Any, Set
 import asyncio
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from pydantic import BaseModel
 from pathlib import Path
 import os
-import subprocess
-import platform
 import uuid
-import shutil
 import logging
-import socket
-import time
-import psutil
-import threading
 from enum import Enum
-
-# Shared 모듈에서 import
-from .shared.cache_manager import cache_manager
-from .shared.llm_tracker import llm_tracker
-from .shared.command_queue import command_queue
-from .shared.metrics import metrics
-from .shared.conversation_saver import conversation_saver
-from .shared.error_handler import error_handler, with_retry, ErrorSeverity
+import traceback
 
 # 설정
 logger = logging.getLogger(__name__)
+
+# Shared 모듈에서 import
+try:
+    from routers.argosa.shared.cache_manager import cache_manager
+    from routers.argosa.shared.llm_tracker import llm_tracker
+    from routers.argosa.shared.command_queue import command_queue
+    from routers.argosa.shared.metrics import metrics
+    from routers.argosa.shared.conversation_saver import conversation_saver
+    from routers.argosa.shared.error_handler import error_handler, with_retry, ErrorSeverity
+except ImportError as e:
+    logger.warning(f"Failed to import shared modules: {e}")
+    # Fallback for testing environments
+    cache_manager = None
+    llm_tracker = None
+    command_queue = None
+    metrics = None
+    conversation_saver = None
+    error_handler = None
+    with_retry = lambda func: func
+    ErrorSeverity = None
+
+# Firefox manager import (독립적인 모듈)
+try:
+    from routers.argosa.shared.firefox_manager import (
+        get_firefox_manager, 
+        FirefoxStatus, 
+        FirefoxEvent
+    )
+    firefox_manager = get_firefox_manager()
+    logger.debug(f"Firefox manager: {firefox_manager is not None}")
+except ImportError as e:
+    logger.error(f"Failed to import firefox_manager: {e}")
+    logger.error("Firefox manager will not be available")
+    firefox_manager = None
+    FirefoxStatus = None
+    FirefoxEvent = None
+    traceback.print_exc()
 
 # Create router
 router = APIRouter()
@@ -52,16 +75,7 @@ class MessageType(Enum):
     CRAWL_RESULT = "crawl_result"
     ERROR = "error"
 
-class SystemState(BaseModel):
-    system_status: str = "idle"  # idle, ready, preparing, collecting, error
-    sessions: Dict[str, Dict[str, Any]] = {}
-    sync_status: Optional[Dict[str, Any]] = None
-    firefox_status: str = "closed"  # closed, opening, ready, error
-    extension_status: str = "disconnected"  # connected, disconnected
-    extension_last_seen: Optional[str] = None
-    schedule_enabled: bool = False
-    data_sources_active: int = 0
-    total_conversations: int = 0
+# SystemState removed - using FirefoxManager's state management
 
 class SessionCache(BaseModel):
     platform: str
@@ -74,143 +88,15 @@ class SessionCache(BaseModel):
 
 # ======================== State Management ========================
 
-class SystemStateManager:
-    def __init__(self):
-        self.state = SystemState()
-        self.state_lock = asyncio.Lock()
-        self.load_state()
-        
-    def load_state(self):
-        """Load state from file"""
-        try:
-            if STATE_FILE_PATH.exists():
-                with open(STATE_FILE_PATH, 'r') as f:
-                    data = json.load(f)
-                    self.state = SystemState(**data)
-        except Exception as e:
-            logger.error(f"Failed to load state: {e}")
-            
-    async def save_state(self):
-        """Save state to file with retry"""
-        async with self.state_lock:
-            try:
-                STATE_FILE_PATH.parent.mkdir(parents=True, exist_ok=True)
-                with open(STATE_FILE_PATH, 'w') as f:
-                    json.dump(self.state.dict(), f, indent=2)
-            except Exception as e:
-                logger.error(f"Failed to save state: {e}")
-                raise
-                
-    async def update_state(self, key: str, value: Any):
-        """Update state and broadcast"""
-        async with self.state_lock:
-            if hasattr(self.state, key):
-                setattr(self.state, key, value)
-                
-        await self.save_state()
-        await self.broadcast_state()
-        
-        # 메트릭 기록
-        await metrics.record_event("state_update", tags={"field": key})
-            
-    async def broadcast_state(self):
-        """Broadcast state to all connected WebSocket clients"""
-        if active_websockets:
-            state_data = self.state.dict()
-            disconnected = set()
-            
-            for websocket in active_websockets:
-                try:
-                    await websocket.send_json({
-                        "type": "state_update",
-                        "data": state_data
-                    })
-                except:
-                    disconnected.add(websocket)
-                    
-            # Remove disconnected websockets
-            for ws in disconnected:
-                active_websockets.discard(ws)
+# SystemStateManager removed - using FirefoxManager directly for all state management
 
-# ======================== Firefox Manager ========================
+# ======================== Firefox Monitor Integration ========================
+# FirefoxMonitor removed - FirefoxManager handles all monitoring directly
+# All FirefoxMonitor methods removed - using FirefoxManager directly
 
-class FirefoxManager:
-    """Firefox 프로세스 시작 및 모니터링 통합 관리"""
-    
-    def __init__(self, state_manager):
-        self.state_manager = state_manager
-        self.monitor_thread = None
-        self.running = False
-        self.firefox_path = r"C:\Program Files\Firefox Developer Edition\firefox.exe"
-        self.profile_path = r'F:\ONE_AI\firefox-profile'
-        self.main_loop = None  # 메인 이벤트 루프 저장
-        
-    def start_monitor(self):
-        """모니터링 시작"""
-        if not self.running:
-            self.running = True
-            self.main_loop = asyncio.get_event_loop()  # 메인 루프 저장
-            self.monitor_thread = threading.Thread(target=self._monitor_loop, daemon=True)
-            self.monitor_thread.start()
-            logger.info("Firefox monitor started")
-    
-    def _monitor_loop(self):
-        """Firefox 프로세스 모니터링 루프"""
-        firefox_pids = set()
-        
-        while self.running:
-            current_pids = {p.info['pid'] for p in psutil.process_iter(['pid', 'name']) 
-                           if p.info['name'] and 'firefox' in p.info['name'].lower()}
-            
-            if current_pids != firefox_pids:
-                if not current_pids and firefox_pids:  # Firefox 종료
-                    logger.info(f"Firefox CLOSED! (was tracking PIDs: {firefox_pids})")
-                    asyncio.run_coroutine_threadsafe(
-                        self._handle_firefox_closed(),
-                        self.main_loop  # 저장된 메인 루프 사용
-                    )
-                elif current_pids and not firefox_pids:  # Firefox 시작
-                    logger.info(f"Firefox STARTED! (PIDs: {current_pids})")
-                    asyncio.run_coroutine_threadsafe(
-                        self.state_manager.update_state("firefox_status", "ready"),
-                        self.main_loop  # 저장된 메인 루프 사용
-                    )
-                
-                firefox_pids = current_pids
-            
-            time.sleep(1)
-    
-    async def _handle_firefox_closed(self):
-        """Firefox 종료 처리"""
-        await self.state_manager.update_state("firefox_status", "closed")
-        await self.state_manager.update_state("extension_status", "disconnected")
-        
-        # system_status도 idle로 되돌림
-        await self.state_manager.update_state("system_status", "idle")
-        
-        # 모든 세션 무효화
-        sessions = self.state_manager.state.sessions.copy()
-        for platform in sessions:
-            sessions[platform] = {
-                'platform': platform,
-                'valid': False,
-                'last_checked': datetime.now().isoformat(),
-                'source': 'firefox_closed',
-                'status': 'firefox_closed',
-                'error': 'Firefox was closed'
-            }
-        await self.state_manager.update_state("sessions", sessions)
-        await self.state_manager.broadcast_state()
-    
-    def stop_monitor(self):
-        """모니터링 중지"""
-        self.running = False
-        if self.monitor_thread:
-            self.monitor_thread.join(timeout=2)
-
-# Global instances
-state_manager = SystemStateManager()
-firefox_manager = FirefoxManager(state_manager)
+# Global instances - Using FirefoxManager for all state management
+# state_manager removed - using firefox_manager directly
+firefox_monitor = None  # Disabled - FirefoxManager handles all monitoring
 session_manager = None  # UnifiedSessionManager 정의 후 초기화
 native_command_manager = None  # NativeCommandManager 정의 후 초기화
 
@@ -327,11 +213,11 @@ class UnifiedSessionManager:
         self.cache[platform] = session_info
         await self.save_cache()
         
-        # Update system state
-        await state_manager.update_state("sessions", {
-            **state_manager.state.sessions,
-            platform: session_info.dict()
-        })
+        # Update system state via Firefox Manager
+        if firefox_manager:
+            current_sessions = firefox_manager.get_system_state().get("sessions", {})
+            current_sessions[platform] = session_info.dict()
+            await firefox_manager.update_state("sessions", current_sessions)
         
         # 메트릭 업데이트
         await metrics.increment_counter(f"session_update.{platform}")
@@ -377,77 +263,311 @@ native_command_manager = NativeCommandManager()
 
 # ======================== API Endpoints ========================
 
+@router.get("/test-claude-status") 
+async def test_claude_status():
+    """Test endpoint to verify our route is working"""
+    logger.info(f"🔥🔥🔥 TEST CLAUDE STATUS ENDPOINT CALLED! 🔥🔥🔥")
+    return {"test": "claude", "working": True, "timestamp": "now"}
+
+@router.get("/status-fixed")
+async def get_system_status_fixed():
+    """WORKING status endpoint that reads from file"""
+    logger.info(f"✅✅✅ FIXED STATUS ENDPOINT CALLED! ✅✅✅")
+    
+    import json
+    import os
+    from datetime import datetime
+    
+    try:
+        abs_path = os.path.abspath("./data/argosa/system_state.json")
+        logger.info(f"✅ Reading from: {abs_path}")
+        
+        with open(abs_path, 'r') as f:
+            file_data = json.load(f)
+        
+        logger.info(f"✅ File data: extension={file_data.get('extension_status')}, firefox={file_data.get('firefox_status')}")
+        
+        return {
+            "status": "operational",
+            "system": "argosa", 
+            "state": file_data,
+            "timestamp": datetime.now().isoformat(),
+            "source": "WORKING_ENDPOINT",
+            "message": "This endpoint works and reads from file!"
+        }
+    except Exception as e:
+        logger.error(f"✅ Error: {e}")
+        return {"status": "error", "error": str(e)}
+
 @router.get("/status")
 async def get_system_status():
-    """Get system status"""
-    session_health = await session_manager.check_session_health()
-    queue_stats = await command_queue.get_stats()
-    metrics_summary = await metrics.get_metrics_summary()
-    
-    return {
-        "status": "operational",
-        "system": "argosa",
-        "state": state_manager.state.dict(),
-        "sessions": session_health,
-        "command_queue": queue_stats,
-        "metrics": metrics_summary,
-        "timestamp": datetime.now().isoformat()
-    }
+    """Get system status - FROM MEMORY NOT FILE"""
+    # Firefox Manager의 메모리 상태를 직접 반환 (파일 아님!)
+    if firefox_manager:
+        system_state = firefox_manager.get_system_state()
+        logger.debug(f"Status from memory: extension={system_state.get('extension_status')}, firefox={system_state.get('firefox_status')}")
+        
+        return {
+            "status": "operational",
+            "system": "argosa", 
+            "state": system_state,  # 메모리 상태를 반환
+            "timestamp": datetime.now().isoformat(),
+            "source": "memory"
+        }
+    else:
+        # Firefox manager가 없으면 기본값
+        return {
+            "status": "operational",
+            "system": "argosa",
+            "state": {
+                "system_status": "idle",
+                "firefox_status": "closed",
+                "extension_status": "disconnected",
+                "sessions": {},
+                "data_sources_active": 0,
+                "total_conversations": 0
+            },
+            "timestamp": datetime.now().isoformat(),
+            "source": "default"
+        }
+
+@router.get("/test-correction")
+async def test_state_correction():
+    """🔧 테스트: 상태 보정 로직 확인"""
+    try:
+        metrics_summary = await metrics.get_metrics_summary()
+        current_time = datetime.now()
+        
+        if firefox_manager:
+            system_state = firefox_manager.get_system_state()
+        else:
+            system_state = {
+                "system_status": "idle",
+                "firefox_status": "closed", 
+                "extension_status": "disconnected"
+            }
+        
+        result = {
+            "test": "State correction test",
+            "timestamp": current_time.isoformat(),
+            "metrics_available": bool(metrics_summary),
+            "system_state": system_state
+        }
+        
+        if metrics_summary and "counters" in metrics_summary:
+            extension_heartbeat_count = metrics_summary["counters"].get("native_message.extension_heartbeat", 0)
+            init_count = metrics_summary["counters"].get("native_message.init", 0)
+            
+            result["metrics"] = {
+                "heartbeat_count": extension_heartbeat_count,
+                "init_count": init_count
+            }
+            
+            # 보정 로직 테스트
+            if extension_heartbeat_count > 0 and init_count > 0:
+                last_seen_str = system_state.get("extension_last_seen")
+                if last_seen_str:
+                    try:
+                        last_seen = datetime.fromisoformat(last_seen_str.replace('Z', '+00:00'))
+                        time_diff = (current_time - last_seen.replace(tzinfo=None)).total_seconds()
+                        
+                        result["correction_check"] = {
+                            "last_seen": last_seen_str,
+                            "time_diff_seconds": time_diff,
+                            "should_be_connected": time_diff < 120,
+                            "current_status": system_state.get("extension_status"),
+                            "would_correct_to": "connected" if time_diff < 120 else "disconnected"
+                        }
+                    except Exception as e:
+                        result["correction_error"] = str(e)
+        
+        return result
+        
+    except Exception as e:
+        return {"error": str(e), "test": "failed"}
+
+@router.post("/force-state-update")
+async def force_state_update():
+    """🔧 메트릭 기반으로 상태를 강제 업데이트"""
+    try:
+        if not metrics:
+            return {"status": "error", "message": "Metrics not available"}
+        
+        metrics_summary = await metrics.get_metrics_summary()
+        current_time = datetime.now()
+        
+        if metrics_summary and "counters" in metrics_summary:
+            extension_heartbeat_count = metrics_summary["counters"].get("native_message.extension_heartbeat", 0)
+            init_count = metrics_summary["counters"].get("native_message.init", 0)
+            
+            logger.info(f"🔧 Force update: heartbeat={extension_heartbeat_count}, init={init_count}")
+            
+            if extension_heartbeat_count > 0 and init_count > 0:
+                # Firefox manager와 state_manager 모두 업데이트
+                if firefox_manager:
+                    try:
+                        await firefox_manager.update_state("extension_status", "connected")
+                        await firefox_manager.update_state("firefox_status", "ready") 
+                        await firefox_manager.update_state("system_status", "ready")
+                        logger.info("🔧 Firefox manager state force updated")
+                    except Exception as e:
+                        logger.error(f"Error updating Firefox manager state: {e}")
+                
+                # No additional state manager needed - Firefox Manager is the single source of truth
+                logger.info("🔧 Firefox Manager is the only state source - no additional updates needed")
+                
+                return {
+                    "status": "success", 
+                    "message": "State force updated based on metrics",
+                    "metrics": {
+                        "heartbeat_count": extension_heartbeat_count,
+                        "init_count": init_count
+                    }
+                }
+            else:
+                return {
+                    "status": "no_update", 
+                    "message": "No extension activity detected in metrics",
+                    "metrics": {
+                        "heartbeat_count": extension_heartbeat_count,
+                        "init_count": init_count
+                    }
+                }
+        else:
+            return {"status": "error", "message": "No metrics data available"}
+            
+    except Exception as e:
+        logger.error(f"Error in force state update: {e}")
+        return {"status": "error", "message": str(e)}
 
 @router.websocket("/ws/state")
 async def state_websocket(websocket: WebSocket):
-    """WebSocket endpoint - ping/pong 제거"""
-    await websocket.accept()
-    active_websockets.add(websocket)
+    """WebSocket endpoint - Firefox Manager로 위임"""
+    if firefox_manager:
+        try:
+            # Firefox Manager의 websocket_handler 메서드 직접 호출
+            await firefox_manager.websocket_handler(websocket)
+        except Exception as e:
+            logger.error(f"WebSocket handler error: {e}")
+            await websocket.close()
+    else:
+        # Firefox manager가 없으면 fallback 모드
+        await websocket.accept()
+        active_websockets.add(websocket)
+        
+        try:
+            # Send minimal state since Firefox manager is not available
+            await websocket.send_json({
+                "type": "state_update",
+                "data": {
+                    "system_status": "idle",
+                    "firefox_status": "closed",
+                    "extension_status": "disconnected"
+                }
+            })
+            
+            # Keep connection alive
+            while True:
+                # Just wait for messages
+                try:
+                    data = await websocket.receive_json()
+                    # Handle any incoming messages if needed
+                except WebSocketDisconnect:
+                    break
+                    
+        except Exception as e:
+            logger.error(f"WebSocket error: {e}")
+        finally:
+            active_websockets.discard(websocket)
+
+@router.post("/firefox/start")
+async def start_firefox():
+    """Start Firefox with profile"""
+    if not firefox_manager:
+        raise HTTPException(status_code=503, detail="Firefox manager not available")
     
     try:
-        # Send current state
-        await websocket.send_json({
-            "type": "state_update",
-            "data": state_manager.state.dict()
-        })
+        # Update status - Firefox Manager handles this automatically
         
-        # Keep connection alive - 메시지 대기만
-        while True:
-            try:
-                # 클라이언트 메시지 대기 (ping/pong 제거)
-                message = await websocket.receive_json()
-                
-                # 필요시 메시지 처리
-                if message.get("type") == "request_update":
-                    await websocket.send_json({
-                        "type": "state_update",
-                        "data": state_manager.state.dict()
-                    })
-                    
-            except WebSocketDisconnect:
-                break
-            except Exception as e:
-                logger.error(f"WebSocket error: {e}")
-                break
-                
-    except WebSocketDisconnect:
-        logger.info("WebSocket client disconnected")
+        # Start Firefox
+        result = await firefox_manager.start()
+        
+        if result:
+            # Firefox manager will emit events that update the state
+            # Get current status
+            info = await firefox_manager.get_info()
+            
+            return {
+                "success": True,
+                "status": info,
+                "message": "Firefox started successfully"
+            }
+        else:
+            # Firefox Manager handles error states automatically
+            raise HTTPException(status_code=500, detail="Failed to start Firefox")
+            
     except Exception as e:
-        logger.error(f"WebSocket error: {e}")
-    finally:
-        active_websockets.discard(websocket)
-        try:
-            await websocket.close()
-        except:
-            pass
+        logger.error(f"Failed to start Firefox: {e}")
+            # Firefox Manager will handle error states automatically
+        raise HTTPException(status_code=500, detail=str(e))
 
-# ======================== Firefox Management Endpoints ========================
+@router.post("/firefox/stop")
+async def stop_firefox():
+    """Stop Firefox"""
+    if not firefox_manager:
+        raise HTTPException(status_code=503, detail="Firefox manager not available")
+    
+    try:
+        await firefox_manager.stop()
+        
+        # States will be updated by event handlers
+        # Just return success
+        
+        return {"success": True, "message": "Firefox stopped"}
+        
+    except Exception as e:
+        logger.error(f"Failed to stop Firefox: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/firefox/status")
+async def get_firefox_status():
+    """Get Firefox status"""
+    if not firefox_manager:
+        return {
+            "available": False,
+            "status": "unavailable",
+            "message": "Firefox manager not available"
+        }
+    
+    try:
+        info = await firefox_manager.get_info()
+        return {
+            "available": True,
+            "status": info
+        }
+    except Exception as e:
+        logger.error(f"Failed to get Firefox status: {e}")
+        return {
+            "available": False,
+            "status": "error",
+            "message": str(e)
+        }
+
+# ======================== Native Messaging Endpoints ========================
+
 
 @router.post("/check_firefox_status")
 async def check_firefox_status():
     """Firefox와 Extension 상태 확인"""
-    result = await firefox_manager.check_and_start()
-    
-    # Extension 상태도 함께 반환
-    result["extension_status"] = state_manager.state.extension_status
-    
-    return result
+    if firefox_manager:
+        try:
+            from routers.argosa.shared.firefox_manager import check_firefox_and_extension
+            return await check_firefox_and_extension()
+        except Exception as e:
+            logger.error(f"Firefox status check error: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+    else:
+        raise HTTPException(status_code=503, detail="Firefox manager not available")
 
 @router.post("/sessions/ensure_firefox")
 async def ensure_firefox_running(request: Dict[str, Any]):
@@ -456,24 +576,77 @@ async def ensure_firefox_running(request: Dict[str, Any]):
     if not platform:
         raise HTTPException(status_code=400, detail="Platform is required")
     
-    logger.info(f"🔐 Opening login page for {platform}")
+    if firefox_manager:
+        try:
+            from routers.argosa.shared.firefox_manager import open_login_page, get_system_state
+            
+            # 시스템 상태 확인 (Extension 없어도 진행)
+            system_state = get_system_state()
+            logger.info(f"[DataCollection] Current system state: firefox={system_state.get('firefox_status')}, extension={system_state.get('extension_status')}")
+            
+            # Extension 연결 상태는 경고만 하고 진행
+            if system_state.get("extension_status") != "connected":
+                logger.warning("[DataCollection] Extension not connected, but proceeding with login page open")
+            
+            result = await open_login_page(platform)
+            return result
+            
+        except Exception as e:
+            logger.error(f"Failed to open login page: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+    else:
+        raise HTTPException(status_code=503, detail="Firefox manager not available")
+
+@router.post("/sessions/check/{platform}")
+async def check_session_status(platform: str):
+    """세션 상태 확인"""
+    # Firefox가 준비되지 않았으면 에러  
+    if firefox_manager:
+        firefox_status = firefox_manager.get_system_state().get("firefox_status")
+        if firefox_status != "ready":
+            raise HTTPException(status_code=503, detail="Firefox is not ready")
+    else:
+        raise HTTPException(status_code=503, detail="Firefox manager not available")
     
-    # Extension 연결 확인
-    if state_manager.state.extension_status != 'connected':
-        raise HTTPException(status_code=503, detail="Extension not connected. Please check Firefox.")
+    # Native Messaging으로 세션 체크 명령 전송
+    command_id = await native_command_manager.send_command(
+        "check_session",
+        {"platform": platform}
+    )
     
+    # 응답 대기
     try:
+        result = await native_command_manager.wait_for_response(command_id, timeout=20)
+        return result
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=408, detail="Session check timeout")
+
+@router.post("/sessions/open_login/{platform}")
+async def open_login_page(platform: str):
+    """로그인 페이지 열기"""
+    try:
+        # Firefox가 준비되지 않았으면 시작
+        if firefox_manager:
+            firefox_status = firefox_manager.get_system_state().get("firefox_status")
+            if firefox_status != "ready":
+                logger.info("Firefox not ready, starting Firefox first...")
+                await start_firefox()
+                # Firefox 시작 후 잠시 대기
+                await asyncio.sleep(3)
+        else:
+            raise HTTPException(status_code=503, detail="Firefox manager not available")
+        
+        # 명령 전송
         command_id = await native_command_manager.send_command(
             "open_login_page",
             {"platform": platform}
         )
         
-        logger.info(f"✅ Sent open_login_page command: {command_id}")
-        
+        # 로그인 페이지가 열릴 때까지 기다리지 않고 바로 응답
         return {
-            "success": True, 
+            "success": True,
             "command_id": command_id,
-            "firefox_status": state_manager.state.firefox_status
+            "message": f"Opening {platform} login page..."
         }
         
     except Exception as e:
@@ -494,7 +667,8 @@ async def clear_session_cache():
             'source': 'cache_cleared'
         }
     
-    await state_manager.update_state("sessions", sessions)
+    if firefox_manager:
+        await firefox_manager.update_state("sessions", sessions)
     return {"status": "cache_cleared"}
 
 # ======================== Command Queue Endpoints ========================
@@ -516,301 +690,77 @@ async def complete_command_endpoint(command_id: str, result: Dict[str, Any]):
 # ======================== Native Message Handler ========================
 
 @router.post("/native/status")
+@router.post("/../native/status", include_in_schema=False)  # 구버전 호환 
 async def update_native_status(status: Dict[str, Any]):
     """Native Host 상태 업데이트"""
-    logger.info(f"Native status update: {status}")
+    status_type = status.get('status')
+    
+    # 상태 변경시에만 로깅 (heartbeat는 조용히 처리)
+    if status_type not in ['alive', 'heartbeat']:
+        logger.info(f"🔥 Extension status: {status_type}, ready: {status.get('extension_ready')}")
+    else:
+        # heartbeat나 alive도 가끔 로깅해서 패턴 확인
+        import time
+        current_time = int(time.time())
+        if current_time % 60 == 0:  # 매 분마다 한 번씩 로깅
+            logger.debug(f"[DataCollection] Periodic status update: {status_type}")
     
     status_type = status.get('status')
     
-    # Extension 첫 연결이면 즉시 connected로
-    if status_type in ['connected', 'ready', 'alive'] or status.get('extension_ready'):
-        if state_manager.state.extension_status != "connected":
-            await state_manager.update_state("extension_status", "connected")
-            await state_manager.update_state("firefox_status", "ready")
-            # system_status를 ready로 변경 추가!
-            await state_manager.update_state("system_status", "ready")
-            logger.info("Extension connected - marking system as ready")
+    # Extension 상태 업데이트 - 디바운싱으로 안정화
+    if firefox_manager:
+        current_time = datetime.now().isoformat()
         
-        await state_manager.update_state("extension_last_seen", datetime.now().isoformat())
-        
-        # sessions 정보가 있으면 업데이트
-        if 'sessions' in status:
-            await state_manager.update_state("sessions", status['sessions'])
-    
-    elif status_type == 'disconnected':
-        # Extension 연결 해제
-        await state_manager.update_state("extension_status", "disconnected")
-        await state_manager.update_state("firefox_status", "closed")
-        await state_manager.update_state("system_status", "idle")
-        
-        logger.info("Extension disconnected")
-    
-    # WebSocket으로 상태 브로드캐스트
-    await state_manager.broadcast_state()
-    
-    return {"status": "ok", "updated": True}
+        # Firefox Manager에 위임 - 중복 처리 제거
+        logger.info(f"🔥 [DataCollection] Delegating native status to Firefox Manager: {status_type}")
+        result = await firefox_manager.handle_native_status(status)
+        return result
+    else:
+        logger.warning("Firefox manager not available for status update")
+        return {"status": "error", "message": "Firefox manager not available"}
 
 @router.post("/native/message")
-@with_retry(max_retries=3)  # 데코레이터 추가
+@router.post("/../native/message", include_in_schema=False)  # 구버전 호환
 async def handle_native_message(message: Dict[str, Any]):
-    """Native Messaging Bridge로부터 메시지 처리"""
+    """Native Messaging Bridge로부터 메시지 처리 - Firefox Manager에 위임"""
+    
+    # 🔥 상세한 로깅 추가
+    logger.info("=" * 80)
+    logger.info("🔥🔥🔥 NATIVE MESSAGE RECEIVED 🔥🔥🔥")
+    logger.info(f"Message type: {message.get('type')}")
+    logger.info(f"Message: {json.dumps(message, indent=2)}")
+    logger.info("=" * 80)
     
     msg_type = message.get('type')
-    msg_id = message.get('id')
-    data = message.get('data', {})
-    
-    logger.info(f"Native message received: {msg_type}")
-    logger.debug(f"Message data: {data}")  # 디버깅용
+    logger.info(f"🔥 Native message type: {msg_type} - delegating to Firefox Manager")
     
     # 메트릭 기록
-    await metrics.increment_counter(f"native_message.{msg_type}")
+    if metrics:
+        await metrics.increment_counter(f"native_message.{msg_type}")
+        logger.info(f"🔥 Metric recorded: native_message.{msg_type}")
     
-    try:
-        if msg_type == MessageType.INIT.value:
-            # Extension 초기화 - system_status를 ready로 변경
-            await state_manager.update_state("extension_status", "connected")
-            await state_manager.update_state("firefox_status", "ready")
-            await state_manager.update_state("system_status", "ready")  # 추가!
-            logger.info("Extension initialized - system ready")
-            return {"status": "initialized"}
+    # Firefox Manager에 모든 처리 위임
+    if firefox_manager:
+        try:
+            logger.info(f"🔥 Firefox Manager available, calling handle_native_message")
+            result = await firefox_manager.handle_native_message(message)
+            logger.info(f"🔥 Firefox Manager processed {msg_type}: {result}")
             
-        elif msg_type == MessageType.SESSION_UPDATE.value:
-            # 세션 업데이트
-            platform = data.get('platform')
-            valid = data.get('valid', False)
-            cookies = data.get('cookies', [])
-            source = data.get('source', 'unknown')
-            error = data.get('error')
+            # Firefox Manager handles all state management - no syncing needed
+            logger.info(f"🔥 Firefox Manager processed message successfully")
             
-            logger.info(f"Session update for {platform}: valid={valid}, source={source}, error={error}")
-            
-            # 세션 매니저 업데이트
-            await session_manager.update_session(
-                platform=platform,
-                valid=valid,
-                cookies=cookies,
-                source=source,
-                session_data={
-                    'error': error,
-                    'source': source,
-                    'timestamp': datetime.now().isoformat()
-                }
-            )
-            
-            # Firefox가 종료된 경우 특별 처리
-            if source == 'firefox_closed':
-                logger.info(f"Firefox closed while waiting for {platform} login")
-                
-                # systemState 업데이트
-                current_sessions = state_manager.state.sessions.copy()
-                current_sessions[platform] = {
-                    'platform': platform,
-                    'valid': False,
-                    'last_checked': datetime.now().isoformat(),
-                    'expires_at': None,
-                    'source': 'firefox_closed',
-                    'status': 'firefox_closed',
-                    'error': error or 'Firefox was closed'
-                }
-                await state_manager.update_state("sessions", current_sessions)
-                
-                # Firefox 상태도 업데이트
-                await state_manager.update_state("firefox_status", "closed")
-                await state_manager.update_state("extension_status", "disconnected")
-                await state_manager.update_state("system_status", "idle")
-                
-                # WebSocket을 통해 즉시 브로드캐스트
-                await state_manager.broadcast_state()
-                
-                return {"status": "firefox_closed"}
-            
-            # 특별한 source 처리
-            elif source in ['tab_closed']:
-                logger.info(f"Browser tab closed for {platform}: {source}")
-                # systemState 업데이트
-                current_sessions = state_manager.state.sessions.copy()
-                current_sessions[platform] = {
-                    'platform': platform,
-                    'valid': False,
-                    'last_checked': datetime.now().isoformat(),
-                    'expires_at': None,
-                    'source': source,
-                    'status': source,
-                    'error': error or 'Tab closed'
-                }
-                await state_manager.update_state("sessions", current_sessions)
-                
-            elif source == 'timeout':
-                logger.info(f"Login timeout for {platform}")
-                # systemState 업데이트
-                current_sessions = state_manager.state.sessions.copy()
-                current_sessions[platform] = {
-                    'platform': platform,
-                    'valid': False,
-                    'last_checked': datetime.now().isoformat(),
-                    'expires_at': None,
-                    'source': 'timeout',
-                    'status': 'timeout',
-                    'error': error
-                }
-                await state_manager.update_state("sessions", current_sessions)
-                
-            elif source == 'login_detection' and valid:
-                logger.info(f"Login detected for {platform}")
-                # 로그인 성공 시 정상 세션 정보로 업데이트
-                current_sessions = state_manager.state.sessions.copy()
-                current_sessions[platform] = {
-                    'platform': platform,
-                    'valid': True,
-                    'last_checked': datetime.now().isoformat(),
-                    'expires_at': (datetime.now() + timedelta(days=7)).isoformat(),
-                    'source': 'login_detection',
-                    'status': 'active'
-                }
-                await state_manager.update_state("sessions", current_sessions)
-            
-            # WebSocket을 통해 즉시 브로드캐스트
-            await state_manager.broadcast_state()
-            
-            # 명령 완료 처리 (msg_id로)
-            if msg_id and msg_id.startswith('msg_'):  # Extension에서 온 메시지인 경우만
-                await native_command_manager.complete_command(msg_id, {
-                    "success": True,
-                    "platform": platform,
-                    "source": source,
-                    "valid": valid
-                })
-            
-            return {"status": "updated"}
-            
-        elif msg_type == MessageType.COLLECTION_RESULT.value:
-            # 대화 수집 결과
-            platform = data.get('platform')
-            conversations = data.get('conversations', [])
-            excluded_ids = data.get('excluded_llm_ids', [])
-            command_id = data.get('command_id')
-            
-            # system_status를 collecting으로 변경
-            await state_manager.update_state("system_status", "collecting")
-            
-            # LLM 필터링
-            filtered = await llm_tracker.filter_conversations(conversations, platform)
-            
-            # 저장
-            if filtered["conversations"]:
-                save_response = await save_conversations_internal({
-                    "platform": platform,
-                    "conversations": filtered["conversations"],
-                    "metadata": {
-                        "source": "native_collection",
-                        **filtered["filter_stats"]
-                    }
-                })
-                
-                logger.info(f"Saved {len(filtered['conversations'])} conversations from {platform}")
-            
-            # 수집 완료 후 system_status를 ready로 복원
-            await state_manager.update_state("system_status", "ready")
-            
-            # 명령 완료
-            if command_id:
-                await native_command_manager.complete_command(command_id, {
-                    "success": True,
-                    "collected": len(filtered["conversations"]),
-                    "excluded": filtered["excluded_count"]
-                })
-            
-            return {"status": "saved", "count": len(filtered["conversations"])}
-            
-        elif msg_type == MessageType.LLM_QUERY_RESULT.value:
-            # LLM 질문 결과
-            conversation_id = data.get('conversation_id')
-            platform = data.get('platform')
-            query = data.get('query')
-            response_text = data.get('response')
-            command_id = data.get('command_id')
-            
-            # LLM 대화로 추적
-            await llm_tracker.track(conversation_id, platform, {
-                'query': query,
-                'source': 'llm_query',
-                'created_at': datetime.now().isoformat()
-            })
-            
-            # 명령 완료
-            if command_id:
-                await native_command_manager.complete_command(command_id, data)
-            
-            return {"status": "tracked", "conversation_id": conversation_id}
-            
-        elif msg_type == MessageType.CRAWL_RESULT.value:
-            # 웹 크롤링 결과
-            url = data.get('url')
-            content = data.get('content')
-            extracted = data.get('extracted_data', {})
-            command_id = data.get('command_id')
-            
-            # 명령 완료
-            if command_id:
-                await native_command_manager.complete_command(command_id, data)
-            
-            return {"status": "crawled", "url": url}
-            
-        elif msg_type == MessageType.ERROR.value:
-            # 에러 처리
-            error_msg = data.get('error', 'Unknown error')
-            command_id = data.get('command_id')
-            platform = data.get('platform')
-            logger.error(f"Native error: {error_msg}")
-            
-            # 플랫폼 관련 에러인 경우 세션 상태 업데이트
-            if platform:
-                current_sessions = state_manager.state.sessions.copy()
-                current_sessions[platform] = {
-                    'platform': platform,
-                    'valid': False,
-                    'last_checked': datetime.now().isoformat(),
-                    'expires_at': None,
-                    'source': 'error',
-                    'status': 'error',
-                    'error': error_msg
-                }
-                await state_manager.update_state("sessions", current_sessions)
-                await state_manager.broadcast_state()
-            
-            if command_id:
-                await native_command_manager.complete_command(command_id, {
-                    "success": False,
-                    "error": error_msg
-                })
-            
-            return {"status": "error", "message": error_msg}
-            
-        elif msg_type == "heartbeat":
-            # Extension heartbeat 처리
-            await state_manager.update_state("extension_last_seen", datetime.now().isoformat())
-            return {"status": "ok"}
-            
-        elif msg_type == "extension_heartbeat":
-            # Backend 직접 heartbeat 처리
-            await state_manager.update_state("extension_last_seen", datetime.now().isoformat())
-            return {"status": "ok"}
-            
-        else:
-            logger.warning(f"Unknown message type: {msg_type}")
-            return {"status": "unknown", "type": msg_type}
-            
-    except Exception as e:
-        logger.error(f"Native message handling error: {e}")
-        await metrics.increment_counter("native_message.error")
-        return {"status": "error", "message": str(e)}
+            logger.info("=" * 80)
+            return result
+        except Exception as e:
+            logger.error(f"Firefox Manager failed to process {msg_type}: {e}")
+            logger.error(f"Stack trace: {traceback.format_exc()}")
+            return {"status": "error", "message": str(e)}
+    else:
+        logger.error("🔥 Firefox Manager not available!")
+        logger.error(f"🔥 firefox_manager object: {firefox_manager}")
+        return {"status": "error", "message": "Firefox Manager not available"}
     
 # 에러 처리가 적용된 명령 처리 함수
-@error_handler.with_error_handling(
-    severity=ErrorSeverity.HIGH,
-    max_retries=2,
-    fallback_value={"status": "error", "message": "Command processing failed"}
-)
 async def process_command_with_retry(command_type: str, data: Dict[str, Any]):
     """에러 처리가 적용된 명령 처리"""
     # Native 명령 전송
@@ -832,8 +782,7 @@ async def start_collection_native(request: Dict[str, Any]):
     platforms = request.get('platforms', [])
     settings = request.get('settings', {})
     
-    # system_status를 collecting으로 변경
-    await state_manager.update_state("system_status", "collecting")
+    # 수집 중 상태는 프론트엔드에서 관리
     
     try:
         result = await process_command_with_retry(
@@ -845,8 +794,6 @@ async def start_collection_native(request: Dict[str, Any]):
             }
         )
         
-        # 수집 완료 후 ready로 복원
-        await state_manager.update_state("system_status", "ready")
         
         return {
             "success": True,
@@ -855,8 +802,6 @@ async def start_collection_native(request: Dict[str, Any]):
         }
     except Exception as e:
         logger.error(f"Collection failed: {e}")
-        # 에러 시에도 ready로 복원
-        await state_manager.update_state("system_status", "ready")
         return {
             "success": False,
             "error": str(e)
@@ -901,7 +846,7 @@ async def query_llm_native(request: Dict[str, Any]):
 async def crawl_web_native(request: Dict[str, Any]):
     """Native Messaging을 통한 웹 크롤링"""
     url = request.get('url')
-    search_query = request.get('query')
+    options = request.get('options', {})
     
     if not url:
         raise HTTPException(status_code=400, detail="URL required")
@@ -911,13 +856,13 @@ async def crawl_web_native(request: Dict[str, Any]):
             "crawl_web",
             {
                 "url": url,
-                "search_query": search_query,
-                "extract_rules": request.get('extract_rules', {})
+                "options": options
             }
         )
         
         return {
             "success": True,
+            "url": url,
             "content": result.get('content'),
             "extracted": result.get('extracted_data', {})
         }
@@ -935,43 +880,294 @@ async def get_metrics_summary():
     """메트릭 요약"""
     return await metrics.get_metrics_summary()
 
+@router.post("/firefox/force-update")
+async def force_firefox_update():
+    """Firefox Manager 상태 강제 업데이트"""
+    if not firefox_manager:
+        return {"error": "Firefox Manager not available"}
+    
+    try:
+        # 강제로 상태를 connected로 업데이트
+        await firefox_manager.update_state("extension_status", "connected")
+        await firefox_manager.update_state("firefox_status", "ready")
+        await firefox_manager.update_state("system_status", "ready")
+        
+        # 현재 시간으로 last_seen 업데이트
+        await firefox_manager.update_state("extension_last_seen", datetime.now().isoformat())
+        
+        # 현재 상태 반환
+        current_state = firefox_manager.get_system_state()
+        
+        return {
+            "status": "updated",
+            "state": current_state
+        }
+    except Exception as e:
+        logger.error(f"Failed to force update Firefox state: {e}")
+        return {"error": str(e)}
+
+@router.get("/extension/diagnose")
+async def diagnose_extension():
+    """Extension 연결 상태 진단"""
+    
+    diagnosis = {
+        "backend_time": datetime.now().isoformat(),
+        "backend_status": "running",
+        "firefox_manager_available": firefox_manager is not None,
+        "current_state": None,
+        "last_heartbeat": None,
+        "heartbeat_age_seconds": None,
+        "expected_status": None,
+        "api_endpoints": {
+            "native_status": "/api/argosa/data/native/status",
+            "native_message": "/api/argosa/data/native/message",
+            "websocket": "/api/argosa/data/ws/state"
+        }
+    }
+    
+    if firefox_manager:
+        # 현재 상태
+        diagnosis["current_state"] = firefox_manager.get_system_state()
+        
+        # Heartbeat 나이 계산
+        last_seen_str = diagnosis["current_state"].get("extension_last_seen")
+        if last_seen_str:
+            try:
+                last_seen = datetime.fromisoformat(last_seen_str.replace('Z', '+00:00'))
+                time_diff = (datetime.now() - last_seen.replace(tzinfo=None)).total_seconds()
+                diagnosis["last_heartbeat"] = last_seen_str
+                diagnosis["heartbeat_age_seconds"] = time_diff
+                
+                # 예상 상태 계산
+                if time_diff < 120:  # 2분
+                    diagnosis["expected_status"] = "connected"
+                else:
+                    diagnosis["expected_status"] = "disconnected"
+            except Exception as e:
+                diagnosis["heartbeat_parse_error"] = str(e)
+    
+    return diagnosis
+
+@router.get("/debug/state-changes")
+async def debug_state_changes():
+    """상태 변경 디버그 정보"""
+    if not firefox_manager:
+        return {"error": "Firefox Manager not available"}
+    
+    # 최근 상태 변경 기록을 위한 글로벌 리스트 추가
+    if not hasattr(firefox_manager, '_state_change_history'):
+        firefox_manager._state_change_history = []
+    
+    return {
+        "current_state": firefox_manager.get_system_state(),
+        "state_change_history": firefox_manager._state_change_history[-20:],  # 최근 20개
+        "active_websockets": len(firefox_manager._active_websockets),
+        "firefox_status": firefox_manager._status.value if hasattr(firefox_manager._status, 'value') else str(firefox_manager._status),
+        "monitor_task_running": firefox_manager._monitor_task is not None and not firefox_manager._monitor_task.done() if hasattr(firefox_manager, '_monitor_task') else False
+    }
+
+@router.get("/firefox/diagnose")
+async def diagnose_firefox():
+    """Firefox Manager 진단"""
+    
+    diagnosis = {
+        "firefox_manager_available": firefox_manager is not None,
+        "firefox_manager_id": id(firefox_manager) if firefox_manager else None,
+        "current_state": None,
+        "internal_state": None,
+        "update_test": None
+    }
+    
+    if firefox_manager:
+        # 현재 상태
+        diagnosis["current_state"] = firefox_manager.get_system_state()
+        
+        # 내부 상태 직접 확인
+        diagnosis["internal_state"] = {
+            "extension_status": firefox_manager._system_state.get("extension_status"),
+            "firefox_status": firefox_manager._system_state.get("firefox_status"),
+            "system_status": firefox_manager._system_state.get("system_status"),
+            "extension_last_seen": firefox_manager._system_state.get("extension_last_seen")
+        }
+        
+        # update_state 테스트
+        try:
+            test_time = datetime.now().isoformat()
+            await firefox_manager.update_state("extension_last_seen", test_time)
+            
+            # 업데이트 후 확인
+            updated_value = firefox_manager._system_state.get("extension_last_seen")
+            diagnosis["update_test"] = {
+                "success": updated_value == test_time,
+                "set_value": test_time,
+                "actual_value": updated_value
+            }
+        except Exception as e:
+            diagnosis["update_test"] = {
+                "success": False,
+                "error": str(e)
+            }
+    
+    return diagnosis
+
+
+# ======================== LLM Query Settings Endpoints ========================
+
+@router.get("/llm/query/settings")
+async def get_llm_query_settings():
+    """LLM Query 설정 가져오기"""
+    try:
+        settings_path = Path(__file__).parent / "collection" / "settings" / "llm_query_settings.json"
+        if settings_path.exists():
+            with open(settings_path, 'r', encoding='utf-8') as f:
+                settings = json.load(f)
+            return settings
+        else:
+            # 기본 설정 반환
+            default_settings = {
+                "auto_query_enabled": True,
+                "max_queries_per_analysis": 5,
+                "allowed_providers": ["chatgpt", "claude", "gemini"],
+                "query_timeout": 30,
+                "firefox_visible": True
+            }
+            return default_settings
+    except Exception as e:
+        logger.error(f"Failed to get LLM query settings: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.put("/llm/query/settings")
+async def update_llm_query_settings(settings: Dict[str, Any]):
+    """LLM Query 설정 업데이트"""
+    try:
+        settings_path = Path(__file__).parent / "collection" / "settings" / "llm_query_settings.json"
+        
+        # 디렉토리 생성
+        settings_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        # 저장
+        with open(settings_path, 'w', encoding='utf-8') as f:
+            json.dump(settings, f, indent=2, ensure_ascii=False)
+            
+        logger.info(f"LLM query settings updated: {settings}")
+        return settings
+        
+    except Exception as e:
+        logger.error(f"Failed to update LLM query settings: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/llm/query/activities")
+async def get_llm_query_activities():
+    """LLM Query 활동 내역 가져오기"""
+    try:
+        # TODO: 실제 활동 내역은 데이터베이스나 파일에서 로드
+        # 여기서는 빈 배열 반환
+        return {"activities": []}
+    except Exception as e:
+        logger.error(f"Failed to get LLM query activities: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/llm/query/analysis/status")
+async def get_llm_analysis_status():
+    """LLM 분석 상태 가져오기"""
+    try:
+        # TODO: 실제 분석 상태는 메모리나 데이터베이스에서 로드
+        return {
+            "current_analysis": None,
+            "queries_sent": 0,
+            "queries_completed": 0,
+            "last_query_time": None,
+            "analysis_progress": 0
+        }
+    except Exception as e:
+        logger.error(f"Failed to get LLM analysis status: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/llm/query/stats")
+async def get_llm_query_stats():
+    """LLM Query 통계 가져오기"""
+    try:
+        # TODO: 실제 통계는 데이터베이스나 파일에서 로드
+        return {}
+    except Exception as e:
+        logger.error(f"Failed to get LLM query stats: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.delete("/llm/query/activities/clear")
+async def clear_llm_query_activities():
+    """완료된 LLM Query 활동 내역 삭제"""
+    try:
+        # TODO: 실제 삭제 로직 구현
+        return {"success": True}
+    except Exception as e:
+        logger.error(f"Failed to clear LLM query activities: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 # ======================== Initialization and Shutdown ========================
 
 async def initialize():
     """Initialize Argosa core system"""
-    logger.info("Initializing Argosa core system...")
+    logger.debug("Initializing Argosa core system...")
     
     # Create directories
     DATA_PATH.mkdir(parents=True, exist_ok=True)
     
-    # Initialize shared services
-    await cache_manager.initialize()
-    await command_queue.initialize()
-    await metrics.initialize()
+    # Initialize shared services only if they exist
+    if cache_manager:
+        await cache_manager.initialize()
+    else:
+        logger.warning("Cache manager not available, skipping initialization")
     
-    # Command handlers 등록
-    command_queue.register_handler("collect_conversations", handle_collect_command)
-    command_queue.register_handler("execute_llm_query", handle_llm_query_command)
-    command_queue.register_handler("crawl_web", handle_crawl_command)
+    if command_queue:
+        await command_queue.initialize()
+        # Command handlers 등록
+        command_queue.register_handler("collect_conversations", handle_collect_command)
+        command_queue.register_handler("execute_llm_query", handle_llm_query_command)
+        command_queue.register_handler("crawl_web", handle_crawl_command)
+    else:
+        logger.warning("Command queue not available, skipping initialization")
     
-    # Initialize state - idle로 시작
-    await state_manager.update_state("system_status", "idle")
-    await state_manager.update_state("firefox_status", "closed")
-    await state_manager.update_state("extension_status", "disconnected")
+    if metrics:
+        await metrics.initialize()
+    else:
+        logger.warning("Metrics not available, skipping initialization")
     
-    # Firefox 모니터 시작
-    firefox_manager.start_monitor()
+    # State management is now handled entirely by Firefox Manager
+    logger.debug("State management delegated to Firefox Manager")
     
-    logger.info("Argosa core system initialized")
+    # Firefox Manager 초기화 및 상태 동기화
+    if firefox_manager:
+        try:
+            # Firefox Manager initialization with state preservation
+            logger.debug("Initializing Firefox Manager...")
+            
+            # Initialize Firefox Manager - it becomes the single source of truth for state
+            await firefox_manager.initialize()
+            logger.debug("Firefox manager initialized")
+        except Exception as e:
+            logger.error(f"Failed to initialize Firefox manager: {e}")
+            # Firefox Manager initialization failed - fallback mode
+            logger.warning("Running without Firefox Manager - limited functionality")
+    else:
+        logger.warning("Firefox manager not available")
+        # Firefox Manager not available - limited state management
+        logger.warning("Firefox Manager not available - system will have limited state management capabilities")
+    
+    logger.debug("Argosa core system initialized")
 
 async def shutdown():
     """Shutdown Argosa core system"""
     logger.info("Shutting down Argosa core system...")
     
-    # Firefox 모니터 중지
-    firefox_manager.stop_monitor()
+    # Firefox Manager 정리 (모니터링과 WebSocket 포함)
+    if firefox_manager:
+        await firefox_manager.cleanup()
+    else:
+        # Legacy firefox_monitor 중지 - DISABLED
+        # firefox_monitor.stop_monitor()
+        pass
     
-    # Close WebSocket connections
+    # Close WebSocket connections (firefox_manager가 처리하지 않는 것들)
     for websocket in list(active_websockets):
         try:
             await websocket.close()
@@ -980,9 +1176,12 @@ async def shutdown():
     active_websockets.clear()
     
     # Shutdown shared services
-    await command_queue.shutdown()
-    await metrics.shutdown()
-    await cache_manager.cleanup()
+    if command_queue:
+        await command_queue.shutdown()
+    if metrics:
+        await metrics.shutdown()
+    if cache_manager:
+        await cache_manager.cleanup()
     
     logger.info("Argosa core system shutdown complete")
 
@@ -1013,3 +1212,6 @@ async def save_conversations_internal(data: Dict[str, Any]):
         conversations=data['conversations'],
         metadata=data.get('metadata', {})
     )
+
+# Debug: File loading completion check
+logger.debug("Data collection module loaded")

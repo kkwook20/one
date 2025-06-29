@@ -23,7 +23,7 @@ class MetricsCollector:
     async def initialize(self):
         """메트릭 수집 시작"""
         self._collection_task = asyncio.create_task(self._collect_system_metrics())
-        logger.info("Metrics collector initialized")
+        logger.debug("Metrics collector initialized")
     
     async def shutdown(self):
         """메트릭 수집 종료"""

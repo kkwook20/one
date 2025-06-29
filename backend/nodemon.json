@@ -1,0 +1,17 @@
+{
+  "watch": ["routers/", "main.py"],
+  "ext": "py",
+  "ignore": [
+    "routers/argosa/shared/firefox_manager.py",
+    "routers/argosa/collection/native_host.py",
+    "**/test_*.py",
+    "**/__pycache__/**",
+    "**/logs/**",
+    "**/data/**"
+  ],
+  "exec": "python -m uvicorn main:app --host 0.0.0.0 --port 8000",
+  "env": {
+    "PYTHONUNBUFFERED": "1"
+  },
+  "delay": "2000"
+}

@@ -4,6 +4,7 @@
 import asyncio
 import socket
 import platform
+import subprocess
 from typing import List, Dict, Any, Optional
 import httpx
 import ipaddress
@@ -34,7 +35,8 @@ class NetworkDiscovery:
         self,
         subnet: Optional[str] = None,
         port: int = 1234,
-        timeout: float = 0.5
+        timeout: float = 0.5,
+        full_scan: bool = True
     ) -> List[NetworkDevice]:
         """네트워크 스캔"""
         
@@ -78,8 +80,8 @@ class NetworkDiscovery:
             
             # 3. 각 서브넷 스캔
             for subnet in all_subnets:
-                logger.info(f"Scanning subnet: {subnet}")
-                await self._scan_subnet(subnet, port, timeout)
+                logger.info(f"Scanning subnet: {subnet} (full_scan={full_scan})")
+                await self._scan_subnet(subnet, port, timeout, full_scan)
             
             # LM Studio 실행 중인 장치만 필터 (localhost 제외)
             lm_studio_devices = [
@@ -98,21 +100,42 @@ class NetworkDiscovery:
         finally:
             self.scan_in_progress = False
     
-    async def _scan_subnet(self, subnet: str, port: int, timeout: float):
+    async def _scan_subnet(self, subnet: str, port: int, timeout: float, full_scan: bool = True):
         """서브넷 스캔"""
         try:
             network = ipaddress.ip_network(subnet, strict=False)
             
-            # 우선순위 IP 먼저 스캔
-            priority_ips = self._get_priority_ips(subnet)
-            tasks = []
-            for ip in priority_ips:
-                # localhost IP는 스킵
-                if str(ip) not in ["127.0.0.1", "::1"]:
-                    tasks.append(self._check_host(str(ip), port, timeout))
-            
-            if tasks:
-                await asyncio.gather(*tasks, return_exceptions=True)
+            if full_scan:
+                # 전체 서브넷 스캔 (배치 처리)
+                tasks = []
+                batch_size = 20  # 동시에 20개씩 처리
+                
+                all_ips = [str(ip) for ip in network.hosts()]
+                logger.info(f"Full scan of {len(all_ips)} IPs in {subnet}")
+                
+                for i in range(0, len(all_ips), batch_size):
+                    batch = all_ips[i:i+batch_size]
+                    batch_tasks = []
+                    
+                    for ip in batch:
+                        # localhost IP는 스킵
+                        if ip not in ["127.0.0.1", "::1"]:
+                            batch_tasks.append(self._check_host(ip, port, timeout))
+                    
+                    if batch_tasks:
+                        await asyncio.gather(*batch_tasks, return_exceptions=True)
+                        await asyncio.sleep(0.1)  # 배치 간 짧은 대기
+            else:
+                # 우선순위 IP만 스캔 (빠른 스캔)
+                priority_ips = self._get_priority_ips(subnet)
+                tasks = []
+                for ip in priority_ips:
+                    # localhost IP는 스킵
+                    if str(ip) not in ["127.0.0.1", "::1"]:
+                        tasks.append(self._check_host(str(ip), port, timeout))
+                
+                if tasks:
+                    await asyncio.gather(*tasks, return_exceptions=True)
                 
         except Exception as e:
             logger.error(f"Subnet scan error for {subnet}: {e}")
@@ -202,13 +225,43 @@ class NetworkDiscovery:
             return []
     
     async def check_specific_host(self, host: str, port: int = 1234) -> Optional[NetworkDevice]:
-        """특정 호스트 체크"""
+        """특정 호스트 체크 (IP 또는 호스트명)"""
         # localhost는 None 반환
         if host in ["localhost", "127.0.0.1", "::1"]:
             return None
+        
+        # 호스트명인 경우 IP로 변환
+        ip_address = host
+        hostname = None
+        
+        # IP 주소가 아닌 경우 (호스트명인 경우)
+        try:
+            ipaddress.ip_address(host)
+            # 유효한 IP 주소
+        except ValueError:
+            # 호스트명으로 간주하고 IP 조회
+            try:
+                ip_address = socket.gethostbyname(host)
+                hostname = host
+                logger.info(f"Resolved hostname '{host}' to IP: {ip_address}")
+            except socket.gaierror as e:
+                logger.error(f"Failed to resolve hostname '{host}': {e}")
+                # Windows에서 NetBIOS 이름 시도
+                if platform.system() == "Windows":
+                    try:
+                        # FQDN 시도
+                        import socket
+                        ip_address = socket.gethostbyname(f"{host}.local")
+                        hostname = host
+                        logger.info(f"Resolved via .local: '{host}' to IP: {ip_address}")
+                    except:
+                        logger.error(f"Also failed with .local suffix")
+                        return None
+                else:
+                    return None
             
-        await self._check_host(host, port, 3.0)
-        return self.discovered_devices.get(host)
+        await self._check_host(ip_address, port, 3.0, hostname)
+        return self.discovered_devices.get(ip_address)
     
     async def monitor_devices(self, interval: int = 30):
         """장치 상태 모니터링"""
@@ -235,6 +288,45 @@ class NetworkDiscovery:
             device for device in self.discovered_devices.values()
             if device.is_lm_studio and device.ip not in ["127.0.0.1", "localhost"]
         ]
+    
+    async def scan_by_hostnames(self, hostnames: List[str], port: int = 1234) -> List[NetworkDevice]:
+        """호스트명 리스트로 스캔"""
+        found_devices = []
+        
+        tasks = []
+        for hostname in hostnames:
+            if hostname not in ["localhost", "127.0.0.1"]:
+                tasks.append(self.check_specific_host(hostname, port))
+        
+        if tasks:
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            for result in results:
+                if result and not isinstance(result, Exception):
+                    found_devices.append(result)
+                    
+        logger.info(f"Found {len(found_devices)} LM Studio instances from {len(hostnames)} hostnames")
+        return found_devices
+    
+    async def discover_network_hostnames(self) -> List[str]:
+        """네트워크에서 호스트명 탐색 (Windows)"""
+        hostnames = []
+        
+        if platform.system() == "Windows":
+            try:
+                # Windows net view 명령 사용
+                import subprocess
+                result = subprocess.run(["net", "view"], capture_output=True, text=True)
+                if result.returncode == 0:
+                    lines = result.stdout.split('\n')
+                    for line in lines:
+                        if line.startswith('\\\\'):
+                            hostname = line.strip('\\').split()[0]
+                            hostnames.append(hostname)
+                            logger.debug(f"Found hostname: {hostname}")
+            except Exception as e:
+                logger.error(f"Failed to discover Windows hostnames: {e}")
+        
+        return hostnames
 
 # 전역 인스턴스
 network_discovery = NetworkDiscovery()

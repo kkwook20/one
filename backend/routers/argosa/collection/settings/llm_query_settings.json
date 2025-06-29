@@ -1,0 +1,7 @@
+{
+  "auto_query_enabled": true,
+  "max_queries_per_analysis": 5,
+  "allowed_providers": ["chatgpt", "claude", "gemini"],
+  "query_timeout": 30,
+  "firefox_visible": true
+}

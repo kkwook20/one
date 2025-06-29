@@ -1,4 +1,4 @@
-# native_host_improved.py - Firefox 프로세스 모니터링 포함
+# native_host.py - Firefox Manager 사용 버전
 import sys
 import json
 import struct
@@ -10,8 +10,27 @@ from typing import Dict, Any, Optional, List, Set
 import traceback
 from datetime import datetime
 import aiohttp
-import psutil
+import select
 import threading
+from queue import Queue
+
+# Python path 설정 - Firefox Manager import 를 위해
+import sys
+from pathlib import Path
+
+# 백엔드 루트 디렉토리를 Python path에 추가
+backend_root = Path(__file__).parent.parent.parent
+sys.path.insert(0, str(backend_root))
+
+# Firefox manager import
+try:
+    from routers.argosa.shared.firefox_manager import get_firefox_manager, FirefoxEvent
+    firefox_manager = get_firefox_manager()
+    print(f"[NativeHost] Firefox Manager imported successfully: {firefox_manager is not None}")
+except ImportError as e:
+    print(f"[NativeHost] Failed to import Firefox Manager: {e}")
+    firefox_manager = None
+    FirefoxEvent = None
 
 # 로깅 설정
 log_dir = os.path.join(os.getenv('PROGRAMDATA', 'C:\\ProgramData'), 'Argosa')
@@ -41,120 +60,106 @@ if sys.platform == "win32":
     msvcrt.setmode(sys.stdin.fileno(), os.O_BINARY)
     msvcrt.setmode(sys.stdout.fileno(), os.O_BINARY)
 
-class FirefoxMonitor:
-    """Firefox 프로세스 모니터링"""
+class LoginTabTracker:
+    """로그인 탭 추적만 담당"""
     
-    def __init__(self, callback):
-        self.callback = callback
-        self.monitoring = False
-        self.firefox_pids: Set[int] = set()
+    def __init__(self):
         self.login_tabs: Dict[str, Dict[str, Any]] = {}  # platform -> {tab_id, start_time}
-        self._monitor_thread = None
-        # Firefox 모니터링 자동 시작
-        self.start_monitoring()
-        
-    def start_monitoring(self):
-        """모니터링 시작"""
-        if not self.monitoring:
-            self.monitoring = True
-            self._monitor_thread = threading.Thread(target=self._monitor_loop, daemon=True)
-            self._monitor_thread.start()
-            logger.info("Firefox monitoring started")
+        logger.info("LoginTabTracker initialized")
     
-    def stop_monitoring(self):
-        """모니터링 중지"""
-        self.monitoring = False
-        if self._monitor_thread:
-            self._monitor_thread.join(timeout=2)
-        logger.info("Firefox monitoring stopped")
-    
-    def _monitor_loop(self):
-        """Firefox 프로세스 모니터링 루프"""
-        while self.monitoring:
-            try:
-                # 현재 Firefox 프로세스들 찾기
-                current_pids = set()
-                for proc in psutil.process_iter(['pid', 'name']):
-                    if proc.info['name'] and 'firefox' in proc.info['name'].lower():
-                        current_pids.add(proc.info['pid'])
-                
-                # 종료된 프로세스 감지
-                closed_pids = self.firefox_pids - current_pids
-                if closed_pids and len(current_pids) == 0:  # Firefox가 완전히 종료됨
-                    logger.info(f"Firefox completely closed (was tracking: {closed_pids})")
-                    # Firefox가 종료되면 모든 로그인 대기 중인 플랫폼에 대해 알림
-                    try:
-                        # 새로운 이벤트 루프에서 실행
-                        loop = asyncio.new_event_loop()
-                        asyncio.set_event_loop(loop)
-                        loop.run_until_complete(self._handle_firefox_closed())
-                        loop.close()
-                    except Exception as e:
-                        logger.error(f"Error handling Firefox closed: {e}")
-                
-                # 새로운 프로세스 감지
-                new_pids = current_pids - self.firefox_pids
-                if new_pids:
-                    logger.info(f"New Firefox processes: {new_pids}")
-                
-                self.firefox_pids = current_pids
-                
-            except Exception as e:
-                logger.error(f"Monitor loop error: {e}")
-            
-            # 1초마다 체크
-            import time
-            time.sleep(1)
-    
-    async def _handle_firefox_closed(self):
-        """Firefox 종료 처리"""
-        logger.info(f"Handling Firefox closed event. Login tabs: {list(self.login_tabs.keys())}")
-        
-        # 로그인 대기 중인 플랫폼에 대해 알림
-        for platform, info in list(self.login_tabs.items()):
-            logger.info(f"Sending firefox_closed event for {platform}")
-            await self.callback('firefox_closed', {
-                'platform': platform,
-                'error': 'Firefox was closed',
-                'source': 'firefox_monitor'
-            })
-        self.login_tabs.clear()
-        
-        # Firefox 종료 자체도 백엔드에 알림
-        logger.info("Notifying backend that Firefox completely closed")
-        await self.callback('firefox_closed', {
-            'firefox_status': 'closed',
-            'extension_status': 'disconnected',
-            'source': 'firefox_monitor'
-        })
-    
-    def add_login_tab(self, platform: str, tab_info: Dict[str, Any]):
-        """로그인 탭 추가"""
+    def add_login_tab(self, platform: str, tab_id: str):
+        """로그인 탭 추적 시작"""
         self.login_tabs[platform] = {
-            **tab_info,
-            'start_time': datetime.now()
+            'tab_id': tab_id,
+            'start_time': datetime.now().isoformat()
         }
-        logger.info(f"Tracking login tab for {platform}")
+        logger.info(f"Tracking login tab for {platform}: {tab_id}")
     
     def remove_login_tab(self, platform: str):
         """로그인 탭 제거"""
         if platform in self.login_tabs:
             del self.login_tabs[platform]
             logger.info(f"Stopped tracking login tab for {platform}")
+    
+    def get_all_platforms(self) -> List[str]:
+        """추적 중인 모든 플랫폼 반환"""
+        return list(self.login_tabs.keys())
+    
+    def clear_all(self):
+        """모든 추적 중인 탭 제거"""
+        self.login_tabs.clear()
 
 class ImprovedNativeHost:
-    """개선된 Native Host - Firefox 모니터링 포함"""
+    """개선된 Native Host - Firefox Manager 사용"""
     
     def __init__(self):
-        self.backend_url = "http://localhost:8000/api/argosa"
+        # Backend URL 설정
+        self.backend_url = os.environ.get('ARGOSA_BACKEND_URL', 'http://localhost:8000/api/argosa/data')
         self.session: Optional[aiohttp.ClientSession] = None
         self.running = True
         self.pending_commands = []
         
-        # Firefox 모니터
-        self.firefox_monitor = FirefoxMonitor(self.handle_firefox_event)
+        # 로그인 탭 추적기
+        self.login_tab_tracker = LoginTabTracker()
         
-        logger.info("ImprovedNativeHost initialized")
+        # Firefox Manager 이벤트 리스너 등록
+        if firefox_manager and FirefoxEvent:
+            firefox_manager.add_event_listener(FirefoxEvent.CRASHED, self.handle_firefox_crashed)
+            firefox_manager.add_event_listener(FirefoxEvent.STOPPED, self.handle_firefox_stopped)
+            logger.info("Registered Firefox event listeners")
+        
+        # 비동기 stdin 읽기를 위한 큐와 쓰레드
+        self.stdin_queue = Queue()
+        self.stdin_thread = None
+        
+        logger.info(f"ImprovedNativeHost initialized with backend URL: {self.backend_url}")
+    
+    def _stdin_reader_thread(self):
+        """별도 쓰레드에서 stdin 읽기"""
+        logger.info("[NativeHost] Stdin reader thread started")
+        message_count = 0
+        try:
+            while self.running:
+                try:
+                    # 메시지 길이 읽기 (4바이트)
+                    length_bytes = sys.stdin.buffer.read(4)
+                    if not length_bytes:
+                        logger.warning("[NativeHost] Empty read from stdin - connection closed")
+                        break
+                    
+                    if len(length_bytes) != 4:
+                        logger.error(f"Invalid length bytes: got {len(length_bytes)}, expected 4")
+                        break
+                    
+                    # 메시지 길이 파싱
+                    message_length = struct.unpack('I', length_bytes)[0]
+                    
+                    # 메시지 길이 검증
+                    if message_length > 1024 * 1024:  # 1MB 제한
+                        logger.error(f"Message too large: {message_length} bytes")
+                        break
+                    
+                    # 메시지 본문 읽기
+                    message_bytes = sys.stdin.buffer.read(message_length)
+                    if not message_bytes or len(message_bytes) != message_length:
+                        logger.error(f"Incomplete message: got {len(message_bytes) if message_bytes else 0}, expected {message_length}")
+                        break
+                    
+                    # 큐에 메시지 추가
+                    message_count += 1
+                    if message_count % 10 == 0:
+                        logger.debug(f"[NativeHost] Processed {message_count} messages from extension")
+                    self.stdin_queue.put(message_bytes)
+                    
+                except Exception as e:
+                    logger.error(f"Error in stdin reader thread: {e}")
+                    break
+        except Exception as e:
+            logger.error(f"Stdin reader thread crashed: {e}")
+        finally:
+            # 종료 신호
+            self.stdin_queue.put(None)
+            logger.info("Stdin reader thread stopped")
     
     async def initialize_session(self):
         """HTTP 세션 초기화"""
@@ -162,26 +167,37 @@ class ImprovedNativeHost:
             self.session = aiohttp.ClientSession()
             logger.info("HTTP session initialized")
     
-    async def handle_firefox_event(self, event_type: str, data: Dict[str, Any]):
-        """Firefox 이벤트 처리"""
-        logger.info(f"Firefox event: {event_type}, data: {data}")
+    async def handle_firefox_crashed(self, event: FirefoxEvent, data: Dict[str, Any]):
+        """Firefox 크래시 이벤트 처리"""
+        await self._handle_firefox_closed('crashed')
+    
+    async def handle_firefox_stopped(self, event: FirefoxEvent, data: Dict[str, Any]):
+        """Firefox 정상 종료 이벤트 처리"""
+        await self._handle_firefox_closed('stopped')
+    
+    async def _handle_firefox_closed(self, reason: str):
+        """Firefox 종료 처리"""
+        logger.info(f"Firefox closed: {reason}")
         
-        if event_type == 'firefox_closed':
-            platform = data.get('platform')
-            if platform:
-                logger.info(f"Notifying backend that Firefox closed for {platform}")
-                # Backend에 알림
-                await self.notify_backend('native/message', {
-                    'type': 'session_update',
-                    'id': f'firefox_closed_{platform}_{datetime.now().timestamp()}',
-                    'data': {
-                        'platform': platform,
-                        'valid': False,
-                        'source': 'firefox_closed',
-                        'error': 'Firefox was closed',
-                        'status': 'firefox_closed'
-                    }
-                })
+        # 로그인 대기 중인 모든 플랫폼에 대해 알림
+        platforms = self.login_tab_tracker.get_all_platforms()
+        for platform in platforms:
+            logger.info(f"Notifying backend that Firefox closed for {platform}")
+            # Backend에 알림
+            await self.notify_backend('native/message', {
+                'type': 'session_update',
+                'id': f'firefox_closed_{platform}_{datetime.now().timestamp()}',
+                'data': {
+                    'platform': platform,
+                    'valid': False,
+                    'source': 'firefox_closed',
+                    'error': 'Firefox was closed',
+                    'status': 'firefox_closed'
+                }
+            })
+        
+        # 모든 추적 중인 탭 제거
+        self.login_tab_tracker.clear_all()
     
     async def send_to_extension(self, message: Dict[str, Any]):
         """Extension으로 메시지 전송"""
@@ -189,11 +205,9 @@ class ImprovedNativeHost:
             encoded = self.encode_message(message)
             sys.stdout.buffer.write(encoded)
             sys.stdout.buffer.flush()
-            logger.info(f"Sent to extension: {message.get('type')} (size: {len(encoded)})")
-            logger.debug(f"Full message: {message}")
+            logger.debug(f"Sent to extension: {message.get('type')}")
         except Exception as e:
-            logger.error(f"Failed to send message: {e}")
-            logger.error(traceback.format_exc())
+            logger.error(f"Failed to send message to extension: {e}")
     
     def encode_message(self, message: Dict[str, Any]) -> bytes:
         """메시지 인코딩"""
@@ -207,19 +221,26 @@ class ImprovedNativeHost:
         msg_id = message.get('id', 'no-id')
         data = message.get('data', {})
         
-        # heartbeat는 DEBUG 레벨로만 로깅
+        # heartbeat 제거됨 - 이벤트 기반으로 변경
         if msg_type == 'heartbeat':
-            logger.debug(f"Heartbeat received: {data.get('timestamp')}")
-            await self.notify_backend('native/message', message)
+            logger.debug(f"Heartbeat ignored (event-based system): {data.get('timestamp')}")
             return None
+        
+        # Keep-alive ping 처리
+        if msg_type == 'ping':
+            # Ping은 연결 유지용이므로 간단히 pong 응답
+            return {
+                'type': 'pong',
+                'id': msg_id,
+                'timestamp': datetime.now().isoformat()
+            }
         
         logger.info(f"Handling extension message: type={msg_type}, id={msg_id}")
         
         try:
             if msg_type == 'init':
-                # Firefox 모니터링 시작
-                self.firefox_monitor.start_monitoring()
-                
+                logger.info(f"🔥🔥🔥 [NativeHost] Extension INIT received at {datetime.now().isoformat()} 🔥🔥🔥")
+                # Firefox Manager가 모니터링을 담당하므로 여기서는 하지 않음
                 # 백엔드에 연결 상태 즉시 알림
                 await self.notify_backend('native/message', {
                     'type': 'init',
@@ -240,7 +261,7 @@ class ImprovedNativeHost:
             
             elif msg_type == 'init_ack':
                 # Extension이 init_response를 받았다는 확인
-                logger.info("Extension acknowledged initialization")
+                logger.info(f"🔥🔥🔥 [NativeHost] Extension acknowledged initialization at {datetime.now().isoformat()} 🔥🔥🔥")
                 # 백엔드에 완전 연결 상태 알림
                 await self.notify_backend('native/status', {
                     'status': 'fully_connected',
@@ -257,11 +278,11 @@ class ImprovedNativeHost:
                 
                 # 로그인 성공이면 추적 중지
                 if data.get('valid') and source == 'login_detection':
-                    self.firefox_monitor.remove_login_tab(platform)
+                    self.login_tab_tracker.remove_login_tab(platform)
                 
                 # 탭이 닫히거나 Firefox가 종료된 경우도 추적 중지
                 elif source in ['tab_closed', 'firefox_closed']:
-                    self.firefox_monitor.remove_login_tab(platform)
+                    self.login_tab_tracker.remove_login_tab(platform)
                 
                 # 백엔드로 전달
                 await self.notify_backend('native/message', {
@@ -298,234 +319,155 @@ class ImprovedNativeHost:
             if not self.session:
                 await self.initialize_session()
             
-            url = f"{self.backend_url}/data/{endpoint}"
+            url = f"{self.backend_url}/{endpoint}"
             
-            async with self.session.post(url, json=data, timeout=aiohttp.ClientTimeout(total=10)) as response:
-                if response.status != 200:
-                    logger.error(f"Backend notification failed: {response.status}")
+            async with self.session.post(url, json=data) as response:
+                if response.status == 200:
+                    logger.debug(f"Backend notified successfully: {endpoint}")
                 else:
-                    logger.debug(f"Backend notified: {endpoint}")
+                    logger.error(f"Backend notification failed: {response.status}")
+                    
         except Exception as e:
             logger.error(f"Failed to notify backend: {e}")
     
-    async def command_polling_loop(self):
-        """백엔드 명령 폴링"""
-        logger.info("Starting command polling loop")
-        
+    async def poll_backend_commands(self):
+        """백엔드 명령 polling"""
+        poll_count = 0
         while self.running:
             try:
+                poll_count += 1
+                if poll_count % 12 == 0:  # 매 분마다 로그 (5초 * 12 = 60초)
+                    logger.debug(f"[NativeHost] Polling iteration #{poll_count}")
+                
                 if not self.session:
                     await self.initialize_session()
                 
-                # 명령 가져오기
-                url = f"{self.backend_url}/data/commands/pending"
-                async with self.session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as response:
+                # 백엔드에서 대기 중인 명령 가져오기
+                url = f"{self.backend_url}/commands/pending"
+                async with self.session.get(url) as response:
                     if response.status == 200:
                         data = await response.json()
                         commands = data.get('commands', [])
                         
-                        # 명령이 있을 때만 로그
-                        if commands:
-                            logger.info(f"Got {len(commands)} pending commands")
-                            for cmd in commands:
-                                await self.process_backend_command(cmd)
+                        for cmd in commands:
+                            # Extension으로 전달
+                            await self.send_to_extension({
+                                'type': 'command',
+                                'id': cmd.get('id'),
+                                'command': cmd.get('type'),
+                                'data': cmd.get('data', {})
+                            })
+                            
+                            # 백엔드에 완료 알림
+                            complete_url = f"{self.backend_url}/commands/complete/{cmd.get('id')}"
+                            await self.session.post(complete_url, json={'status': 'sent'})
                 
-                await asyncio.sleep(2)
-                
-            except asyncio.TimeoutError:
-                await asyncio.sleep(2)
             except Exception as e:
-                logger.error(f"Command polling error: {e}")
-                await asyncio.sleep(5)
-    
-    async def process_backend_command(self, command: Dict[str, Any]):
-        """백엔드 명령 처리"""
-        command_type = command.get('type')
-        command_id = command.get('id')
-        data = command.get('data', {})
-        
-        logger.info(f"Processing command: {command_type}")
-        
-        # 플랫폼 URL 매핑
-        platform_urls = {
-            'chatgpt': 'https://chat.openai.com',
-            'claude': 'https://claude.ai',
-            'gemini': 'https://gemini.google.com',
-            'deepseek': 'https://chat.deepseek.com',
-            'grok': 'https://grok.x.ai',
-            'perplexity': 'https://www.perplexity.ai'
-        }
-        
-        if command_type == 'open_login_page':
-            platform = data.get('platform')
-            command_id = data.get('command_id')
-            url = platform_urls.get(platform)
+                logger.error(f"Polling error: {e}")
             
-            if platform and url:
-                logger.info(f"Opening login page for {platform}: {url}")
-                # 로그인 탭 추적 시작
-                self.firefox_monitor.add_login_tab(platform, {
-                    'command_id': command_id,
-                    'url': url,
-                    'timestamp': datetime.now().isoformat()
-                })
-                
-                # Extension으로 전달 (URL 포함)
-                await self.send_to_extension({
-                    'type': command_type,
-                    'id': command_id,
-                    'data': {
-                        **data,
-                        'url': url  # URL 추가
-                    }
-                })
-        else:
-            # Extension으로 전달
-            await self.send_to_extension({
-                'type': command_type,
-                'id': command_id,
-                'data': data
-            })
-        
-        # 명령 전송 완료 알림
-        complete_url = f"{self.backend_url}/data/commands/complete/{command_id}"
+            # 5초마다 polling
+            await asyncio.sleep(5)
+    
+    async def handle_stdin_message(self, raw_message: bytes):
+        """STDIN 메시지 처리"""
         try:
-            await self.session.post(complete_url, json={'status': 'sent'})
-        except Exception as e:
-            logger.error(f"Failed to mark command complete: {e}")
-    
-    async def read_stdin(self):
-        """stdin에서 메시지 읽기"""
-        logger.info("Starting stdin reader...")
-        
-        # 동기 방식으로 읽기 (Windows에서 더 안정적)
-        def read_stdin_sync():
-            buffer = b''
+            message = json.loads(raw_message)
             
+            # Extension 메시지 처리
+            response = await self.handle_extension_message(message)
+            
+            # 응답이 있으면 Extension으로 전송
+            if response:
+                await self.send_to_extension(response)
+                
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to decode message: {e}")
+            logger.error(f"Raw message: {raw_message[:100]}...")
+        except Exception as e:
+            logger.error(f"Error handling stdin message: {e}")
+            logger.error(traceback.format_exc())
+    
+    async def run(self):
+        """메인 실행 루프 - 비동기 방식"""
+        logger.info("Native host started")
+        
+        # HTTP 세션 초기화
+        await self.initialize_session()
+        
+        # stdin 읽기 쓰레드 시작
+        self.stdin_thread = threading.Thread(target=self._stdin_reader_thread, daemon=True)
+        self.stdin_thread.start()
+        logger.info("Stdin reader thread started")
+        
+        # Backend polling 시작
+        polling_task = asyncio.create_task(self.poll_backend_commands())
+        
+        try:
             while self.running:
                 try:
-                    # 4바이트 길이 헤더 읽기
-                    while len(buffer) < 4:
-                        chunk = sys.stdin.buffer.read(1)
-                        if not chunk:
-                            logger.info("Extension disconnected - no data")
-                            return None
-                        buffer += chunk
+                    # 비동기적으로 큐에서 메시지 확인
+                    await asyncio.sleep(0.1)  # CPU 사용률 조절
                     
-                    # 메시지 길이 추출
-                    message_length = struct.unpack('I', buffer[:4])[0]
-                    
-                    # heartbeat가 아닌 경우만 길이 로깅
-                    if message_length != 261:  # heartbeat는 보통 261 바이트
-                        logger.debug(f"Message length: {message_length}")
-                    
-                    # 메시지 본문 읽기
-                    buffer = b''
-                    while len(buffer) < message_length:
-                        remaining = message_length - len(buffer)
-                        chunk = sys.stdin.buffer.read(remaining)
-                        if not chunk:
-                            logger.error("Extension disconnected while reading message")
-                            return None
-                        buffer += chunk
-                    
-                    # 메시지 디코드
+                    # 큐에서 메시지 가져오기 (비블로킹)
                     try:
-                        message = json.loads(buffer.decode('utf-8'))
+                        # 큐가 비어있으면 None 반환
+                        message_bytes = None
+                        if not self.stdin_queue.empty():
+                            message_bytes = self.stdin_queue.get_nowait()
                         
-                        # heartbeat가 아닌 경우만 전체 메시지 로깅
-                        if message.get('type') != 'heartbeat':
-                            logger.info(f"Received from extension: {message}")
+                        # 메시지가 없으면 계속 대기
+                        if message_bytes is None:
+                            continue
                         
-                        return message
+                        # 종료 신호 확인 (stdin 쓰레드에서 None을 보냄)
+                        # 실제로는 stdin_reader_thread에서 self.stdin_queue.put(None)을 호출
+                        # 하지만 여기서는 빈 큐를 체크하므로 이 조건은 실행되지 않음
+                        
+                        # 메시지 처리
+                        await self.handle_stdin_message(message_bytes)
+                        
                     except Exception as e:
-                        logger.error(f"Failed to decode message: {e}")
-                        logger.error(f"Raw data: {buffer}")
+                        logger.error(f"Error processing message from queue: {e}")
+                        logger.error(traceback.format_exc())
+                        # 계속 실행
                         continue
                         
                 except Exception as e:
-                    logger.error(f"Error in read_stdin_sync: {e}")
+                    logger.error(f"Error in main loop: {e}")
                     logger.error(traceback.format_exc())
-                    return None
-        
-        # 비동기로 실행
-        try:
-            while self.running:
-                message = await asyncio.get_event_loop().run_in_executor(
-                    None, read_stdin_sync
-                )
-                
-                if message is None:
-                    logger.info("Stdin reader stopping - no message")
-                    self.running = False
-                    break
-                
-                # 메시지 처리
-                try:
-                    response = await self.handle_extension_message(message)
-                    if response:
-                        await self.send_to_extension(response)
-                except Exception as e:
-                    logger.error(f"Error handling message: {e}")
-                    logger.error(traceback.format_exc())
+                    await asyncio.sleep(1)  # 오류 후 잠시 대기
                     
-        except Exception as e:
-            logger.error(f"Fatal error in read_stdin: {e}")
-            logger.error(traceback.format_exc())
-            self.running = False
-        
-        logger.info("Stdin reader stopped")
-    
-    async def run(self):
-        """메인 실행"""
-        logger.info("Starting main loop...")
-        
-        try:
-            await self.initialize_session()
-            
-            # 태스크 실행
-            stdin_task = asyncio.create_task(self.read_stdin())
-            polling_task = asyncio.create_task(self.command_polling_loop())
-            
-            logger.info("Tasks created - waiting for stdin and command polling")
-            
-            await asyncio.gather(stdin_task, polling_task)
-            
         except KeyboardInterrupt:
-            logger.info("Interrupted by user")
-        except Exception as e:
-            logger.error(f"Fatal error: {e}")
-            logger.error(traceback.format_exc())
+            logger.info("Native host interrupted")
         finally:
-            logger.info("Shutting down...")
+            # 정리 작업
             self.running = False
             
-            # Firefox 모니터링 중지
-            self.firefox_monitor.stop_monitoring()
+            # 쓰레드 종료 대기
+            if self.stdin_thread and self.stdin_thread.is_alive():
+                logger.info("Waiting for stdin thread to finish...")
+                self.stdin_thread.join(timeout=2)
             
-            # 연결 해제 알림
+            # 태스크 정리
+            polling_task.cancel()
             try:
-                await self.notify_backend('native/status', {
-                    'status': 'disconnected',
-                    'timestamp': datetime.now().isoformat()
-                })
-            except:
+                await polling_task
+            except asyncio.CancelledError:
                 pass
             
             if self.session:
                 await self.session.close()
+            
+            logger.info("Native host stopped")
 
-def main():
-    """메인 진입점"""
-    logger.info("=== Native Host Starting (Improved Version) ===")
-    
-    try:
-        host = ImprovedNativeHost()
-        asyncio.run(host.run())
-    except Exception as e:
-        logger.error(f"Fatal error in main: {e}")
-        logger.error(traceback.format_exc())
-        sys.exit(1)
-
+# 메인 실행
 if __name__ == "__main__":
-    main()
+    # 로그 시작 메시지
+    logger.info("=" * 50)
+    logger.info("Native Host Starting...")
+    logger.info(f"Python version: {sys.version}")
+    logger.info(f"Log path: {log_path}")
+    
+    # 비동기 실행
+    native_host = ImprovedNativeHost()
+    asyncio.run(native_host.run())

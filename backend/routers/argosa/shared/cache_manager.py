@@ -30,7 +30,7 @@ class CacheManager:
                 decode_responses=False  # 바이너리 데이터 처리
             )
             await self.redis.ping()
-            logger.info("Redis cache connected")
+            logger.debug("Redis cache connected")
         except Exception as e:
             logger.warning(f"Redis connection failed, using local cache only: {e}")
             self.redis = None

@@ -13,14 +13,17 @@
     {
       "id": "localhost:1234",
       "host": "localhost",
+      "hostname": "localhost",
       "port": 1234,
       "enabled": true,
+      "is_registered": true,
       "priority": 1,
       "tags": [],
       "max_concurrent_tasks": 5,
-      "last_connected": "2025-06-24T00:39:45.357975",
+      "last_connected": "2025-06-27T14:14:43.100673",
       "performance_history": [],
-      "notes": ""
+      "notes": "",
+      "is_local": true
     },
     {
       "id": "127.0.0.1:1234",
@@ -33,6 +36,21 @@
       "last_connected": "2025-06-24T02:19:51.027530",
       "performance_history": [],
       "notes": ""
+    },
+    {
+      "id": "192.168.0.104:1234",
+      "host": "192.168.0.104",
+      "hostname": "192.168.0.104",
+      "port": 1234,
+      "enabled": true,
+      "is_registered": true,
+      "priority": 1,
+      "tags": [],
+      "max_concurrent_tasks": 5,
+      "last_connected": "2025-06-27T15:00:36.845710",
+      "performance_history": [],
+      "notes": "",
+      "is_local": false
     }
   ],
   "distributed_settings": {

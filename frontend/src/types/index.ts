@@ -4,6 +4,21 @@ export interface Position {
   y: number;
 }
 
+export interface Project {
+  id: string;
+  name: string;
+  description?: string;
+  type?: string;
+  status?: string;
+  createdAt?: string;
+  updatedAt?: string;
+  stats?: {
+    nodes: number;
+    sections: number;
+    completedTasks: number;
+  };
+}
+
 export interface TaskItem {
   id: string;
   text: string;
@@ -20,12 +35,33 @@ export interface UpdateHistory {
   output?: any;
 }
 
+export interface ExecutionLog {
+  id: string;
+  timestamp: string;
+  level: 'info' | 'warning' | 'error' | 'success';
+  type: 'info' | 'warning' | 'error' | 'success' | 'start' | 'complete' | 'file_created' | 'processing';
+  message: string;
+  nodeId?: string;
+  nodeName?: string;
+  nodeLabel?: string;
+  details?: any;
+}
+
 export interface Node {
   id: string;
-  type: 'worker' | 'supervisor' | 'planner' | 'input' | 'output';
-  label: string;
+  type: string; // More flexible node types for shadcn components
+  name?: string;
+  label?: string; // Legacy compatibility
   position: Position;
-  isRunning: boolean;
+  data: {
+    label: string;
+    description?: string;
+    config?: any;
+  };
+  status?: 'idle' | 'running' | 'completed' | 'error';
+  
+  // Legacy fields for compatibility
+  isRunning?: boolean;
   isDeactivated?: boolean;
   tasks?: TaskItem[];
   connectedTo?: string[];
@@ -70,19 +106,32 @@ export interface Node {
 }
 
 export interface Connection {
-  from: string;
-  to: string;
+  id?: string;
+  source: string;
+  target: string;
+  sourceHandle?: string;
+  targetHandle?: string;
+  type?: string;
+  animated?: boolean;
+  style?: any;
+  // Legacy fields
+  from?: string;
+  to?: string;
 }
 
 export interface Section {
   id: string;
   name: string;
-  group: 'preproduction' | 'postproduction' | 'director';
-  nodes: Node[];
+  description?: string;
+  nodes: Node[]; // Changed to Node[] to match actual usage
+  group?: 'Control' | 'Execution' | 'IO' | 'Processing';
+  position?: Position;
+  expanded?: boolean;
+  // Legacy fields
   inputConfig?: { 
     sources: string[]; 
     selectedItems: string[];
-    projectId?: string; // 추가됨
+    projectId?: string;
   };
   outputConfig?: { format: string; autoSave: boolean };
 }
@@ -100,15 +149,6 @@ export interface Version {
   };
 }
 
-// Execution Log Type
-export interface ExecutionLog {
-  id: string;
-  timestamp: string;
-  nodeId: string;
-  nodeLabel: string;
-  type: 'start' | 'processing' | 'complete' | 'error' | 'file_created' | 'info';
-  message: string;
-}
 
 // LM Studio Types
 export interface LMStudioModel {

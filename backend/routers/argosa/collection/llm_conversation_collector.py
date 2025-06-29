@@ -77,18 +77,25 @@ class LLMConversationCollector:
         if platform not in self.platforms:
             raise ValueError(f"Unsupported platform: {platform}")
         
-        # LLM 필터링
-        filtered_conversations = []
-        excluded_count = 0
+        # 항상 직접 저장 로직 사용 (재귀 방지)
+        logger.debug(f"LLMCollector: Saving {len(conversations)} conversations for {platform}")
+        return await self._save_conversations_direct(platform, conversations, timestamp, metadata)
+
+    async def _save_conversations_direct(self, platform: str, conversations: List[Dict[str, Any]], 
+                                       timestamp: str = None, metadata: Dict[str, Any] = {}) -> Dict[str, Any]:
+        """직접 저장 로직 (기존 코드를 이 메서드로 이동)"""
         
         # LLM tracker 사용 시도
         try:
             from ..shared.llm_tracker import llm_tracker
             filtered_result = await llm_tracker.filter_conversations(conversations, platform)
-            filtered_conversations = filtered_result['conversations']
+            conversations = filtered_result['conversations']
             excluded_count = filtered_result['excluded_count']
         except ImportError:
             # llm_tracker 없으면 기본 필터링
+            filtered_conversations = []
+            excluded_count = 0
+            
             for conv in conversations:
                 conv_id = conv.get("id", "")
                 conv_metadata = conv.get("metadata", {})
@@ -104,12 +111,14 @@ class LLMConversationCollector:
                     logger.debug(f"Excluding LLM conversation: {conv_id}")
                 else:
                     filtered_conversations.append(conv)
+            
+            conversations = filtered_conversations
         
         if excluded_count > 0:
             logger.info(f"Excluded {excluded_count} LLM-generated conversations")
         
         # 필터링된 대화가 없으면 저장하지 않음
-        if not filtered_conversations:
+        if not conversations:
             logger.info(f"No conversations to save after filtering for {platform}")
             return {
                 "success": True,
@@ -119,39 +128,94 @@ class LLMConversationCollector:
                 "message": "All conversations were LLM-generated and excluded"
             }
         
-        # conversation_saver 사용하여 저장
-        try:
-            from ..shared.conversation_saver import conversation_saver
-            result = await conversation_saver.save_conversations(
-                platform=platform,
-                conversations=filtered_conversations,
-                metadata={
-                    "excluded_llm_count": excluded_count,
-                    "total_before_filter": len(conversations),
-                    **metadata
+        platform_path = LLM_DATA_PATH / platform
+        timestamp = timestamp or datetime.now().isoformat()
+        
+        # 파일명 생성
+        date_str = datetime.now().strftime("%Y-%m-%d")
+        file_count = len(list(platform_path.glob(f"{date_str}_*.json")))
+        filename = f"{date_str}_conversation_{file_count + 1}.json"
+        
+        # JSON 직렬화 가능한 데이터로 정리
+        clean_conversations = []
+        for conv in conversations:
+            try:
+                # 깊은 복사로 원본 데이터 보호
+                clean_conv = {
+                    "id": str(conv.get("id", "")),
+                    "platform": platform,
+                    "title": str(conv.get("title", "Untitled")),
+                    "created_at": str(conv.get("created_at", timestamp)),
+                    "updated_at": str(conv.get("updated_at", timestamp)),
+                    "messages": [
+                        {
+                            "role": str(msg.get("role", "unknown")),
+                            "content": str(msg.get("content", "")),
+                            "timestamp": str(msg.get("timestamp", "")) if msg.get("timestamp") else None,
+                            "index": int(msg.get("index", 0)) if isinstance(msg.get("index"), (int, str)) else 0
+                        }
+                        for msg in conv.get("messages", [])[:1000]  # 메시지 수 제한
+                    ],
+                    "metadata": {
+                        k: v for k, v in conv.get("metadata", {}).items()
+                        if k not in ["_sa_instance_state", "query", "query_class"]  # SQLAlchemy 속성 제외
+                    }
                 }
-            )
-            
-            # 히스토리 업데이트
-            self.collection_history[platform] = {
-                "last_sync": datetime.now().isoformat(),
-                "conversation_count": result.get("count", 0),
+                clean_conversations.append(clean_conv)
+            except Exception as e:
+                logger.error(f"Error cleaning conversation {conv.get('id')}: {e}")
+                continue
+        
+        # 대화 데이터 구성
+        save_data = {
+            "platform": platform,
+            "timestamp": timestamp,
+            "conversations": clean_conversations,
+            "metadata": {
+                "count": len(clean_conversations),
                 "excluded_llm_count": excluded_count,
-                "last_file": result.get("filename", "")
+                "total_before_filter": len(conversations) + excluded_count,
+                "collected_at": datetime.now().isoformat(),
+                **{k: v for k, v in metadata.items() if not k.startswith("_")}  # 내부 플래그 제외
             }
+        }
+        
+        # 파일 저장
+        file_path = platform_path / filename
+        temp_path = file_path.with_suffix('.tmp')
+
+        try:
+            # JSON 직렬화 테스트
+            json_str = json.dumps(save_data, ensure_ascii=False, indent=2)
             
-            # 결과에 excluded_llm_count 추가
-            return {
-                **result,
-                "excluded_llm_count": excluded_count
-            }
+            with open(temp_path, 'w', encoding='utf-8') as f:
+                f.write(json_str)
             
-        except ImportError:
-            logger.error("conversation_saver not available")
-            raise RuntimeError("conversation_saver module is required")
+            temp_path.replace(file_path)
+            
         except Exception as e:
-            logger.error(f"Failed to save conversations: {e}")
-            raise
+            if temp_path.exists():
+                temp_path.unlink()
+            logger.error(f"JSON serialization error: {e}")
+            raise e
+        
+        logger.info(f"Saved {len(clean_conversations)} conversations to {filename}")
+        
+        # 히스토리 업데이트
+        self.collection_history[platform] = {
+            "last_sync": datetime.now().isoformat(),
+            "last_file": filename,
+            "conversation_count": len(clean_conversations),
+            "excluded_llm_count": excluded_count
+        }
+        
+        return {
+            "success": True,
+            "filename": filename,
+            "count": len(clean_conversations),
+            "excluded_llm_count": excluded_count,
+            "path": str(file_path)
+        }
     
     async def get_conversations(self, platform: str, date: str = None, 
                               limit: int = None, include_llm: bool = False) -> List[ConversationData]:
@@ -611,3 +675,5 @@ async def get_latest_sync_time() -> Optional[str]:
                 latest = sync_time
     
     return latest.isoformat() if latest else None
+
+# ======================== Search Engine Settings Endpoints ========================

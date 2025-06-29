@@ -1,11 +1,14 @@
 # backend/routers/argosa/prediction.py
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, WebSocket
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 import uuid
 import json
+import asyncio
+from langgraph.graph import StateGraph, END
+from langgraph.checkpoint.memory import MemorySaver
 
 # RAG imports
 from services.rag_service import rag_service, module_integration, Document, RAGQuery
@@ -45,8 +48,216 @@ class PredictionCard(BaseModel):
     relatedDocuments: List[str] = []  # RAG 관련 문서 ID들
     contextSources: Dict[str, int] = {}  # 컨텍스트 소스별 참조 횟수
 
+# LangGraph State for prediction operations
+class PredictionAgentState(BaseModel):
+    operation: str  # create, analyze, predict, enhance
+    card_id: Optional[str] = None
+    card_data: Optional[Dict[str, Any]] = None
+    rag_enhanced: bool = True
+    predictions: List[Dict[str, Any]] = []
+    improvements: List[str] = []
+    related_work: List[Dict[str, Any]] = []
+    status: str = "pending"
+    error: Optional[str] = None
+    metadata: Dict[str, Any] = {}
+    step_count: int = 0
+
 # In-memory storage (replace with database in production)
 prediction_cards: Dict[str, PredictionCard] = {}
+active_websockets: List[WebSocket] = []
+
+# LangGraph workflow for prediction operations
+async def analyze_context_node(state: PredictionAgentState) -> PredictionAgentState:
+    """Analyze context using RAG for prediction enhancement"""
+    state.step_count += 1
+    
+    try:
+        if state.rag_enhanced and state.card_data:
+            # Search for historical context
+            historical_context = await module_integration.prediction_with_history(
+                state.card_data.get("title", "")
+            )
+            
+            # Search for related work
+            rag_query = RAGQuery(
+                query=f"{state.card_data.get('title', '')} {state.card_data.get('content', '')}",
+                source_module="prediction",
+                target_modules=["data_analysis", "code_analysis", "scheduling"],
+                top_k=5
+            )
+            
+            rag_result = await rag_service.search(rag_query)
+            
+            # Process results
+            for doc in rag_result.documents:
+                state.related_work.append({
+                    "id": doc.id,
+                    "module": doc.module,
+                    "content": doc.content[:200],
+                    "created_at": doc.created_at
+                })
+                
+                # Generate context-aware improvements
+                if doc.module == "data_analysis" and "performance" in doc.content:
+                    state.improvements.append(
+                        f"Based on analysis from {doc.created_at}, expected performance improvement"
+                    )
+                elif doc.module == "scheduling" and doc.type == "task":
+                    task_data = json.loads(doc.content)
+                    state.improvements.append(
+                        f"Related task '{task_data.get('name', 'Unknown')}' may affect timeline"
+                    )
+            
+            state.metadata["historical_insights"] = historical_context["historical_insights"]
+            state.metadata["context_sources"] = len(rag_result.documents)
+        
+        state.status = "analyzed"
+        await broadcast_prediction_update({
+            "type": "prediction_analysis",
+            "card_id": state.card_id,
+            "context_found": len(state.related_work)
+        })
+        
+    except Exception as e:
+        state.error = f"Analysis failed: {str(e)}"
+        state.status = "error"
+    
+    return state
+
+async def generate_predictions_node(state: PredictionAgentState) -> PredictionAgentState:
+    """Generate AI predictions based on context"""
+    state.step_count += 1
+    
+    try:
+        # Generate predictions based on related work
+        for related_doc in state.related_work:
+            if related_doc["module"] == "data_analysis":
+                state.predictions.append({
+                    "id": f"pred_{uuid.uuid4().hex[:8]}",
+                    "description": f"Based on {related_doc['module']} insights, expected outcome improvement",
+                    "probability": 0.85,
+                    "impact": "high",
+                    "timeframe": "2-3 weeks",
+                    "source": related_doc["id"]
+                })
+            elif related_doc["module"] == "scheduling":
+                state.predictions.append({
+                    "id": f"pred_{uuid.uuid4().hex[:8]}",
+                    "description": f"Timeline correlation with scheduled tasks identified",
+                    "probability": 0.70,
+                    "impact": "medium",
+                    "timeframe": "Variable based on schedule",
+                    "source": related_doc["id"]
+                })
+        
+        # Default predictions if no context found
+        if not state.predictions and state.card_data:
+            card_content = state.card_data.get("content", "")
+            if "AI" in card_content or "LangGraph" in card_content:
+                state.predictions.append({
+                    "id": f"pred_{uuid.uuid4().hex[:8]}",
+                    "description": "AI implementation will improve system efficiency by 30-40%",
+                    "probability": 0.85,
+                    "impact": "high",
+                    "timeframe": "2-3 weeks",
+                    "source": "ai_analysis"
+                })
+        
+        state.status = "predicted"
+        await broadcast_prediction_update({
+            "type": "predictions_generated",
+            "card_id": state.card_id,
+            "predictions_count": len(state.predictions)
+        })
+        
+    except Exception as e:
+        state.error = f"Prediction generation failed: {str(e)}"
+        state.status = "error"
+    
+    return state
+
+async def store_prediction_node(state: PredictionAgentState) -> PredictionAgentState:
+    """Store prediction results in RAG and update card"""
+    state.step_count += 1
+    
+    try:
+        if state.card_id and state.card_id in prediction_cards:
+            card = prediction_cards[state.card_id]
+            
+            # Update card with new predictions and improvements
+            for pred_data in state.predictions:
+                prediction = Prediction(
+                    id=pred_data["id"],
+                    description=pred_data["description"],
+                    probability=pred_data["probability"],
+                    impact=pred_data["impact"],
+                    timeframe=pred_data["timeframe"]
+                )
+                card.predictions.append(prediction)
+            
+            card.improvements.extend(state.improvements)
+            card.relatedDocuments.extend([doc["id"] for doc in state.related_work])
+            
+            # Update context sources
+            for doc in state.related_work:
+                module = doc["module"]
+                card.contextSources[module] = card.contextSources.get(module, 0) + 1
+            
+            card.updatedAt = datetime.now().isoformat()
+            
+            # Store in RAG for future reference
+            await rag_service.add_document(Document(
+                id="",
+                module="prediction",
+                type="prediction_analysis",
+                content=json.dumps({
+                    "card_id": state.card_id,
+                    "predictions": state.predictions,
+                    "improvements": state.improvements,
+                    "context_sources": len(state.related_work)
+                }),
+                metadata={
+                    "card_id": state.card_id,
+                    "operation": state.operation,
+                    "rag_enhanced": state.rag_enhanced
+                }
+            ))
+        
+        state.status = "completed"
+        
+    except Exception as e:
+        state.error = f"Storage failed: {str(e)}"
+        state.status = "error"
+    
+    return state
+
+# Create LangGraph workflow
+prediction_workflow = StateGraph(PredictionAgentState)
+prediction_workflow.add_node("analyze_context", analyze_context_node)
+prediction_workflow.add_node("generate_predictions", generate_predictions_node)
+prediction_workflow.add_node("store_prediction", store_prediction_node)
+
+prediction_workflow.set_entry_point("analyze_context")
+prediction_workflow.add_edge("analyze_context", "generate_predictions")
+prediction_workflow.add_edge("generate_predictions", "store_prediction")
+prediction_workflow.add_edge("store_prediction", END)
+
+# Compile workflow
+prediction_agent = prediction_workflow.compile(checkpointer=MemorySaver())
+
+async def broadcast_prediction_update(update: Dict[str, Any]):
+    """Broadcast update to all connected WebSocket clients"""
+    disconnected = []
+    
+    for connection in active_websockets:
+        try:
+            await connection.send_json(update)
+        except:
+            disconnected.append(connection)
+    
+    # Remove disconnected clients
+    for conn in disconnected:
+        active_websockets.remove(conn)
 
 # ===== API Endpoints =====
 @router.get("/")
@@ -261,51 +472,39 @@ async def add_comment(card_id: str, comment: Comment):
 
 @router.post("/{card_id}/predict")
 async def generate_predictions(card_id: str, use_rag: bool = True):
-    """Generate AI predictions for a card"""
+    """Generate AI predictions for a card using LangGraph workflow"""
     if card_id not in prediction_cards:
         raise HTTPException(status_code=404, detail="Card not found")
     
     card = prediction_cards[card_id]
     
-    if use_rag:
-        # Search for similar completed cards for better predictions
-        rag_query = RAGQuery(
-            query=f"completed predictions similar to {card.title}",
-            source_module="prediction",
-            target_modules=["prediction"],
-            top_k=3
-        )
-        
-        similar_cards = await rag_service.search(rag_query)
-        
-        # Generate predictions based on similar cards
-        for doc in similar_cards.documents:
-            if doc.type == "prediction_card" and "deployed" in doc.content:
-                card_data = json.loads(doc.content)
-                # Learn from completion time
-                if card_data.get("status") == "deployed":
-                    new_prediction = Prediction(
-                        id=f"pred_{uuid.uuid4().hex[:8]}",
-                        description=f"Based on similar project '{card_data.get('title', 'Unknown')}', expected completion time",
-                        probability=0.80,
-                        impact="high",
-                        timeframe="Similar timeline expected"
-                    )
-                    card.predictions.append(new_prediction)
+    # Create initial state for workflow
+    initial_state = PredictionAgentState(
+        operation="predict",
+        card_id=card_id,
+        card_data=card.dict(),
+        rag_enhanced=use_rag
+    )
+    
+    # Execute workflow
+    config = {"configurable": {"thread_id": f"predict_{card_id}_{uuid.uuid4().hex[:8]}"}}
+    final_state = await prediction_agent.ainvoke(initial_state, config)
+    
+    if final_state.status == "completed":
+        updated_card = prediction_cards[card_id]
+        return {
+            "predictions": [pred.dict() for pred in updated_card.predictions],
+            "improvements": updated_card.improvements,
+            "related_work": final_state.related_work,
+            "rag_enhanced": use_rag,
+            "context_sources": updated_card.contextSources,
+            "workflow_steps": final_state.step_count
+        }
     else:
-        # Simulate AI prediction generation without RAG
-        new_prediction = Prediction(
-            id=f"pred_{uuid.uuid4().hex[:8]}",
-            description=f"Based on current progress, {card.title} will be completed ahead of schedule",
-            probability=0.75,
-            impact="medium",
-            timeframe="1 week earlier than planned"
+        raise HTTPException(
+            status_code=500,
+            detail=f"Prediction generation failed: {final_state.error}"
         )
-        card.predictions.append(new_prediction)
-    
-    card.updatedAt = datetime.now().isoformat()
-    
-    return {"predictions": card.predictions, "rag_enhanced": use_rag}
 
 @router.get("/insights/summary")
 async def get_prediction_insights():
@@ -330,6 +529,61 @@ async def get_prediction_insights():
         "average_predictions_per_card": sum(len(c.predictions) for c in prediction_cards.values()) / total_cards if total_cards > 0 else 0,
         "cards_with_rag_context": sum(1 for c in prediction_cards.values() if c.relatedDocuments) / total_cards * 100 if total_cards > 0 else 0
     }
+
+@router.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    """WebSocket endpoint for real-time prediction updates"""
+    await websocket.accept()
+    active_websockets.append(websocket)
+    
+    try:
+        # Send initial status
+        await websocket.send_json({
+            "type": "prediction_status",
+            "total_cards": len(prediction_cards),
+            "active_predictions": sum(1 for c in prediction_cards.values() if c.predictions)
+        })
+        
+        while True:
+            data = await websocket.receive_json()
+            
+            if data.get("type") == "create_prediction":
+                # Create prediction through workflow
+                card_data = data.get("card_data", {})
+                card_data["id"] = f"card_{uuid.uuid4().hex[:8]}"
+                card_data["createdAt"] = datetime.now().isoformat()
+                card_data["updatedAt"] = card_data["createdAt"]
+                
+                initial_state = PredictionAgentState(
+                    operation="create",
+                    card_id=card_data["id"],
+                    card_data=card_data,
+                    rag_enhanced=data.get("use_rag", True)
+                )
+                
+                config = {"configurable": {"thread_id": f"ws_create_{uuid.uuid4().hex[:8]}"}}
+                final_state = await prediction_agent.ainvoke(initial_state, config)
+                
+                await websocket.send_json({
+                    "type": "prediction_created",
+                    "status": final_state.status,
+                    "card_id": final_state.card_id,
+                    "predictions_count": len(final_state.predictions),
+                    "error": final_state.error
+                })
+            
+            elif data.get("type") == "get_insights":
+                insights = await get_prediction_insights()
+                await websocket.send_json({
+                    "type": "insights_update",
+                    "insights": insights
+                })
+    
+    except Exception as e:
+        print(f"Prediction WebSocket error: {e}")
+    finally:
+        if websocket in active_websockets:
+            active_websockets.remove(websocket)
 
 # ===== Initialize/Shutdown =====
 async def initialize():

@@ -1,11 +1,17 @@
 # backend/routers/argosa/db_center.py
 
-from fastapi import APIRouter, HTTPException, BackgroundTasks
+from fastapi import APIRouter, HTTPException, BackgroundTasks, WebSocket
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 import uuid
 import asyncio
+import json
+from langgraph.graph import StateGraph, END
+from langgraph.checkpoint.memory import MemorySaver
+
+# RAG integration
+from services.rag_service import rag_service, module_integration, Document, RAGQuery
 
 router = APIRouter()
 
@@ -25,6 +31,22 @@ class StorageStats(BaseModel):
     collections: int
     queries: int
     avgResponseTime: float
+    ragQueries: int = 0
+    workflowSteps: int = 0
+
+# LangGraph State for DB operations
+class DBAgentState(BaseModel):
+    operation: str  # query, sync, optimize, backup
+    collection_id: Optional[str] = None
+    query_text: Optional[str] = None
+    query_type: str = "hybrid"
+    results: List[Dict[str, Any]] = []
+    status: str = "pending"
+    error: Optional[str] = None
+    metadata: Dict[str, Any] = {}
+    step_count: int = 0
+    max_retries: int = 3
+    retry_count: int = 0
 
 class QueryRequest(BaseModel):
     collection: str
@@ -45,8 +67,13 @@ storage_stats = StorageStats(
     usedSize=32 * 1024 * 1024 * 1024,   # 32GB
     collections=0,
     queries=0,
-    avgResponseTime=0
+    avgResponseTime=0,
+    ragQueries=0,
+    workflowSteps=0
 )
+
+# WebSocket connections for real-time updates
+active_connections: List[WebSocket] = []
 
 # Mock Neo4j and Vector DB connections
 class MockNeo4j:
@@ -74,6 +101,154 @@ class MockVectorDB:
 # Initialize mock databases
 neo4j_db = MockNeo4j()
 vector_db = MockVectorDB()
+
+# LangGraph workflow for database operations
+async def analyze_query_node(state: DBAgentState) -> DBAgentState:
+    """Analyze the query using RAG for better context"""
+    state.step_count += 1
+    
+    try:
+        # Search for similar queries in RAG
+        rag_query = RAGQuery(
+            query=f"database query: {state.query_text}",
+            source_module="db_center",
+            target_modules=["db_center", "data_analysis"],
+            top_k=3
+        )
+        
+        rag_result = await rag_service.search(rag_query)
+        storage_stats.ragQueries += 1
+        
+        # Enhance query based on historical context
+        if rag_result.documents:
+            state.metadata["similar_queries"] = [doc.content[:100] for doc in rag_result.documents]
+            state.metadata["query_optimization"] = "Enhanced with historical context"
+        
+        state.status = "analyzed"
+        await broadcast_update({
+            "type": "db_analysis",
+            "query": state.query_text,
+            "context_found": len(rag_result.documents)
+        })
+        
+    except Exception as e:
+        state.error = f"Analysis failed: {str(e)}"
+        state.status = "error"
+    
+    return state
+
+async def execute_query_node(state: DBAgentState) -> DBAgentState:
+    """Execute the database query"""
+    state.step_count += 1
+    
+    try:
+        start_time = datetime.now()
+        results = []
+        
+        if state.query_type == "graph":
+            results = await neo4j_db.query(state.query_text)
+        elif state.query_type == "vector":
+            results = await vector_db.search(state.query_text, 10)
+        elif state.query_type == "hybrid":
+            graph_results = await neo4j_db.query(state.query_text)
+            vector_results = await vector_db.search(state.query_text, 10)
+            results = {"graph": graph_results, "vector": vector_results}
+        
+        execution_time = (datetime.now() - start_time).total_seconds() * 1000
+        
+        state.results = results if isinstance(results, list) else [results]
+        state.metadata["execution_time"] = execution_time
+        state.status = "executed"
+        
+        # Update statistics
+        storage_stats.queries += 1
+        storage_stats.avgResponseTime = (storage_stats.avgResponseTime + execution_time) / 2
+        
+        await broadcast_update({
+            "type": "db_query_executed",
+            "execution_time": execution_time,
+            "results_count": len(state.results)
+        })
+        
+    except Exception as e:
+        state.error = f"Execution failed: {str(e)}"
+        state.status = "error"
+        state.retry_count += 1
+    
+    return state
+
+async def store_results_node(state: DBAgentState) -> DBAgentState:
+    """Store query results in RAG for future reference"""
+    state.step_count += 1
+    
+    try:
+        # Store successful queries in RAG
+        if state.status == "executed" and state.results:
+            await rag_service.add_document(Document(
+                id="",
+                module="db_center",
+                type="query_result",
+                content=json.dumps({
+                    "query": state.query_text,
+                    "query_type": state.query_type,
+                    "results_count": len(state.results),
+                    "execution_time": state.metadata.get("execution_time", 0)
+                }),
+                metadata={
+                    "collection_id": state.collection_id,
+                    "operation": state.operation,
+                    "timestamp": datetime.now().isoformat()
+                }
+            ))
+        
+        state.status = "completed"
+        
+    except Exception as e:
+        state.error = f"Storage failed: {str(e)}"
+        state.status = "error"
+    
+    return state
+
+def should_retry(state: DBAgentState) -> str:
+    """Determine if operation should be retried"""
+    if state.status == "error" and state.retry_count < state.max_retries:
+        return "retry"
+    return "end"
+
+# Create LangGraph workflow
+db_workflow = StateGraph(DBAgentState)
+db_workflow.add_node("analyze_query", analyze_query_node)
+db_workflow.add_node("execute_query", execute_query_node)
+db_workflow.add_node("store_results", store_results_node)
+
+db_workflow.set_entry_point("analyze_query")
+db_workflow.add_edge("analyze_query", "execute_query")
+db_workflow.add_conditional_edges(
+    "execute_query",
+    should_retry,
+    {
+        "retry": "analyze_query",
+        "end": "store_results"
+    }
+)
+db_workflow.add_edge("store_results", END)
+
+# Compile workflow
+db_agent = db_workflow.compile(checkpointer=MemorySaver())
+
+async def broadcast_update(update: Dict[str, Any]):
+    """Broadcast update to all connected WebSocket clients"""
+    disconnected = []
+    
+    for connection in active_connections:
+        try:
+            await connection.send_json(update)
+        except:
+            disconnected.append(connection)
+    
+    # Remove disconnected clients
+    for conn in disconnected:
+        active_connections.remove(conn)
 
 # ===== API Endpoints =====
 @router.get("/collections")
@@ -120,38 +295,34 @@ async def get_storage_stats():
 
 @router.post("/query")
 async def query_database(request: QueryRequest):
-    """Query the database"""
-    start_time = datetime.now()
-    
-    results = []
-    
-    if request.type == "graph":
-        # Neo4j query
-        results = await neo4j_db.query(request.query)
-    elif request.type == "vector":
-        # Vector similarity search
-        results = await vector_db.search(request.query, request.limit)
-    elif request.type == "hybrid":
-        # Combine both queries
-        graph_results = await neo4j_db.query(request.query)
-        vector_results = await vector_db.search(request.query, request.limit)
-        results = {
-            "graph": graph_results,
-            "vector": vector_results
-        }
-    
-    execution_time = (datetime.now() - start_time).total_seconds() * 1000  # ms
-    
-    # Update stats
-    storage_stats.queries += 1
-    storage_stats.avgResponseTime = (storage_stats.avgResponseTime + execution_time) / 2
-    
-    return QueryResult(
-        results=results if isinstance(results, list) else [results],
-        count=len(results) if isinstance(results, list) else 1,
-        executionTime=execution_time,
-        queryType=request.type
+    """Query the database using LangGraph workflow"""
+    # Create initial state
+    initial_state = DBAgentState(
+        operation="query",
+        collection_id=request.collection,
+        query_text=request.query,
+        query_type=request.type
     )
+    
+    # Execute workflow
+    config = {"configurable": {"thread_id": f"query_{uuid.uuid4().hex[:8]}"}}
+    final_state = await db_agent.ainvoke(initial_state, config)
+    
+    storage_stats.workflowSteps += final_state.step_count
+    
+    # Return results
+    if final_state.status == "completed":
+        return QueryResult(
+            results=final_state.results,
+            count=len(final_state.results),
+            executionTime=final_state.metadata.get("execution_time", 0),
+            queryType=final_state.query_type
+        )
+    else:
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Query failed: {final_state.error}"
+        )
 
 @router.post("/sync")
 async def sync_databases(background_tasks: BackgroundTasks):
@@ -227,6 +398,55 @@ async def export_data(collection_id: str):
         export_data["data"] = await vector_db.search("*", limit=1000)
     
     return export_data
+
+@router.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    """WebSocket endpoint for real-time database operations"""
+    await websocket.accept()
+    active_connections.append(websocket)
+    
+    try:
+        # Send initial status
+        await websocket.send_json({
+            "type": "db_status",
+            "stats": storage_stats.dict(),
+            "collections": len(collections)
+        })
+        
+        while True:
+            data = await websocket.receive_json()
+            
+            if data.get("type") == "query":
+                # Execute query through workflow
+                initial_state = DBAgentState(
+                    operation="query",
+                    collection_id=data.get("collection", "default"),
+                    query_text=data.get("query", ""),
+                    query_type=data.get("query_type", "hybrid")
+                )
+                
+                config = {"configurable": {"thread_id": f"ws_query_{uuid.uuid4().hex[:8]}"}}
+                final_state = await db_agent.ainvoke(initial_state, config)
+                
+                await websocket.send_json({
+                    "type": "query_result",
+                    "status": final_state.status,
+                    "results": final_state.results,
+                    "execution_time": final_state.metadata.get("execution_time", 0),
+                    "error": final_state.error
+                })
+            
+            elif data.get("type") == "get_stats":
+                await websocket.send_json({
+                    "type": "stats_update",
+                    "stats": storage_stats.dict()
+                })
+    
+    except Exception as e:
+        print(f"WebSocket error: {e}")
+    finally:
+        if websocket in active_connections:
+            active_connections.remove(websocket)
 
 @router.post("/optimize/{collection_id}")
 async def optimize_collection(collection_id: str):

@@ -1203,7 +1203,7 @@ export const WorkerEditModal: React.FC<WorkerEditModalProps> = ({
       if (node.connectedFrom) {
         for (const connId of node.connectedFrom) {
           const connNode = section.nodes.find(n => n.id === connId);
-          if (connNode?.output) {
+          if (connNode?.output && connNode.label) {
             connectedOutputs[connNode.label] = connNode.output;
           }
         }

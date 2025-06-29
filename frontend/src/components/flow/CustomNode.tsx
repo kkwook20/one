@@ -163,7 +163,7 @@ export const CustomNode: React.FC<NodeProps<CustomNodeData>> = ({ data, id, sele
       <div className="flex items-center justify-between p-3 border-b">
         <div className="flex items-center gap-2">
           {getNodeIcon()}
-          <span className="font-semibold text-sm">{data.label || data.type}</span>
+          <span className="font-semibold text-sm">{data.label || data.name || data.type}</span>
         </div>
         
         {/* Control Buttons */}

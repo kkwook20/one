@@ -62,7 +62,7 @@ export const IOConfigModal: React.FC<IOConfigModalProps> = ({
       }
       
       // Preproduction의 Script 섹션만 텍스트 입력 모드
-      if (section.group === 'preproduction' && section.name === 'Script') {
+      if (section.group === 'Control' && section.name === 'Script') {
         setTextContent(node.output?.text || '');
       } else if (section.inputConfig) {
         setSelectedSources(section.inputConfig.sources || []);
@@ -144,7 +144,7 @@ export const IOConfigModal: React.FC<IOConfigModalProps> = ({
     if (node.type === 'input') {
       let updatedNode: Node & { projectId?: string };
       
-      if (section.group === 'preproduction' && section.name === 'Script') {
+      if (section.group === 'Control' && section.name === 'Script') {
         // 텍스트 입력 저장
         updatedNode = {
           ...editedNode,
@@ -305,7 +305,7 @@ export const IOConfigModal: React.FC<IOConfigModalProps> = ({
         )}
 
         {/* Original content based on section type */}
-        {section.group === 'preproduction' && section.name === 'Script' ? (
+        {section.group === 'Control' && section.name === 'Script' ? (
           // Script section UI
           <>
             <h3 className="font-semibold mb-3">Enter Script Content</h3>

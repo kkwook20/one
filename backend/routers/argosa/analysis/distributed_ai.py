@@ -8,9 +8,21 @@ import logging
 from datetime import datetime
 import hashlib
 
-from .lm_studio_manager import lm_studio_manager, LMStudioInstance, TaskType, LMStudioManager
-from .network_discovery import network_discovery, NetworkDevice, NetworkDiscovery
-from .configs import get_distributed_settings, get_enabled_instances
+try:
+    from routers.argosa.analysis.lm_studio_manager import lm_studio_manager, LMStudioInstance, TaskType, LMStudioManager
+    from routers.argosa.analysis.network_discovery import network_discovery, NetworkDevice, NetworkDiscovery
+    from routers.argosa.analysis.configs import get_distributed_settings, get_enabled_instances
+except ImportError:
+    # Fallback for testing environments
+    lm_studio_manager = None
+    LMStudioInstance = None
+    TaskType = None
+    LMStudioManager = None
+    network_discovery = None
+    NetworkDevice = None
+    NetworkDiscovery = None
+    get_distributed_settings = lambda: {}
+    get_enabled_instances = lambda: []
 
 logger = logging.getLogger(__name__)
 

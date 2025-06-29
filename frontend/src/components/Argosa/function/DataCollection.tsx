@@ -14,25 +14,32 @@ import {
   Chrome,
   RefreshCw,
   AlertCircle,
-  CheckCircle
+  CheckCircle,
+  Youtube
 } from "lucide-react";
 
 // 하위 탭 컴포넌트들
 import WebCrawlerTab from "./collection/WebCrawlerTab";
 import LLMQueryTab from "./collection/LLMQueryTab";
 import LLMConversationTab from "./collection/LLMConversationTab";
+import YouTubeTab from "./collection/YouTubeTab";
 
 // ======================== Constants ========================
-const API_BASE_URL = 'http://localhost:8000/api/argosa';
+const API_BASE_URL = 'http://localhost:8000/api/argosa/data';
 const WS_URL = 'ws://localhost:8000/api/argosa/data/ws/state';
+
+// 임시: 검색 엔진 설정용 별도 API - 사용 안함, 대신 argosa 라우터 사용
+// const SEARCH_API_BASE_URL = 'http://localhost:8000/api/simple';
+
+const SEARCH_API_BASE_URL = 'http://localhost:8000/api/argosa/data';
 
 // ======================== Type Definitions ========================
 
 export interface SystemState {
-  system_status: 'initializing' | 'ready' | 'collecting' | 'error';
+  system_status: 'idle' | 'ready' | 'collecting' | 'error';
   sessions: Record<string, SessionInfo>;
   sync_status: SyncStatus | null;
-  firefox_status: 'closed' | 'opening' | 'ready' | 'error';
+  firefox_status: 'closed' | 'ready' | 'error';
   extension_status: 'connected' | 'disconnected';
   extension_last_seen: string | null;
   schedule_enabled: boolean;
@@ -83,7 +90,7 @@ export default function DataCollection() {
   
   // System State
   const [systemState, setSystemState] = useState<SystemState>({
-    system_status: 'initializing',
+    system_status: 'idle',
     sessions: {},
     sync_status: null,
     firefox_status: 'closed',
@@ -118,13 +125,25 @@ export default function DataCollection() {
   // Helper variables for status checks
   const isFirefoxReady = systemState.firefox_status === 'ready';
   const isExtensionConnected = systemState.extension_status === 'connected';
-  const isSystemInitializing = systemState.system_status === 'initializing';
+  const isSystemInitializing = systemState.system_status === 'idle' && (!isFirefoxReady || !isExtensionConnected);
   const isSystemReady = systemState.system_status === 'ready';
   const isSystemCollecting = systemState.system_status === 'collecting';
   
   // ==================== WebSocket Management ====================
   
   const connectWebSocket = useCallback(() => {
+    // 중복 연결 방지
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      console.log('WebSocket already connected, skipping...');
+      return;
+    }
+    
+    // 기존 연결 종료
+    if (wsRef.current) {
+      wsRef.current.close();
+      wsRef.current = null;
+    }
+    
     console.log('Connecting to WebSocket...');
     
     try {
@@ -145,8 +164,27 @@ export default function DataCollection() {
           console.log('[WebSocket] Message received:', message.type);
           
           if (message.type === 'state_update') {
-            console.log('[WebSocket] State update:', message.data);
+            const timestamp = new Date().toISOString();
+            console.log(`[WebSocket ${timestamp}] State update received`);
+            
+            // Stack trace to see who's sending updates
+            console.trace('[WebSocket] State update stack trace');
+            
             setSystemState(prevState => {
+              const stateChanged = 
+                prevState.system_status !== message.data.system_status ||
+                prevState.firefox_status !== message.data.firefox_status ||
+                prevState.extension_status !== message.data.extension_status;
+              
+              if (stateChanged) {
+                console.log(`[${timestamp}] 🔄 STATE CHANGE DETECTED:`, {
+                  system: `${prevState.system_status} → ${message.data.system_status}`,
+                  firefox: `${prevState.firefox_status} → ${message.data.firefox_status}`,
+                  extension: `${prevState.extension_status} → ${message.data.extension_status}`
+                });
+              } else {
+                console.log(`[${timestamp}] ✓ No state change (only metadata update)`);
+              }
               // collecting 상태일 때는 WebSocket에서 오는 status 변경 무시
               const isCurrentlyCollecting = prevState.system_status === 'collecting';
               if (isCurrentlyCollecting && 
@@ -158,13 +196,37 @@ export default function DataCollection() {
                 };
               }
               
-              // 상태가 실제로 변경된 경우만 업데이트
-              if (JSON.stringify(prevState) === JSON.stringify(message.data)) {
-                return prevState;
+              // 중요한 상태 변경 체크 (extension_last_seen 제외)
+              const hasImportantChange = 
+                prevState.system_status !== message.data.system_status ||
+                prevState.firefox_status !== message.data.firefox_status ||
+                prevState.extension_status !== message.data.extension_status ||
+                JSON.stringify(prevState.sessions) !== JSON.stringify(message.data.sessions);
+              
+              // 중요한 변경사항이 없으면 기존 상태 유지
+              if (!hasImportantChange) {
+                // extension_last_seen만 업데이트
+                return {
+                  ...prevState,
+                  extension_last_seen: message.data.extension_last_seen
+                };
               }
               
+              // 백엔드에서 온 상태를 그대로 사용
               return message.data;
             });
+          } else if (message.type === 'heartbeat') {
+            // Respond to heartbeat with pong
+            console.log('[WebSocket] Heartbeat received, sending pong');
+            if (ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({ type: 'pong' }));
+            }
+          } else if (message.type === 'ping') {
+            // Respond to ping with pong
+            console.log('[WebSocket] Ping received, sending pong');
+            if (ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({ type: 'pong' }));
+            }
           }
         } catch (error) {
           console.error('WebSocket message error:', error);
@@ -176,14 +238,20 @@ export default function DataCollection() {
         setBackendError('WebSocket connection error');
       };
       
-      ws.onclose = () => {
-        console.log('WebSocket disconnected');
+      ws.onclose = (event) => {
+        console.log('WebSocket disconnected', { code: event.code, reason: event.reason });
         wsRef.current = null;
         
-        // Reconnect after 5 seconds
-        reconnectTimeoutRef.current = setTimeout(() => {
-          connectWebSocket();
-        }, 5000);
+        // Only reconnect if it wasn't a clean close
+        if (event.code !== 1000) {
+          // Reconnect after 30 seconds to reduce reconnection frequency
+          reconnectTimeoutRef.current = setTimeout(() => {
+            console.log('WebSocket reconnecting...');
+            connectWebSocket();
+          }, 30000); // Increased from 10s to 30s
+        } else {
+          console.log('WebSocket closed cleanly, not reconnecting');
+        }
       };
       
     } catch (error) {
@@ -196,7 +264,7 @@ export default function DataCollection() {
   
   const loadStats = useCallback(async () => {
     try {
-      const response = await fetch(`${API_BASE_URL}/data/llm/conversations/stats/all`);
+      const response = await fetch(`${API_BASE_URL}/llm/conversations/stats/all`);
       if (response.ok) {
         const data = await response.json();
         setStats(data);
@@ -206,100 +274,28 @@ export default function DataCollection() {
     }
   }, []);
   
-  const loadSystemStatus = useCallback(async () => {
-    try {
-      const response = await fetch(`${API_BASE_URL}/data/status`);
-      if (response.ok) {
-        const data = await response.json();
-        // Update state with backend status
-        if (data.state) {
-          setSystemState(prevState => {
-            // 상태가 실제로 변경된 경우만 업데이트
-            if (JSON.stringify(prevState) === JSON.stringify(data.state)) {
-              return prevState;
-            }
-            return data.state;
-          });
-        }
-      }
-    } catch (error) {
-      console.error('Failed to load system status:', error);
-    }
-  }, []);
-  
-  const checkFirefoxStatus = useCallback(async () => {
-    try {
-      console.log('Checking Firefox status...');
-      const response = await fetch(`${API_BASE_URL}/data/check_firefox_status`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' }
-      });
-      
-      if (response.ok) {
-        const data = await response.json();
-        console.log('Firefox status checked:', data);
-      }
-    } catch (error) {
-      console.error('Failed to check Firefox status:', error);
-    }
-  }, []);
   
   // ==================== Effects ====================
   
-  // Auto-check and update system status - 더 유연한 조건
-  useEffect(() => {
-    const checkSystemReady = () => {
-      // Backend만 연결되어도 기본 기능은 사용 가능
-      const isFullyReady = isBackendConnected && isFirefoxReady && isExtensionConnected;
-      
-      const isPartiallyReady = isBackendConnected;
-      
-      let newStatus: typeof systemState.system_status;
-      
-      if (isFullyReady) {
-        newStatus = 'ready';
-      } else if (isPartiallyReady) {
-        newStatus = 'ready'; // Backend만 연결되어도 ready로 처리
-      } else {
-        newStatus = 'initializing';
-      }
-      
-      // 상태가 실제로 변경될 때만 업데이트
-      setSystemState(prev => {
-        // collecting 상태면 변경하지 않음
-        if (prev.system_status === 'collecting') {
-          return prev;
-        }
-        
-        // 이미 같은 상태면 업데이트하지 않음
-        if (prev.system_status === newStatus) {
-          return prev;
-        }
-        
-        console.log(`System status changing from ${prev.system_status} to ${newStatus}`);
-        return {
-          ...prev,
-          system_status: newStatus
-        };
-      });
-    };
-    
-    checkSystemReady();
-  }, [isBackendConnected, isFirefoxReady, isExtensionConnected]); // 헬퍼 변수 사용
+  // Initialize (removed duplicate WebSocket connection)
+  // WebSocket connection is now handled in main initialization effect only
   
-  // Firefox 자동 실행 로직
+  // Auto-check and update system status - 제거됨
+  // system_status는 백엔드에서 관리하므로 프론트엔드에서 계산하지 않음
+  
+  // Firefox 자동 실행 로직 비활성화 - 안정성을 위해
   useEffect(() => {
     const checkAndStartFirefox = async () => {
-      // Backend가 연결되고, Firefox가 실행되지 않았고, 아직 체크하지 않았다면
+      // Firefox 자동 실행 비활성화 - 사용자가 수동으로 시작하도록 유도
       if (isBackendConnected && !isFirefoxReady && systemState.firefox_status === 'closed' && !hasCheckedFirefox.current) {
-        console.log('Backend connected and Firefox not running, starting Firefox...');
-        hasCheckedFirefox.current = true; // 중복 실행 방지
-        await checkFirefoxStatus();
+        console.log('Backend connected and Firefox not running - manual start required');
+        hasCheckedFirefox.current = true; // 중복 체크 방지
+        // checkFirefoxStatus 호출 제거 - 수동 시작만 허용
       }
     };
     
     checkAndStartFirefox();
-  }, [isBackendConnected, isFirefoxReady, systemState.firefox_status, checkFirefoxStatus]);
+  }, [isBackendConnected, isFirefoxReady, systemState.firefox_status]);
   
   // Firefox 상태가 변경되면 체크 플래그 리셋
   useEffect(() => {
@@ -308,21 +304,25 @@ export default function DataCollection() {
     }
   }, [systemState.firefox_status]);
   
-  // Main initialization effect
+  // Main initialization effect - Single WebSocket connection
   useEffect(() => {
-    // Connect WebSocket
+    console.log('[DataCollection] Component mounted, initializing...');
+    console.log('[DataCollection] API Base URL:', API_BASE_URL);
+    
+    // Connect WebSocket (ONLY ONCE) - This is the single source of truth for state
     connectWebSocket();
     
     // Load initial data
     loadStats();
-    loadSystemStatus();
+    // WebSocket이 모든 상태를 제공하므로 별도 상태 체크 불필요
     
-    // Set up periodic refresh
+    // Set up periodic refresh - 통계만 갱신
     statsIntervalRef.current = setInterval(() => {
       loadStats();
     }, 30000); // 30초마다 통계 갱신
     
     return () => {
+      console.log('[DataCollection] Component unmounting, cleaning up...');
       // Cleanup
       if (wsRef.current) {
         wsRef.current.close();
@@ -334,7 +334,7 @@ export default function DataCollection() {
         clearInterval(statsIntervalRef.current);
       }
     };
-  }, [connectWebSocket, loadStats, loadSystemStatus]);
+  }, []); // Empty dependency array - only run once on mount
   
   // Auto-clear messages
   useEffect(() => {
@@ -387,11 +387,6 @@ export default function DataCollection() {
                 {isFirefoxReady ? (
                   <div className="flex items-center gap-1.5">
                     <div className="w-2 h-2 bg-blue-500 rounded-full shadow-sm shadow-blue-500/50"></div>
-                    <span className="text-xs font-medium text-gray-700">Firefox</span>
-                  </div>
-                ) : systemState.firefox_status === 'opening' ? (
-                  <div className="flex items-center gap-1.5">
-                    <div className="w-2 h-2 bg-amber-500 rounded-full animate-pulse shadow-sm shadow-amber-500/50"></div>
                     <span className="text-xs font-medium text-gray-700">Firefox</span>
                   </div>
                 ) : (
@@ -491,7 +486,7 @@ export default function DataCollection() {
                 <strong>System Initializing:</strong> Connecting to backend...
                 <div className="mt-2 text-sm">
                   <div>• Backend: {isBackendConnected ? 'Connected' : 'Connecting...'}</div>
-                  <div>• Firefox: {isFirefoxReady ? 'Ready' : systemState.firefox_status === 'opening' ? 'Opening...' : 'Not running'}</div>
+                  <div>• Firefox: {isFirefoxReady ? 'Ready' : 'Not running'}</div>
                   <div>• Extension: {isExtensionConnected ? 'Connected' : 'Waiting...'}</div>
                 </div>
               </AlertDescription>
@@ -500,7 +495,7 @@ export default function DataCollection() {
 
           {/* Main Tabs */}
           <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
-            <TabsList className="grid w-full grid-cols-3">
+            <TabsList className="grid w-full grid-cols-4">
               <TabsTrigger value="web" disabled={!isBackendConnected}>
                 <Globe className="h-4 w-4 mr-2" />
                 Web Crawler
@@ -519,15 +514,18 @@ export default function DataCollection() {
                 <MessageSquare className="h-4 w-4 mr-2" />
                 LLM Query
               </TabsTrigger>
+              <TabsTrigger value="youtube" disabled={!isBackendConnected}>
+                <Youtube className="h-4 w-4 mr-2" />
+                YouTube
+              </TabsTrigger>
             </TabsList>
 
             <TabsContent value="web">
               <WebCrawlerTab 
                 isBackendConnected={isBackendConnected}
-                systemState={systemState}
                 onSuccess={setSuccessMessage}
                 onError={setSessionCheckError}
-                apiBaseUrl={API_BASE_URL}
+                apiBaseUrl={SEARCH_API_BASE_URL}
               />
             </TabsContent>
 
@@ -554,6 +552,10 @@ export default function DataCollection() {
                 onError={setSessionCheckError}
                 apiBaseUrl={API_BASE_URL}
               />
+            </TabsContent>
+
+            <TabsContent value="youtube">
+              <YouTubeTab />
             </TabsContent>
           </Tabs>
         </div>

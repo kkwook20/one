@@ -1,0 +1,12 @@
+{
+  "search_engines": {
+    "google": {
+      "enabled": true,
+      "api_key": "test_key",
+      "cse_id": "test_cse"
+    },
+    "duckduckgo": {
+      "enabled": true
+    }
+  }
+}

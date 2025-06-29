@@ -12,6 +12,8 @@ from collections import deque, defaultdict
 import hashlib
 import uuid
 
+logger = logging.getLogger(__name__)
+
 # Shared services import
 try:
     from ..shared.cache_manager import cache_manager
@@ -22,8 +24,6 @@ except ImportError as e:
     cache_manager = None
     metrics = None
     HAS_SHARED_SERVICES = False
-
-logger = logging.getLogger(__name__)
 
 # ======================== Configuration ========================
 
@@ -72,6 +72,7 @@ class LLMQueryRequest(BaseModel):
     system_prompt: Optional[str] = None
     cache_enabled: bool = True
     request_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    conversation_id: Optional[str] = None  # 대화 연속성을 위한 ID
     
     @validator('query')
     def validate_query(cls, v):
@@ -158,11 +159,15 @@ class LLMQueryService:
         # 관리 컴포넌트
         self.rate_limiter = RateLimiter()
         
+        # 세션 관리 (대화 연속성을 위해)
+        self.active_sessions = {}  # conversation_id -> session_data
+        self.session_timeout = timedelta(hours=2)
+        
         # 캐시 설정 (Shared services 우선, 없으면 legacy)
         if HAS_SHARED_SERVICES and cache_manager:
             self.cache = cache_manager
             self._using_shared_cache = True
-            logger.info("Using shared cache system")
+            logger.debug("Using shared cache system")
         else:
             # ImportError 대신 경고만
             logger.warning("Shared cache not available, some features may be limited")
@@ -223,8 +228,12 @@ class LLMQueryService:
             # Rate limiting
             await self.rate_limiter.wait_if_needed()
             
-            # 프롬프트 생성
-            prompt = await self._create_prompt(request)
+            # 세션 관리
+            session = await self._manage_session(request.conversation_id, request)
+            request.conversation_id = session["conversation_id"]
+            
+            # 프롬프트 생성 (세션 히스토리 포함)
+            prompt = await self._create_prompt(request, session)
             
             # Native Messaging을 통한 LLM 호출
             response_data = await self._query_with_firefox(prompt, request)
@@ -268,6 +277,14 @@ class LLMQueryService:
             # 히스토리 저장
             self._save_to_history(request, response)
             
+            # 세션에 응답 추가
+            if response.conversation_id in self.active_sessions:
+                self.active_sessions[response.conversation_id]["history"].append({
+                    "role": "assistant",
+                    "content": response.response if isinstance(response.response, str) else json.dumps(response.response),
+                    "timestamp": datetime.now(timezone.utc).isoformat()
+                })
+            
             return response
             
         except Exception as e:
@@ -290,6 +307,17 @@ class LLMQueryService:
     async def _query_with_firefox(self, prompt: Dict[str, Any], request: LLMQueryRequest) -> Dict[str, Any]:
         """Firefox를 통한 LLM 질의"""
         
+        # Firefox Manager 사용
+        try:
+            from ..shared.firefox_manager import firefox_manager
+            
+            # Firefox 상태 확인 및 시작
+            if not await firefox_manager.check_and_start():
+                raise Exception("Failed to start Firefox")
+                
+        except ImportError:
+            logger.warning("Firefox Manager not available, trying direct native command")
+        
         # Native Messaging으로 전달
         from ..data_collection import native_command_manager
         
@@ -298,31 +326,67 @@ class LLMQueryService:
         if prompt.get("system_prompt"):
             full_prompt = f"System: {prompt['system_prompt']}\n\nUser: {full_prompt}"
         
-        command_id = await native_command_manager.send_command(
-            "execute_llm_query",
-            {
-                "platform": request.provider.value,
-                "query": full_prompt,
-                "model": request.model or self.default_models[request.provider],
-                "temperature": prompt.get("temperature", 0.3),
-                "max_tokens": prompt.get("max_tokens", 2000),
-                "mark_as_llm": True
-            }
-        )
+        # 재시도 로직
+        last_error = None
+        for attempt in range(MAX_RETRIES):
+            try:
+                command_id = await native_command_manager.send_command(
+                    "execute_llm_query",
+                    {
+                        "platform": request.provider.value,
+                        "query": full_prompt,
+                        "model": request.model or self.default_models[request.provider],
+                        "temperature": prompt.get("temperature", 0.3),
+                        "max_tokens": prompt.get("max_tokens", 2000),
+                        "mark_as_llm": True,
+                        "conversation_metadata": {
+                            "query_id": request.request_id,
+                            "query_type": request.query_type.value,
+                            "source": "llm_query_service"
+                        }
+                    }
+                )
+                
+                # 응답 대기 (LLM은 시간이 걸림)
+                response = await native_command_manager.wait_for_response(command_id, timeout=DEFAULT_TIMEOUT)
+                
+                if response.get("success", False):
+                    # LLM tracker에 기록
+                    try:
+                        from ..shared.llm_tracker import llm_tracker
+                        if response.get("conversation_id"):
+                            await llm_tracker.track_query(
+                                conversation_id=response["conversation_id"],
+                                platform=request.provider.value,
+                                query_id=request.request_id,
+                                metadata={
+                                    "query_type": request.query_type.value,
+                                    "model": request.model or self.default_models[request.provider]
+                                }
+                            )
+                    except ImportError:
+                        pass
+                    
+                    return {
+                        "content": response.get("response", ""),
+                        "model": request.model or self.default_models[request.provider],
+                        "conversation_id": response.get("conversation_id")
+                    }
+                else:
+                    last_error = response.get("error", "LLM query failed")
+                    if attempt < MAX_RETRIES - 1:
+                        await asyncio.sleep(2 ** attempt)  # Exponential backoff
+                        continue
+                    
+            except Exception as e:
+                last_error = str(e)
+                if attempt < MAX_RETRIES - 1:
+                    await asyncio.sleep(2 ** attempt)
+                    continue
         
-        # 응답 대기 (LLM은 시간이 걸림)
-        response = await native_command_manager.wait_for_response(command_id, timeout=DEFAULT_TIMEOUT)
-        
-        if not response.get("success", False):
-            raise Exception(response.get("error", "LLM query failed"))
-        
-        return {
-            "content": response.get("response", ""),
-            "model": request.model or self.default_models[request.provider],
-            "conversation_id": response.get("conversation_id")
-        }
+        raise Exception(f"LLM query failed after {MAX_RETRIES} attempts: {last_error}")
     
-    async def _create_prompt(self, request: LLMQueryRequest) -> Dict[str, Any]:
+    async def _create_prompt(self, request: LLMQueryRequest, session: Dict[str, Any] = None) -> Dict[str, Any]:
         """프롬프트 생성"""
         
         # 시스템 프롬프트
@@ -340,8 +404,23 @@ class LLMQueryService:
             "You are a helpful AI assistant."
         )
         
+        # 세션 히스토리가 있으면 추가
+        if session and session.get("message_count", 1) > 1:
+            system_prompt += "\n\nYou are continuing a conversation. Be consistent with previous responses and maintain context."
+        
         # 사용자 프롬프트 구성
         user_prompt_parts = []
+        
+        # 이전 대화 컨텍스트 추가 (최근 5개 메시지만)
+        if session and session.get("history"):
+            recent_history = session["history"][-5:]
+            if len(recent_history) > 1:
+                history_text = "Previous conversation:\n"
+                for msg in recent_history[:-1]:  # 현재 메시지 제외
+                    role = msg["role"].capitalize()
+                    content = msg["content"][:500]  # 너무 길면 잘라냄
+                    history_text += f"{role}: {content}\n"
+                user_prompt_parts.append(history_text)
         
         # 컨텍스트 추가
         if request.context:
@@ -443,6 +522,69 @@ class LLMQueryService:
         }
         
         self.query_history.append(history_entry)
+    
+    async def _manage_session(self, conversation_id: str, request: LLMQueryRequest) -> Dict[str, Any]:
+        """세션 관리 - 대화 연속성 유지"""
+        now = datetime.now(timezone.utc)
+        
+        # 기존 세션 확인
+        if conversation_id and conversation_id in self.active_sessions:
+            session = self.active_sessions[conversation_id]
+            
+            # 세션 타임아웃 체크
+            if now - session["last_activity"] < self.session_timeout:
+                # 세션 업데이트
+                session["last_activity"] = now
+                session["message_count"] += 1
+                
+                # 대화 히스토리 추가
+                session["history"].append({
+                    "role": "user",
+                    "content": request.query,
+                    "timestamp": now.isoformat()
+                })
+                
+                return session
+            else:
+                # 타임아웃된 세션 제거
+                del self.active_sessions[conversation_id]
+        
+        # 새 세션 생성
+        new_session = {
+            "conversation_id": conversation_id or str(uuid.uuid4()),
+            "provider": request.provider.value,
+            "model": request.model or self.default_models[request.provider],
+            "created_at": now,
+            "last_activity": now,
+            "message_count": 1,
+            "history": [{
+                "role": "user",
+                "content": request.query,
+                "timestamp": now.isoformat()
+            }]
+        }
+        
+        self.active_sessions[new_session["conversation_id"]] = new_session
+        return new_session
+    
+    async def _cleanup_expired_sessions(self):
+        """만료된 세션 정리"""
+        now = datetime.now(timezone.utc)
+        expired = []
+        
+        for conv_id, session in self.active_sessions.items():
+            if now - session["last_activity"] > self.session_timeout:
+                expired.append(conv_id)
+        
+        for conv_id in expired:
+            del self.active_sessions[conv_id]
+            logger.info(f"Cleaned up expired session: {conv_id}")
+    
+    async def get_conversation_history(self, conversation_id: str) -> List[Dict[str, Any]]:
+        """대화 히스토리 조회"""
+        if conversation_id in self.active_sessions:
+            return self.active_sessions[conversation_id]["history"]
+        return []
     
     async def analyze_data(self, request: AnalysisRequest) -> Dict[str, Any]:
         """데이터 분석 전문 처리"""
@@ -857,6 +999,51 @@ async def get_cache_statistics():
             "oldest_entry": min(cache.access_times.values()).isoformat() if cache.access_times else None,
             "newest_entry": max(cache.access_times.values()).isoformat() if cache.access_times else None
         }
+
+@router.get("/sessions/active")
+async def get_active_sessions():
+    """활성 세션 목록 조회"""
+    # 만료된 세션 정리
+    await llm_service._cleanup_expired_sessions()
+    
+    sessions = []
+    for conv_id, session in llm_service.active_sessions.items():
+        sessions.append({
+            "conversation_id": conv_id,
+            "provider": session["provider"],
+            "model": session["model"],
+            "created_at": session["created_at"].isoformat(),
+            "last_activity": session["last_activity"].isoformat(),
+            "message_count": session["message_count"]
+        })
+    
+    return {
+        "total_sessions": len(sessions),
+        "sessions": sessions
+    }
+
+@router.get("/sessions/{conversation_id}/history")
+async def get_session_history(conversation_id: str):
+    """세션 대화 히스토리 조회"""
+    history = await llm_service.get_conversation_history(conversation_id)
+    
+    if not history:
+        raise HTTPException(status_code=404, detail="Conversation not found or expired")
+    
+    return {
+        "conversation_id": conversation_id,
+        "message_count": len(history),
+        "history": history
+    }
+
+@router.delete("/sessions/{conversation_id}")
+async def clear_session(conversation_id: str):
+    """세션 삭제"""
+    if conversation_id in llm_service.active_sessions:
+        del llm_service.active_sessions[conversation_id]
+        return {"status": "cleared", "conversation_id": conversation_id}
+    else:
+        raise HTTPException(status_code=404, detail="Session not found")
 
 @router.post("/test/{provider}")
 async def test_provider_connection(provider: LLMProvider):

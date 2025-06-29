@@ -1,10 +1,17 @@
 # backend/routers/argosa/scheduling.py
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, WebSocket
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
 from datetime import datetime, timedelta
 import uuid
+import json
+import asyncio
+from langgraph.graph import StateGraph, END
+from langgraph.checkpoint.memory import MemorySaver
+
+# RAG integration
+from services.rag_service import rag_service, module_integration, Document, RAGQuery
 
 router = APIRouter()
 
@@ -33,8 +40,271 @@ class Schedule(BaseModel):
 # Forward reference resolution
 Task.model_rebuild()
 
+# LangGraph State for scheduling operations
+class SchedulingAgentState(BaseModel):
+    operation: str  # create_task, optimize, analyze_workload, resolve_conflicts
+    schedule_id: Optional[str] = None
+    task_data: Optional[Dict[str, Any]] = None
+    assignee: Optional[str] = None
+    conflicts: List[Dict[str, Any]] = []
+    optimizations: List[Dict[str, Any]] = []
+    workload_analysis: Dict[str, Any] = {}
+    status: str = "pending"
+    error: Optional[str] = None
+    metadata: Dict[str, Any] = {}
+    step_count: int = 0
+    rag_insights: List[Dict[str, Any]] = []
+
 # In-memory storage
 schedules: Dict[str, Schedule] = {}
+active_websockets: List[WebSocket] = []
+
+# LangGraph workflow for scheduling operations
+async def analyze_task_context_node(state: SchedulingAgentState) -> SchedulingAgentState:
+    """Analyze task context using RAG for better scheduling"""
+    state.step_count += 1
+    
+    try:
+        if state.task_data:
+            # Search for similar tasks in RAG
+            rag_query = RAGQuery(
+                query=f"scheduling task: {state.task_data.get('name', '')} {state.task_data.get('description', '')}",
+                source_module="scheduling",
+                target_modules=["scheduling", "prediction", "data_analysis"],
+                top_k=5
+            )
+            
+            rag_result = await rag_service.search(rag_query)
+            
+            # Process historical insights
+            for doc in rag_result.documents:
+                insight = {
+                    "id": doc.id,
+                    "module": doc.module,
+                    "content": doc.content[:200],
+                    "created_at": doc.created_at
+                }
+                
+                # Extract timing insights from similar tasks
+                if doc.module == "scheduling" and doc.type == "task":
+                    try:
+                        task_data = json.loads(doc.content)
+                        if task_data.get("status") == "completed":
+                            actual_duration = task_data.get("actual_duration", "unknown")
+                            insight["timing_insight"] = f"Similar task completed in {actual_duration}"
+                    except json.JSONDecodeError:
+                        pass
+                
+                state.rag_insights.append(insight)
+            
+            # Analyze workload for assignee
+            if state.assignee:
+                assignee_tasks = []
+                for schedule in schedules.values():
+                    for task in schedule.tasks:
+                        if task.assignee == state.assignee:
+                            assignee_tasks.append(task)
+                
+                state.workload_analysis = {
+                    "assignee": state.assignee,
+                    "active_tasks": len([t for t in assignee_tasks if t.status == "in-progress"]),
+                    "pending_tasks": len([t for t in assignee_tasks if t.status == "pending"]),
+                    "overload_risk": len(assignee_tasks) > 5
+                }
+        
+        state.status = "analyzed"
+        await broadcast_scheduling_update({
+            "type": "task_analysis",
+            "insights_found": len(state.rag_insights),
+            "workload_risk": state.workload_analysis.get("overload_risk", False)
+        })
+        
+    except Exception as e:
+        state.error = f"Analysis failed: {str(e)}"
+        state.status = "error"
+    
+    return state
+
+async def detect_conflicts_node(state: SchedulingAgentState) -> SchedulingAgentState:
+    """Detect scheduling conflicts and dependencies"""
+    state.step_count += 1
+    
+    try:
+        if state.schedule_id and state.schedule_id in schedules:
+            schedule = schedules[state.schedule_id]
+            
+            # Check for assignee conflicts
+            if state.assignee:
+                assignee_tasks = [task for task in schedule.tasks if task.assignee == state.assignee]
+                
+                # Sort by start date
+                sorted_tasks = sorted(assignee_tasks, key=lambda t: t.startDate)
+                
+                for i in range(len(sorted_tasks) - 1):
+                    current_task = sorted_tasks[i]
+                    next_task = sorted_tasks[i + 1]
+                    
+                    # Check for overlap
+                    if current_task.endDate > next_task.startDate:
+                        conflict = {
+                            "type": "time_overlap",
+                            "task1": {"id": current_task.id, "name": current_task.name},
+                            "task2": {"id": next_task.id, "name": next_task.name},
+                            "severity": "high" if current_task.priority == "high" or next_task.priority == "high" else "medium",
+                            "suggestion": "Adjust timeline or reassign task"
+                        }
+                        state.conflicts.append(conflict)
+            
+            # Check dependencies
+            if state.task_data:
+                task_deps = state.task_data.get("dependencies", [])
+                for dep_id in task_deps:
+                    dep_task = find_task_in_schedule(schedule, dep_id)
+                    if dep_task and dep_task.status != "completed":
+                        conflict = {
+                            "type": "dependency_not_ready",
+                            "dependent_task": state.task_data.get("name", "Unknown"),
+                            "blocking_task": {"id": dep_task.id, "name": dep_task.name, "status": dep_task.status},
+                            "severity": "high",
+                            "suggestion": f"Wait for {dep_task.name} completion or remove dependency"
+                        }
+                        state.conflicts.append(conflict)
+        
+        state.status = "conflicts_detected"
+        await broadcast_scheduling_update({
+            "type": "conflicts_detected",
+            "conflicts_count": len(state.conflicts),
+            "high_severity": len([c for c in state.conflicts if c.get("severity") == "high"])
+        })
+        
+    except Exception as e:
+        state.error = f"Conflict detection failed: {str(e)}"
+        state.status = "error"
+    
+    return state
+
+async def optimize_schedule_node(state: SchedulingAgentState) -> SchedulingAgentState:
+    """Optimize schedule based on conflicts and insights"""
+    state.step_count += 1
+    
+    try:
+        # Generate optimizations based on conflicts
+        for conflict in state.conflicts:
+            if conflict["type"] == "time_overlap":
+                optimization = {
+                    "type": "timeline_adjustment",
+                    "description": f"Adjust timeline for {conflict['task2']['name']} to avoid overlap",
+                    "impact": "Resolves time conflict",
+                    "priority": conflict["severity"]
+                }
+                state.optimizations.append(optimization)
+            
+            elif conflict["type"] == "dependency_not_ready":
+                optimization = {
+                    "type": "dependency_management",
+                    "description": f"Delay {conflict['dependent_task']} until {conflict['blocking_task']['name']} completes",
+                    "impact": "Ensures proper task sequence",
+                    "priority": "high"
+                }
+                state.optimizations.append(optimization)
+        
+        # Use RAG insights for additional optimizations
+        for insight in state.rag_insights:
+            if insight.get("timing_insight"):
+                optimization = {
+                    "type": "duration_adjustment",
+                    "description": f"Adjust task duration based on historical data: {insight['timing_insight']}",
+                    "impact": "More accurate time estimates",
+                    "priority": "medium"
+                }
+                state.optimizations.append(optimization)
+        
+        # Workload balancing
+        if state.workload_analysis.get("overload_risk"):
+            optimization = {
+                "type": "workload_balancing",
+                "description": f"Consider redistributing tasks for {state.assignee} (overload risk detected)",
+                "impact": "Prevents assignee burnout and delays",
+                "priority": "high"
+            }
+            state.optimizations.append(optimization)
+        
+        state.status = "optimized"
+        await broadcast_scheduling_update({
+            "type": "schedule_optimized",
+            "optimizations_count": len(state.optimizations),
+            "conflicts_resolved": len(state.conflicts)
+        })
+        
+    except Exception as e:
+        state.error = f"Optimization failed: {str(e)}"
+        state.status = "error"
+    
+    return state
+
+async def store_scheduling_data_node(state: SchedulingAgentState) -> SchedulingAgentState:
+    """Store scheduling insights and results in RAG"""
+    state.step_count += 1
+    
+    try:
+        # Store task and scheduling insights
+        if state.task_data:
+            await rag_service.add_document(Document(
+                id="",
+                module="scheduling",
+                type="task_analysis",
+                content=json.dumps({
+                    "task": state.task_data,
+                    "conflicts": state.conflicts,
+                    "optimizations": state.optimizations,
+                    "workload_analysis": state.workload_analysis,
+                    "rag_insights_count": len(state.rag_insights)
+                }),
+                metadata={
+                    "schedule_id": state.schedule_id,
+                    "assignee": state.assignee,
+                    "operation": state.operation,
+                    "timestamp": datetime.now().isoformat()
+                }
+            ))
+        
+        state.status = "completed"
+        
+    except Exception as e:
+        state.error = f"Storage failed: {str(e)}"
+        state.status = "error"
+    
+    return state
+
+# Create LangGraph workflow
+scheduling_workflow = StateGraph(SchedulingAgentState)
+scheduling_workflow.add_node("analyze_context", analyze_task_context_node)
+scheduling_workflow.add_node("detect_conflicts", detect_conflicts_node)
+scheduling_workflow.add_node("optimize_schedule", optimize_schedule_node)
+scheduling_workflow.add_node("store_data", store_scheduling_data_node)
+
+scheduling_workflow.set_entry_point("analyze_context")
+scheduling_workflow.add_edge("analyze_context", "detect_conflicts")
+scheduling_workflow.add_edge("detect_conflicts", "optimize_schedule")
+scheduling_workflow.add_edge("optimize_schedule", "store_data")
+scheduling_workflow.add_edge("store_data", END)
+
+# Compile workflow
+scheduling_agent = scheduling_workflow.compile(checkpointer=MemorySaver())
+
+async def broadcast_scheduling_update(update: Dict[str, Any]):
+    """Broadcast update to all connected WebSocket clients"""
+    disconnected = []
+    
+    for connection in active_websockets:
+        try:
+            await connection.send_json(update)
+        except:
+            disconnected.append(connection)
+    
+    # Remove disconnected clients
+    for conn in disconnected:
+        active_websockets.remove(conn)
 
 # ===== API Endpoints =====
 @router.get("/")
@@ -58,17 +328,45 @@ async def get_schedule(schedule_id: str):
 
 @router.post("/{schedule_id}/tasks")
 async def add_task(schedule_id: str, task: Task):
-    """Add a task to a schedule"""
+    """Add a task to a schedule using LangGraph workflow"""
     if schedule_id not in schedules:
         raise HTTPException(status_code=404, detail="Schedule not found")
     
     task.id = f"task_{uuid.uuid4().hex[:8]}"
-    schedules[schedule_id].tasks.append(task)
     
-    # AI-powered scheduling optimization
-    await optimize_schedule(schedule_id)
+    # Create initial state for workflow
+    initial_state = SchedulingAgentState(
+        operation="create_task",
+        schedule_id=schedule_id,
+        task_data=task.dict(),
+        assignee=task.assignee
+    )
     
-    return task
+    # Execute workflow
+    config = {"configurable": {"thread_id": f"add_task_{schedule_id}_{uuid.uuid4().hex[:8]}"}}
+    final_state = await scheduling_agent.ainvoke(initial_state, config)
+    
+    if final_state.status == "completed":
+        # Add task to schedule
+        schedules[schedule_id].tasks.append(task)
+        
+        return {
+            "task": task,
+            "conflicts": final_state.conflicts,
+            "optimizations": final_state.optimizations,
+            "workload_analysis": final_state.workload_analysis,
+            "rag_insights": len(final_state.rag_insights),
+            "workflow_steps": final_state.step_count
+        }
+    else:
+        # Still add the task but return warnings
+        schedules[schedule_id].tasks.append(task)
+        return {
+            "task": task,
+            "warning": f"Workflow issues: {final_state.error}",
+            "conflicts": final_state.conflicts,
+            "optimizations": final_state.optimizations
+        }
 
 @router.patch("/tasks/{task_id}")
 async def update_task(task_id: str, updates: Dict[str, Any]):
@@ -181,6 +479,60 @@ async def get_workload(assignee: str):
         "high_priority_tasks": high_priority,
         "tasks": assignee_tasks
     }
+
+@router.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    """WebSocket endpoint for real-time scheduling updates"""
+    await websocket.accept()
+    active_websockets.append(websocket)
+    
+    try:
+        # Send initial status
+        await websocket.send_json({
+            "type": "scheduling_status",
+            "total_schedules": len(schedules),
+            "total_tasks": sum(len(s.tasks) for s in schedules.values()),
+            "active_tasks": sum(len([t for t in s.tasks if t.status == "in-progress"]) for s in schedules.values())
+        })
+        
+        while True:
+            data = await websocket.receive_json()
+            
+            if data.get("type") == "analyze_workload":
+                assignee = data.get("assignee", "")
+                if assignee:
+                    # Execute workload analysis through workflow
+                    initial_state = SchedulingAgentState(
+                        operation="analyze_workload",
+                        assignee=assignee
+                    )
+                    
+                    config = {"configurable": {"thread_id": f"ws_workload_{uuid.uuid4().hex[:8]}"}}
+                    final_state = await scheduling_agent.ainvoke(initial_state, config)
+                    
+                    await websocket.send_json({
+                        "type": "workload_analysis",
+                        "assignee": assignee,
+                        "analysis": final_state.workload_analysis,
+                        "insights": final_state.rag_insights,
+                        "status": final_state.status
+                    })
+            
+            elif data.get("type") == "optimize_schedule":
+                schedule_id = data.get("schedule_id", "")
+                if schedule_id:
+                    optimization_result = await optimize_schedule(schedule_id)
+                    await websocket.send_json({
+                        "type": "optimization_result",
+                        "schedule_id": schedule_id,
+                        "result": optimization_result
+                    })
+    
+    except Exception as e:
+        print(f"Scheduling WebSocket error: {e}")
+    finally:
+        if websocket in active_websockets:
+            active_websockets.remove(websocket)
 
 # ===== Helper Functions =====
 def find_task_in_schedule(schedule: Schedule, task_id: str) -> Optional[Task]:

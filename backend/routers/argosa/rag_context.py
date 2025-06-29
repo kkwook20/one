@@ -2,7 +2,14 @@
 
 from fastapi import APIRouter, HTTPException
 from typing import List, Dict, Any, Optional
-from ...services.rag_service import rag_service, module_integration, RAGQuery
+
+try:
+    from services.rag_service import rag_service, module_integration, RAGQuery
+except ImportError:
+    # Fallback for testing environments
+    rag_service = None
+    module_integration = None
+    RAGQuery = None
 
 router = APIRouter()
 

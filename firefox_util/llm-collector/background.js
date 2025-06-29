@@ -3,7 +3,10 @@ console.log('[LLM Collector] Extension loaded at', new Date().toISOString());
 
 // ======================== Configuration ========================
 const NATIVE_HOST_ID = 'com.argosa.native';
-const BACKEND_URL = 'http://localhost:8000/api/argosa/data';
+
+// Backend URL - Native Host에서 올바른 URL을 받거나 기본값 사용
+let BACKEND_URL = 'http://localhost:8000/api/argosa/data';
+
 
 // Platform configurations
 const PLATFORMS = {
@@ -508,6 +511,13 @@ class NativeExtension {
     // Keep-alive port for long operations
     this.keepAlivePort = null;
     
+    // 이벤트 기반 상태 관리 - heartbeat 제거
+    this.lastState = {}; // 이전 상태 저장
+    this.lastNotifiedStatus = null; // 중복 알림 방지용
+    this.statusChangeTimeout = null; // Debounce timeout for status changes
+    this.lastConnectTime = null; // Track connection time to detect rapid disconnects
+    this.keepAliveInterval = null; // Keep-alive interval for native connection
+    
     // Initialize
     this.init();
   }
@@ -539,29 +549,9 @@ class NativeExtension {
     // Setup auto sync scheduler
     await this.setupAutoSyncAlarm();
     
-    // Heartbeat to Native Host (15초마다)
-    setInterval(() => {
-      if (this.nativeConnected) {
-        this.sendNativeMessage({
-          type: 'heartbeat',
-          data: {
-            timestamp: new Date().toISOString(),
-            sessions: this.getSessionStates(),
-            extension_alive: true,
-            disable_firefox_monitor: true
-          }
-        });
-      }
-    }, 15000);
-    
-    // Backend에 직접 생존 신호 (20초마다)
-    setInterval(async () => {
-      await this.notifyBackendStatus('extension_alive', {
-        alive: true,
-        sessions: this.getSessionStates(),
-        override_firefox_monitor: true
-      });
-    }, 20000);
+    // 이벤트 기반 상태 관리 - heartbeat 제거
+    // 초기 상태 설정
+    this.updateLastState();
     
     // 메시지 핸들러 추가
     browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -731,6 +721,19 @@ class NativeExtension {
         this.nativePort = null;
         this.nativeConnected = false;
         
+        // Stop keep-alive
+        this.stopKeepAlive();
+        
+        // Check if this is a rapid disconnect (within 2 seconds of connection)
+        const now = Date.now();
+        const timeSinceConnect = this.lastConnectTime ? now - this.lastConnectTime : Infinity;
+        
+        if (timeSinceConnect < 2000) {
+          // Rapid disconnect detected - increase delay significantly
+          this.reconnectDelay = Math.max(this.reconnectDelay * 4, 5000);
+          this.error('[Extension] Rapid disconnect detected! Waiting', this.reconnectDelay, 'ms before reconnecting');
+        }
+        
         // 진행 중인 로그인 체크 정리
         for (const [platform, intervalId] of this.loginCheckIntervals) {
           clearInterval(intervalId);
@@ -742,13 +745,18 @@ class NativeExtension {
         this.state.sessions = {};
         this.state.loginInProgress = {};
         
-        // Backend에 연결 해제 알림
+        // Backend에 연결 해제 알림 (상태 변화 시에만)
+        this.log('[Extension] Native Host disconnected - notifying backend');
         this.notifyBackendStatus('disconnected');
+        this.updateLastState();
         
         // 재연결 시도
         this.reconnectDelay = Math.min(this.reconnectDelay * 2, 60000);
         setTimeout(() => this.connectNative(), this.reconnectDelay);
       });
+      
+      // Record connection time
+      this.lastConnectTime = Date.now();
       
       // 초기화 메시지
       this.sendNativeMessage({
@@ -767,11 +775,19 @@ class NativeExtension {
       this.nativeConnected = true;
       this.reconnectDelay = 1000;
       
+      // 연결 성공 시에만 상태 변화 알림
+      this.log('[Extension] Native Host connected - notifying backend');
+      this.notifyBackendStatus('connected');
+      this.updateLastState();
+      
       // Process queued messages
       while (this.messageQueue.length > 0) {
         const msg = this.messageQueue.shift();
         this.sendNativeMessage(msg);
       }
+      
+      // Start keep-alive ping to prevent connection timeout
+      this.startKeepAlive();
       
     } catch (error) {
       this.error('[Extension] Failed to connect native:', error);
@@ -784,7 +800,26 @@ class NativeExtension {
   }
   
   async notifyBackendStatus(status, additionalData = {}) {
-    try {
+    // 중복 알림 방지 - 상태 변화가 있을 때만 전송
+    if (status === 'connected' && this.lastNotifiedStatus === 'connected') {
+      this.log('[Extension] Backend already knows we are connected, skipping');
+      return;
+    }
+    if (status === 'disconnected' && this.lastNotifiedStatus === 'disconnected') {
+      this.log('[Extension] Backend already knows we are disconnected, skipping');
+      return;
+    }
+    
+    // Debounce rapid status changes
+    if (this.statusChangeTimeout) {
+      clearTimeout(this.statusChangeTimeout);
+    }
+    
+    // Wait 500ms before notifying to avoid rapid toggling
+    this.statusChangeTimeout = setTimeout(async () => {
+      try {
+        this.lastNotifiedStatus = status; // 마지막 알림 상태 저장
+      
       let endpoint = `${BACKEND_URL}/native/status`;
       let payload = {
         status: status,
@@ -843,13 +878,40 @@ class NativeExtension {
       } else {
         this.log(`[Extension] Backend notified: ${status}`, additionalData);
       }
-    } catch (error) {
-      this.error('[Extension] Failed to notify backend:', error);
-      this.error('[Extension] Network error details:', {
-        message: error.message,
-        endpoint: endpoint,
-        status: status
-      });
+      } catch (error) {
+        this.error('[Extension] Failed to notify backend:', error);
+        this.error('[Extension] Network error details:', {
+          message: error.message,
+          endpoint: endpoint,
+          status: status
+        });
+      }
+    }, 500); // 500ms debounce delay
+  }
+  
+  startKeepAlive() {
+    // Stop any existing keep-alive
+    this.stopKeepAlive();
+    
+    // Send ping every 20 seconds to keep connection alive
+    this.keepAliveInterval = setInterval(() => {
+      if (this.nativeConnected && this.nativePort) {
+        this.sendNativeMessage({
+          type: 'ping',
+          id: `ping_${Date.now()}`,
+          timestamp: new Date().toISOString()
+        });
+      }
+    }, 20000); // 20 seconds
+    
+    this.log('[Extension] Keep-alive started');
+  }
+  
+  stopKeepAlive() {
+    if (this.keepAliveInterval) {
+      clearInterval(this.keepAliveInterval);
+      this.keepAliveInterval = null;
+      this.log('[Extension] Keep-alive stopped');
     }
   }
   
@@ -979,15 +1041,8 @@ class NativeExtension {
       this.log('[Extension] Extension is still running, ignoring firefox_closed message');
     }
     else if (type === 'heartbeat_request') {
-      this.sendNativeMessage({
-        type: 'heartbeat_response',
-        id: id,
-        data: {
-          timestamp: new Date().toISOString(),
-          sessions: this.getSessionStates(),
-          alive: true
-        }
-      });
+      // heartbeat 제거됨 - 이벤트 기반으로 변경
+      this.log('[Extension] Heartbeat request ignored (event-based system)');
     }
     else if (type === 'collection_started' || type === 'collection_chunk' || type === 'collection_finished') {
       // Backend에서 오는 collection 상태 메시지 처리
@@ -2050,6 +2105,56 @@ class NativeExtension {
     }
   }
   
+  // ======================== 이벤트 기반 상태 관리 ========================
+  
+  // 상태 변화 감지
+  detectStateChange() {
+    const currentState = {
+      nativeConnected: this.nativeConnected,
+      sessions: this.getSessionStates()
+    };
+    
+    if (JSON.stringify(currentState) !== JSON.stringify(this.lastState)) {
+      this.lastState = JSON.parse(JSON.stringify(currentState)); // 깊은 복사
+      return true;
+    }
+    return false;
+  }
+  
+  // 이전 상태 업데이트
+  updateLastState() {
+    this.lastState = {
+      nativeConnected: this.nativeConnected,
+      sessions: this.getSessionStates()
+    };
+  }
+  
+  // 세션 변경 시에만 알림 (이벤트 기반)
+  updateSessionState(platform, valid) {
+    const changed = this.state.sessions[platform]?.valid !== valid;
+    
+    this.state.sessions[platform] = {
+      valid: valid,
+      lastChecked: new Date().toISOString()
+    };
+    
+    if (changed) {
+      this.log(`[Extension] Session state changed for ${platform}: ${valid}`);
+      
+      // 상태 변화 시에만 Backend에 알림
+      this.notifyBackendStatus('session_update', {
+        platform: platform,
+        valid: valid,
+        source: 'state_change'
+      });
+      
+      // 상태 변화 추적 업데이트
+      this.updateLastState();
+    }
+    
+    this.saveState();
+  }
+  
   // ======================== State Management ========================
   
   async loadState() {
@@ -2147,14 +2252,6 @@ class NativeExtension {
     }
   }
   
-  updateSessionState(platform, valid) {
-    this.state.sessions[platform] = {
-      valid: valid,
-      lastChecked: new Date().toISOString()
-    };
-    
-    this.saveState();
-  }
   
   // ======================== Data Collection (API Mode - Fallback) ========================
   
@@ -2337,6 +2434,31 @@ class NativeExtension {
 // ======================== Initialize Extension ========================
 
 const extension = new NativeExtension();
+
+// ======================== Extension Lifecycle ========================
+
+// Extension 종료 이벤트 핸들러
+if (browser.runtime.onSuspend) {
+  browser.runtime.onSuspend.addListener(() => {
+    console.log('[Extension] Extension suspending - notifying backend');
+    extension.notifyBackendStatus('disconnected').catch(console.error);
+  });
+}
+
+// 브라우저 종료 감지 (beforeunload 이벤트로 대체 불가능하므로 다른 방법 사용)
+browser.windows.onRemoved.addListener(async (windowId) => {
+  try {
+    const allWindows = await browser.windows.getAll();
+    if (allWindows.length === 0) {
+      console.log('[Extension] All windows closed - Extension disconnecting');
+      await extension.notifyBackendStatus('disconnected');
+    }
+  } catch (error) {
+    console.error('[Extension] Error in window close handler:', error);
+  }
+});
+
+// Extension uninstall/disable 감지는 불가능하므로 백엔드에서 timeout으로 처리
 
 // Export for debugging (use globalThis instead of window in service worker)
 globalThis.llmCollectorExtension = extension;

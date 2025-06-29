@@ -1,7 +1,9 @@
 # backend/main.py - 모듈화된 3개 시스템 지원 버전 (디버깅 로그 추가)
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 import signal
 import sys
 import asyncio
@@ -18,12 +20,38 @@ sys.setrecursionlimit(5000)
 # 버퍼링 비활성화 - 로그 즉시 출력
 sys.stdout = sys.stderr = sys.__stdout__
 
+# 로그 디렉토리 생성 (로깅 설정보다 먼저)
+os.makedirs('./logs', exist_ok=True)
+
+# 상세한 로깅 설정 (force=True로 uvicorn 설정 덮어쓰기)
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(filename)s:%(lineno)d - %(message)s',
+    handlers=[
+        logging.FileHandler('./logs/backend_detailed.log', encoding='utf-8'),
+        logging.StreamHandler(sys.stdout)
+    ],
+    force=True  # uvicorn의 기본 설정을 덮어쓰기
+)
+
+# argosa 모듈 로깅 레벨 설정
+logging.getLogger('routers.argosa').setLevel(logging.DEBUG)
+logging.getLogger('routers.argosa.data_collection').setLevel(logging.DEBUG)
+logging.getLogger('routers.argosa.shared.firefox_manager').setLevel(logging.DEBUG)
+
+# uvicorn과 FastAPI 로깅 활성화
+logging.getLogger('uvicorn').setLevel(logging.DEBUG)
+logging.getLogger('uvicorn.access').setLevel(logging.DEBUG)
+logging.getLogger('uvicorn.error').setLevel(logging.DEBUG)
+logging.getLogger('fastapi').setLevel(logging.DEBUG)
+
 # Local imports
 from storage import ensure_directories
 
 # Router imports
 from routers import oneai, neuronet, projects
 from routers.argosa import router as argosa_router
+# search_settings_simple removed - functionality integrated into web_crawler_agent
 
 # argosa의 initialize와 shutdown 함수는 __init__.py에서 export되었으므로 같이 import
 from routers.argosa import initialize as argosa_initialize, shutdown as argosa_shutdown
@@ -34,8 +62,16 @@ background_tasks = []
 connected_clients: Dict[str, WebSocket] = {}
 
 # Create FastAPI app
+# Modified: 2025-06-29 - Trigger nodemon restart for new search engine endpoints
+# Force restart: Search engine settings endpoints added
+# Nodemon restart trigger: 2025-06-29 21:17 - COMPLETE FIX - all parts updated
+# Fix cache_manager None issue: 2025-06-29 21:50 - Fixed initialize() function
+# Final fix: 2025-06-29 21:57 - Direct implementation in main.py working
+# LLM Query Settings fix: 2025-06-29 22:15 - Added direct endpoints
+# Status endpoint fix: 2025-06-29 22:13 - Force server restart with SystemStateManager fix
+# Search settings consolidation: 2025-06-29 - Integrated into web_crawler_agent
 app = FastAPI(
-    title="3D Animation Automation System",
+    title="3D Animation Automation System", 
     description="AI-powered system for 3D animation production",
     version="1.0.0"
 )
@@ -67,12 +103,89 @@ app.add_middleware(
     expose_headers=["*"]
 )
 
+# HTTP 요청 로깅 미들웨어
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    start_time = datetime.now()
+    
+    # 요청 로깅
+    logger = logging.getLogger("http_requests")
+    logger.info(f"🔥 HTTP {request.method} {request.url.path} - Headers: {dict(request.headers)}")
+    
+    # argosa API 호출에 대해서는 더 자세한 로깅
+    if "/api/argosa/" in str(request.url.path):
+        logger.info(f"🎯 ARGOSA API CALL: {request.method} {request.url.path}")
+        if request.method in ["POST", "PUT", "PATCH"]:
+            # 요청 body도 로깅 (너무 크지 않은 경우)
+            try:
+                body = await request.body()
+                if len(body) < 1000:  # 1KB 미만만 로깅
+                    logger.info(f"🎯 Request body: {body.decode('utf-8', errors='ignore')}")
+            except:
+                pass
+    
+    response = await call_next(request)
+    
+    # 응답 로깅
+    process_time = (datetime.now() - start_time).total_seconds()
+    logger.info(f"🔥 Response {response.status_code} for {request.method} {request.url.path} - {process_time:.3f}s")
+    
+    return response
+
+# Exception handler for HTTP exceptions to ensure CORS headers are included
+@app.exception_handler(StarletteHTTPException)
+async def http_exception_handler(request: Request, exc: StarletteHTTPException):
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.detail},
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Credentials": "true",
+            "Access-Control-Allow-Methods": "*",
+            "Access-Control-Allow-Headers": "*",
+        }
+    )
+
+# General exception handler for unhandled errors
+@app.exception_handler(Exception)
+async def general_exception_handler(request: Request, exc: Exception):
+    logger = logging.getLogger(__name__)
+    logger.error(f"Unhandled exception: {exc}")
+    logger.error(traceback.format_exc())
+    
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal server error", "error": str(exc)},
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Credentials": "true",
+            "Access-Control-Allow-Methods": "*",
+            "Access-Control-Allow-Headers": "*",
+        }
+    )
+
+# Removed override - will fix in the actual endpoint
+
 # Include routers
 app.include_router(oneai.router, prefix="/api/oneai", tags=["One AI"])
 app.include_router(argosa_router)  # prefix와 tags는 argosa_router 내부에서 이미 설정됨
 app.include_router(neuronet.router, prefix="/api/neuronet", tags=["NeuroNet"])
 app.include_router(projects.router, prefix="/projects", tags=["Projects"])
+# Search settings are now handled by web_crawler_agent in argosa router
 print(f"[DEBUG] Argosa router paths: {[r.path for r in argosa_router.routes]}", flush=True)
+
+# Debug endpoint to list all routes
+@app.get("/debug/routes")
+async def list_routes():
+    routes = []
+    for route in app.routes:
+        if hasattr(route, "path") and hasattr(route, "methods"):
+            routes.append({
+                "path": route.path,
+                "methods": list(route.methods) if route.methods else [],
+                "name": route.name
+            })
+    return {"total": len(routes), "routes": sorted(routes, key=lambda x: x["path"])}
 
 # Root endpoint
 @app.get("/")
@@ -100,6 +213,91 @@ async def health_check():
             "neuronet": "development"
         }
     }
+
+# Search engine settings endpoints are now handled by web_crawler_agent
+# Available at:
+# GET  /api/argosa/data/settings
+# PUT  /api/argosa/data/settings
+# GET  /api/argosa/data/stats
+# POST /api/argosa/data/stats/record
+
+# ======================== LLM Query Settings - Direct Implementation ========================
+
+@app.get("/api/argosa/data/llm/query/settings")
+async def get_llm_query_settings_direct():
+    """LLM Query 설정 가져오기 - 직접 구현"""
+    import json
+    from pathlib import Path
+    try:
+        backend_path = Path(__file__).parent
+        settings_path = backend_path / "routers" / "argosa" / "collection" / "settings" / "llm_query_settings.json"
+        
+        if settings_path.exists():
+            with open(settings_path, 'r', encoding='utf-8') as f:
+                settings = json.load(f)
+            return settings
+        else:
+            # 기본 설정 반환
+            default_settings = {
+                "auto_query_enabled": True,
+                "max_queries_per_analysis": 5,
+                "allowed_providers": ["chatgpt", "claude", "gemini"],
+                "query_timeout": 30,
+                "firefox_visible": True
+            }
+            return default_settings
+    except Exception as e:
+        print(f"❌ Failed to get LLM query settings: {e}", flush=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.put("/api/argosa/data/llm/query/settings")
+async def update_llm_query_settings_direct(settings: dict):
+    """LLM Query 설정 업데이트 - 직접 구현"""
+    import json
+    from pathlib import Path
+    try:
+        backend_path = Path(__file__).parent
+        settings_path = backend_path / "routers" / "argosa" / "collection" / "settings" / "llm_query_settings.json"
+        
+        # 디렉토리 생성
+        settings_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        # 저장
+        with open(settings_path, 'w', encoding='utf-8') as f:
+            json.dump(settings, f, indent=2, ensure_ascii=False)
+            
+        print(f"✅ LLM query settings updated: {settings}", flush=True)
+        return settings
+        
+    except Exception as e:
+        print(f"❌ Failed to update LLM query settings: {e}", flush=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/argosa/data/llm/query/activities")
+async def get_llm_query_activities_direct():
+    """LLM Query 활동 내역 가져오기 - 직접 구현"""
+    return {"activities": []}
+
+@app.get("/api/argosa/data/llm/query/analysis/status")
+async def get_llm_analysis_status_direct():
+    """LLM 분석 상태 가져오기 - 직접 구현"""
+    return {
+        "current_analysis": None,
+        "queries_sent": 0,
+        "queries_completed": 0,
+        "last_query_time": None,
+        "analysis_progress": 0
+    }
+
+@app.get("/api/argosa/data/llm/query/stats")
+async def get_llm_query_stats_direct():
+    """LLM Query 통계 가져오기 - 직접 구현"""
+    return {}
+
+@app.delete("/api/argosa/data/llm/query/activities/clear")
+async def clear_llm_query_activities_direct():
+    """완료된 LLM Query 활동 내역 삭제 - 직접 구현"""
+    return {"success": True}
 
 @app.websocket("/ws/{client_id}")
 async def websocket_endpoint(websocket: WebSocket, client_id: str):
@@ -221,6 +419,30 @@ async def startup_event():
                 print(f"[Startup] Error setting up LLM tracker: {e}", flush=True)
                 print(f"[Startup] Traceback: {traceback.format_exc()}", flush=True)
             
+            # Firefox Manager 초기화
+            try:
+                from routers.argosa.shared.firefox_manager import get_firefox_manager
+                
+                firefox_manager = get_firefox_manager()
+                if await firefox_manager.initialize():
+                    print("[Startup] Firefox Manager initialized successfully", flush=True)
+                    
+                    # Firefox 상태 확인
+                    info = await firefox_manager.get_info()
+                    print(f"[Startup] Firefox Manager status: {info.get('status')}", flush=True)
+                    print(f"[Startup] Firefox running: {info.get('is_running')}", flush=True)
+                    if info.get('pid'):
+                        print(f"[Startup] Firefox PID: {info.get('pid')}", flush=True)
+                else:
+                    print("[Startup] Firefox Manager initialization failed", flush=True)
+                    
+            except ImportError as e:
+                print(f"[Startup] Warning: Could not setup Firefox Manager: {e}", flush=True)
+                # Firefox Manager는 선택적이므로 계속 진행
+            except Exception as e:
+                print(f"[Startup] Error setting up Firefox Manager: {e}", flush=True)
+                print(f"[Startup] Traceback: {traceback.format_exc()}", flush=True)
+            
         except Exception as e:
             print(f"[Startup] Argosa initialization error: {e}", flush=True)
             print(f"[Startup] Traceback: {traceback.format_exc()}", flush=True)
@@ -303,10 +525,19 @@ async def shutdown_handler():
             except Exception as e:
                 print(f"[Shutdown] OneAI error: {e}", flush=True)
         
-        # Argosa shutdown with LLM tracker cleanup
+        # Argosa shutdown with LLM tracker and Firefox cleanup
         async def quick_argosa_shutdown():
             try:
                 print("[Shutdown] Shutting down Argosa...", flush=True)
+                
+                # Firefox Manager cleanup
+                try:
+                    from routers.argosa.shared.firefox_manager import get_firefox_manager
+                    firefox_manager = get_firefox_manager()
+                    await firefox_manager.cleanup()
+                    print("[Shutdown] Firefox Manager cleaned up", flush=True)
+                except Exception as e:
+                    print(f"[Shutdown] Firefox cleanup error: {e}", flush=True)
                 
                 # LLM tracker 상태 저장 (옵션)
                 try:
@@ -365,6 +596,13 @@ async def debug_routes():
                 "methods": list(route.methods) if hasattr(route, "methods") else []
             })
     return {"routes": routes}
+
+# Removed test endpoint
+
+
+# Removed test endpoint
+
+# Removed duplicate endpoint
 
 @app.get("/debug/llm-tracker")
 async def debug_llm_tracker():

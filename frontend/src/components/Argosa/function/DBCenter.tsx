@@ -5,7 +5,6 @@ import { motion } from "framer-motion";
 import {
   Card,
   CardContent,
-  CardDescription,
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
@@ -34,7 +33,6 @@ import {
   HardDrive,
   Activity,
   AlertCircle,
-  CheckCircle2,
 } from "lucide-react";
 
 // Types
@@ -54,6 +52,8 @@ interface StorageStats {
   collections: number;
   queries: number;
   avgResponseTime: number;
+  ragQueries?: number;
+  workflowSteps?: number;
 }
 
 const DBCenter: React.FC = () => {
@@ -68,10 +68,45 @@ const DBCenter: React.FC = () => {
   });
   const [searchQuery, setSearchQuery] = useState("");
   const [isSyncing, setIsSyncing] = useState(false);
+  const [websocket, setWebsocket] = useState<WebSocket | null>(null);
+  const [realtimeUpdates, setRealtimeUpdates] = useState<any[]>([]);
+  const [queryResult, setQueryResult] = useState<any>(null);
+  const [selectedQueryType, setSelectedQueryType] = useState<'graph' | 'vector' | 'hybrid'>('hybrid');
 
   useEffect(() => {
     loadCollections();
     loadStats();
+    
+    // Initialize WebSocket connection
+    const ws = new WebSocket('ws://localhost:8000/api/argosa/db/ws');
+    
+    ws.onopen = () => {
+      console.log('DB Center WebSocket connected');
+      setWebsocket(ws);
+    };
+    
+    ws.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      setRealtimeUpdates(prev => [data, ...prev.slice(0, 9)]); // Keep last 10 updates
+      
+      // Handle specific update types
+      if (data.type === 'db_status') {
+        setStorageStats(data.stats);
+      } else if (data.type === 'query_result') {
+        setQueryResult(data);
+      }
+    };
+    
+    ws.onclose = () => {
+      console.log('DB Center WebSocket disconnected');
+      setWebsocket(null);
+    };
+    
+    return () => {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.close();
+      }
+    };
   }, []);
 
   const loadCollections = async () => {
@@ -140,6 +175,41 @@ const DBCenter: React.FC = () => {
     }
   };
 
+  const executeQuery = async () => {
+    if (!searchQuery.trim()) return;
+    
+    try {
+      const response = await fetch('/api/argosa/db/query', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          collection: selectedCollection?.name || 'default',
+          query: searchQuery,
+          type: selectedQueryType,
+          limit: 10
+        })
+      });
+      
+      if (response.ok) {
+        const result = await response.json();
+        setQueryResult(result);
+      }
+    } catch (error) {
+      console.error('Query failed:', error);
+    }
+  };
+
+  const executeWSQuery = () => {
+    if (!websocket || !searchQuery.trim()) return;
+    
+    websocket.send(JSON.stringify({
+      type: 'query',
+      collection: selectedCollection?.name || 'default',
+      query: searchQuery,
+      query_type: selectedQueryType
+    }));
+  };
+
   const formatBytes = (bytes: number) => {
     const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
     if (bytes === 0) return '0 B';
@@ -180,13 +250,26 @@ const DBCenter: React.FC = () => {
         <div className="flex items-center gap-4">
           <div className="flex items-center gap-2">
             <Input
-              placeholder="Search collections..."
+              placeholder="Search with AI-enhanced query..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               className="w-64"
+              onKeyPress={(e) => e.key === 'Enter' && executeQuery()}
             />
-            <Button variant="outline" size="icon">
+            <select 
+              value={selectedQueryType}
+              onChange={(e) => setSelectedQueryType(e.target.value as any)}
+              className="px-3 py-2 border rounded-md text-sm"
+            >
+              <option value="hybrid">Hybrid (AI)</option>
+              <option value="vector">Vector Search</option>
+              <option value="graph">Graph Query</option>
+            </select>
+            <Button variant="outline" size="icon" onClick={executeQuery}>
               <Search className="w-4 h-4" />
+            </Button>
+            <Button variant="outline" size="icon" onClick={executeWSQuery} disabled={!websocket}>
+              <Brain className="w-4 h-4" />
             </Button>
           </div>
           <Button 
@@ -214,7 +297,7 @@ const DBCenter: React.FC = () => {
       </div>
 
       {/* Storage Overview */}
-      <div className="grid grid-cols-4 gap-4">
+      <div className="grid grid-cols-6 gap-4">
         <Card>
           <CardHeader className="pb-3">
             <CardTitle className="text-sm flex items-center gap-2">
@@ -262,6 +345,28 @@ const DBCenter: React.FC = () => {
           </CardHeader>
           <CardContent>
             <p className="text-2xl font-bold">{storageStats.avgResponseTime}ms</p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-sm flex items-center gap-2">
+              <Brain className="w-4 h-4" />
+              RAG Queries
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-2xl font-bold">{storageStats.ragQueries || 0}</p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-sm flex items-center gap-2">
+              <Network className="w-4 h-4" />
+              Workflow Steps
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-2xl font-bold">{storageStats.workflowSteps || 0}</p>
           </CardContent>
         </Card>
       </div>
@@ -425,6 +530,102 @@ const DBCenter: React.FC = () => {
             </CardContent>
           </Card>
         )}
+      </div>
+
+      {/* Real-time Updates & Query Results */}
+      <div className="grid grid-cols-2 gap-6">
+        {/* Real-time Updates */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Activity className="w-4 h-4" />
+              Real-time Updates
+              <Badge variant={websocket ? "default" : "secondary"}>
+                {websocket ? "Connected" : "Disconnected"}
+              </Badge>
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <ScrollArea className="h-40">
+              <div className="space-y-2">
+                {realtimeUpdates.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">No updates yet...</p>
+                ) : (
+                  realtimeUpdates.map((update, index) => (
+                    <div key={index} className="p-2 bg-gray-50 rounded text-sm">
+                      <div className="flex justify-between items-start">
+                        <span className="font-medium">{update.type}</span>
+                        <span className="text-xs text-muted-foreground">
+                          {new Date().toLocaleTimeString()}
+                        </span>
+                      </div>
+                      {update.insights_found && (
+                        <p className="text-xs text-muted-foreground">
+                          Found {update.insights_found} context insights
+                        </p>
+                      )}
+                      {update.execution_time && (
+                        <p className="text-xs text-muted-foreground">
+                          Executed in {update.execution_time}ms
+                        </p>
+                      )}
+                    </div>
+                  ))
+                )}
+              </div>
+            </ScrollArea>
+          </CardContent>
+        </Card>
+
+        {/* Query Results */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Brain className="w-4 h-4" />
+              LangGraph Query Results
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <ScrollArea className="h-40">
+              {queryResult ? (
+                <div className="space-y-3">
+                  <div className="flex justify-between text-sm">
+                    <span>Results: {queryResult.count}</span>
+                    <span>Time: {queryResult.executionTime}ms</span>
+                    <span>Type: {queryResult.queryType}</span>
+                  </div>
+                  
+                  {queryResult.results && queryResult.results.length > 0 && (
+                    <div className="space-y-2">
+                      {queryResult.results.slice(0, 3).map((result: any, index: number) => (
+                        <div key={index} className="p-2 bg-gray-50 rounded text-xs">
+                          {typeof result === 'object' ? (
+                            <pre className="whitespace-pre-wrap">
+                              {JSON.stringify(result, null, 2).slice(0, 200)}...
+                            </pre>
+                          ) : (
+                            <p>{String(result).slice(0, 200)}...</p>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  
+                  {queryResult.error && (
+                    <Alert variant="destructive">
+                      <AlertCircle className="h-4 w-4" />
+                      <AlertDescription>{queryResult.error}</AlertDescription>
+                    </Alert>
+                  )}
+                </div>
+              ) : (
+                <p className="text-sm text-muted-foreground">
+                  Execute a query to see AI-enhanced results...
+                </p>
+              )}
+            </ScrollArea>
+          </CardContent>
+        </Card>
       </div>
 
       {/* Status Alert */}

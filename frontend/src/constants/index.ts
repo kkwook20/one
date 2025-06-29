@@ -3,17 +3,23 @@ export const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
 export const WS_URL = process.env.REACT_APP_WS_URL || 'ws://localhost:8000/ws';
 
 export const GROUPS = {
-  preproduction: ['Script', 'Storyboard', 'Planning'],
-  postproduction: ['Modeling', 'Rigging', 'Texture', 'Animation', 'VFX', 'Lighting & Rendering', 'Sound Design', 'Compositing'],
-  director: ['Direction', 'Review']
+  Control: ['planner', 'supervisor'],
+  Execution: ['worker'],
+  IO: ['io-input', 'io-output'],
+  Processing: ['animation', 'rendering', 'compositing', 'scripting', 'asset']
 } as const;
 
 export const NODE_TYPES = [
-  { type: 'worker', label: 'Worker', icon: '👷', description: 'Executes specific tasks' },
-  { type: 'supervisor', label: 'Supervisor', icon: '👔', description: 'Manages and optimizes worker nodes' },
-  { type: 'planner', label: 'Planner', icon: '📋', description: 'Plans and evaluates section workflow' },
-  { type: 'input', label: 'Input', icon: '➡️', description: 'Data input point' },
-  { type: 'output', label: 'Output', icon: '⬅️', description: 'Data output point' }
+  { type: 'planner', label: 'Planner', icon: '📋' },
+  { type: 'supervisor', label: 'Supervisor', icon: '👔' },
+  { type: 'worker', label: 'Worker', icon: '👷' },
+  { type: 'io-input', label: 'Input', icon: '📥' },
+  { type: 'io-output', label: 'Output', icon: '📤' },
+  { type: 'animation', label: 'Animation', icon: '🎬' },
+  { type: 'rendering', label: 'Rendering', icon: '🎨' },
+  { type: 'compositing', label: 'Compositing', icon: '🎭' },
+  { type: 'scripting', label: 'Scripting', icon: '📝' },
+  { type: 'asset', label: 'Asset', icon: '📦' }
 ] as const;
 
 // Node 실행 상태

@@ -24,14 +24,16 @@ logger = logging.getLogger(__name__)
 # 프로젝트 루트를 Python 경로에 추가
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
 
-# Native Command Manager는 초기화 시점에 import
-async def get_native_command_manager():
-    """Native Command Manager 가져오기"""
-    try:
-        from ..data_collection import native_command_manager
-        return native_command_manager
-    except ImportError:
-        raise RuntimeError("Native Command Manager not initialized")
+# 번역 서비스 import
+try:
+    from ..shared.translation_service import translation_service
+    HAS_TRANSLATION = True
+except ImportError:
+    logger.warning("Translation service not available")
+    translation_service = None
+    HAS_TRANSLATION = False
+
+# Native Command Manager는 초기화 시점에 WebCrawlerEngine 클래스 내부에서 처리
 
 # ======================== Configuration ========================
 
@@ -44,7 +46,14 @@ CACHE_PATH = CRAWLER_DATA_PATH / "cache"
 # API 설정
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")
 GOOGLE_CSE_ID = os.getenv("GOOGLE_CSE_ID", "")
-NEWS_API_KEY = os.getenv("NEWS_API_KEY", "")
+NAVER_CLIENT_ID = os.getenv("NAVER_CLIENT_ID", "")
+NAVER_CLIENT_SECRET = os.getenv("NAVER_CLIENT_SECRET", "")
+BING_API_KEY = os.getenv("BING_API_KEY", "")
+SERPER_API_KEY = os.getenv("SERPER_API_KEY", "")
+SERPAPI_API_KEY = os.getenv("SERPAPI_API_KEY", "")
+GITHUB_API_KEY = os.getenv("GITHUB_API_KEY", "")
+KAGGLE_API_KEY = os.getenv("KAGGLE_API_KEY", "")
+KAGGLE_USERNAME = os.getenv("KAGGLE_USERNAME", "")
 
 # 크롤링 설정
 MAX_CONCURRENT_REQUESTS = 5
@@ -232,13 +241,14 @@ class CrawlerCache:
                         del self.memory_cache[key]
                 
                 # 파일 캐시 정리
+                file_cleanup_now = datetime.now(timezone.utc)  # 파일 정리용 현재 시간
                 for cache_file in CACHE_PATH.glob("*.json"):
                     try:
                         async with aiofiles.open(cache_file, 'r') as f:
                             cache_data = json.loads(await f.read())
                             cached_time = datetime.fromisoformat(cache_data['timestamp'])
                             
-                            if (now - cached_time).total_seconds() > CACHE_TTL:
+                            if (file_cleanup_now - cached_time).total_seconds() > CACHE_TTL:
                                 cache_file.unlink()
                     except:
                         pass
@@ -285,6 +295,12 @@ class GoogleSearchAPI(BaseAPIClient):
         """엔진 참조 설정"""
         self._engine = engine
     
+    def update_credentials(self, api_key: str, cse_id: str):
+        """API 자격 증명 업데이트"""
+        self.api_key = api_key
+        self.cse_id = cse_id
+        logger.info("Google API credentials updated")
+    
     async def search(self, query: str, num_results: int = 10, **kwargs) -> Dict[str, Any]:
         """Google 검색 실행 - Native 경유"""
         
@@ -302,6 +318,22 @@ class GoogleSearchAPI(BaseAPIClient):
                 "error": "Daily quota exceeded",
                 "results": []
             }
+        
+        # 언어 감지 및 번역
+        target_language = kwargs.get("target_language", "en")
+        translate_results = kwargs.get("translate_results", False)
+        
+        # 쿼리 언어 감지
+        if HAS_TRANSLATION and translation_service:
+            detected_lang = translation_service.detect_language(query)
+            
+            # 영어가 아닌 쿼리를 영어로 번역 (Google은 영어 검색이 더 효과적)
+            if detected_lang != "en" and kwargs.get("translate_query", True):
+                translation = await translation_service.translate(query, "en", detected_lang)
+                if translation.get("translated_text"):
+                    original_query = query
+                    query = translation["translated_text"]
+                    logger.info(f"Translated query from {detected_lang} to en: {original_query} -> {query}")
         
         try:
             # Native Command Manager 가져오기
@@ -326,6 +358,35 @@ class GoogleSearchAPI(BaseAPIClient):
             
             if result.get("status") == "success":
                 self.used_today += 1
+                
+                # 결과 번역 (요청된 경우)
+                if translate_results and HAS_TRANSLATION and translation_service and target_language != "en":
+                    translated_results = []
+                    for item in result.get("results", []):
+                        # 제목과 설명 번역
+                        title_trans = await translation_service.translate(
+                            item.get("title", ""), target_language, "en"
+                        )
+                        snippet_trans = await translation_service.translate(
+                            item.get("snippet", ""), target_language, "en"
+                        )
+                        
+                        translated_item = {
+                            **item,
+                            "title": title_trans.get("translated_text", item.get("title")),
+                            "snippet": snippet_trans.get("translated_text", item.get("snippet")),
+                            "original_title": item.get("title"),
+                            "original_snippet": item.get("snippet")
+                        }
+                        translated_results.append(translated_item)
+                    
+                    result["results"] = translated_results
+                    result["translation_info"] = {
+                        "translated": True,
+                        "target_language": target_language,
+                        "provider": title_trans.get("provider", "unknown")
+                    }
+                
                 return result
             else:
                 return {
@@ -352,6 +413,11 @@ class NewsAPI(BaseAPIClient):
     def set_engine(self, engine):
         """엔진 참조 설정"""
         self._engine = engine
+    
+    def update_credentials(self, api_key: str):
+        """API 자격 증명 업데이트"""
+        self.api_key = api_key
+        logger.info("News API credentials updated")
     
     async def search(self, query: str, from_date: str = None, 
                     sort_by: str = "relevancy", page_size: int = 20) -> Dict[str, Any]:
@@ -394,6 +460,424 @@ class NewsAPI(BaseAPIClient):
             return {
                 "status": "error",
                 "error": str(e),
+                "results": []
+            }
+
+class NaverSearchAPI(BaseAPIClient):
+    """Naver Search API 클라이언트"""
+    
+    def __init__(self):
+        super().__init__("", "https://openapi.naver.com/v1/search")
+        self.client_id = NAVER_CLIENT_ID
+        self.client_secret = NAVER_CLIENT_SECRET
+        self.daily_limit = 25000
+        self.used_today = 0
+        self._engine = None
+    
+    def set_engine(self, engine):
+        """엔진 참조 설정"""
+        self._engine = engine
+    
+    def update_credentials(self, client_id: str, client_secret: str):
+        """API 자격 증명 업데이트"""
+        self.client_id = client_id
+        self.client_secret = client_secret
+        logger.info("Naver API credentials updated")
+    
+    async def search(self, query: str, search_type: str = "blog", num_results: int = 10, **kwargs) -> Dict[str, Any]:
+        """Naver 검색 실행"""
+        
+        if not self.client_id or not self.client_secret:
+            return {
+                "status": "error",
+                "error": "Naver API not configured",
+                "results": []
+            }
+        
+        if self.used_today >= self.daily_limit:
+            return {
+                "status": "quota_exceeded",
+                "error": "Daily quota exceeded",
+                "results": []
+            }
+        
+        try:
+            if not self._engine:
+                raise RuntimeError("Engine not set for NaverSearchAPI")
+            
+            ncm = await self._engine._get_native_command_manager()
+            
+            command_id = await ncm.send_command(
+                "search_naver",
+                {
+                    "query": query,
+                    "client_id": self.client_id,
+                    "client_secret": self.client_secret,
+                    "search_type": search_type,  # blog, news, cafearticle, kin
+                    "display": min(num_results, 100),
+                    **kwargs
+                }
+            )
+            
+            result = await ncm.wait_for_response(command_id, timeout=30)
+            
+            if result.get("status") == "success":
+                self.used_today += 1
+                return result
+            else:
+                return {
+                    "status": "error",
+                    "error": result.get("error", "Search failed"),
+                    "results": []
+                }
+                
+        except Exception as e:
+            return {
+                "status": "error",
+                "error": str(e),
+                "query": query,
+                "results": []
+            }
+
+class BingSearchAPI(BaseAPIClient):
+    """Bing Search API 클라이언트"""
+    
+    def __init__(self):
+        super().__init__(BING_API_KEY, "https://api.bing.microsoft.com/v7.0/search")
+        self.daily_limit = 1000
+        self.used_today = 0
+        self._engine = None
+    
+    def set_engine(self, engine):
+        """엔진 참조 설정"""
+        self._engine = engine
+    
+    def update_credentials(self, api_key: str):
+        """API 자격 증명 업데이트"""
+        self.api_key = api_key
+        logger.info("Bing API credentials updated")
+    
+    async def search(self, query: str, num_results: int = 10, **kwargs) -> Dict[str, Any]:
+        """Bing 검색 실행"""
+        
+        if not self.api_key:
+            return {
+                "status": "error",
+                "error": "Bing API not configured",
+                "results": []
+            }
+        
+        if self.used_today >= self.daily_limit:
+            return {
+                "status": "quota_exceeded",
+                "error": "Daily quota exceeded",
+                "results": []
+            }
+        
+        try:
+            if not self._engine:
+                raise RuntimeError("Engine not set for BingSearchAPI")
+            
+            ncm = await self._engine._get_native_command_manager()
+            
+            command_id = await ncm.send_command(
+                "search_bing",
+                {
+                    "query": query,
+                    "api_key": self.api_key,
+                    "count": min(num_results, 50),
+                    "market": kwargs.get("market", "en-US"),
+                    "safeSearch": kwargs.get("safeSearch", "Moderate"),
+                    **kwargs
+                }
+            )
+            
+            result = await ncm.wait_for_response(command_id, timeout=30)
+            
+            if result.get("status") == "success":
+                self.used_today += 1
+                return result
+            else:
+                return {
+                    "status": "error",
+                    "error": result.get("error", "Search failed"),
+                    "results": []
+                }
+                
+        except Exception as e:
+            return {
+                "status": "error",
+                "error": str(e),
+                "query": query,
+                "results": []
+            }
+
+class SerperAPI(BaseAPIClient):
+    """Serper.dev API 클라이언트"""
+    
+    def __init__(self):
+        super().__init__(SERPER_API_KEY, "https://google.serper.dev/search")
+        self.daily_limit = 2500  # Free tier
+        self.used_today = 0
+        self._engine = None
+    
+    def set_engine(self, engine):
+        """엔진 참조 설정"""
+        self._engine = engine
+    
+    def update_credentials(self, api_key: str):
+        """API 자격 증명 업데이트"""
+        self.api_key = api_key
+        logger.info("Serper API credentials updated")
+    
+    async def search(self, query: str, num_results: int = 10, **kwargs) -> Dict[str, Any]:
+        """Serper 검색 실행"""
+        
+        if not self.api_key:
+            return {
+                "status": "error",
+                "error": "Serper API not configured",
+                "results": []
+            }
+        
+        if self.used_today >= self.daily_limit:
+            return {
+                "status": "quota_exceeded",
+                "error": "Daily quota exceeded",
+                "results": []
+            }
+        
+        try:
+            if not self._engine:
+                raise RuntimeError("Engine not set for SerperAPI")
+            
+            ncm = await self._engine._get_native_command_manager()
+            
+            command_id = await ncm.send_command(
+                "search_serper",
+                {
+                    "query": query,
+                    "api_key": self.api_key,
+                    "num": min(num_results, 100),
+                    "gl": kwargs.get("gl", "us"),  # country
+                    "hl": kwargs.get("hl", "en"),  # language
+                    **kwargs
+                }
+            )
+            
+            result = await ncm.wait_for_response(command_id, timeout=30)
+            
+            if result.get("status") == "success":
+                self.used_today += 1
+                return result
+            else:
+                return {
+                    "status": "error",
+                    "error": result.get("error", "Search failed"),
+                    "results": []
+                }
+                
+        except Exception as e:
+            return {
+                "status": "error",
+                "error": str(e),
+                "query": query,
+                "results": []
+            }
+
+class SerpAPI(BaseAPIClient):
+    """SerpAPI 클라이언트"""
+    
+    def __init__(self):
+        super().__init__(SERPAPI_API_KEY, "https://serpapi.com/search")
+        self.daily_limit = 100  # Free tier
+        self.used_today = 0
+        self._engine = None
+    
+    def set_engine(self, engine):
+        """엔진 참조 설정"""
+        self._engine = engine
+    
+    def update_credentials(self, api_key: str):
+        """API 자격 증명 업데이트"""
+        self.api_key = api_key
+        logger.info("SerpAPI credentials updated")
+    
+    async def search(self, query: str, engine: str = "google", num_results: int = 10, **kwargs) -> Dict[str, Any]:
+        """SerpAPI 검색 실행"""
+        
+        if not self.api_key:
+            return {
+                "status": "error",
+                "error": "SerpAPI not configured",
+                "results": []
+            }
+        
+        if self.used_today >= self.daily_limit:
+            return {
+                "status": "quota_exceeded",
+                "error": "Daily quota exceeded",
+                "results": []
+            }
+        
+        try:
+            if not self._engine:
+                raise RuntimeError("Engine not set for SerpAPI")
+            
+            ncm = await self._engine._get_native_command_manager()
+            
+            command_id = await ncm.send_command(
+                "search_serpapi",
+                {
+                    "query": query,
+                    "api_key": self.api_key,
+                    "engine": engine,  # google, bing, baidu, etc.
+                    "num": min(num_results, 100),
+                    **kwargs
+                }
+            )
+            
+            result = await ncm.wait_for_response(command_id, timeout=30)
+            
+            if result.get("status") == "success":
+                self.used_today += 1
+                return result
+            else:
+                return {
+                    "status": "error",
+                    "error": result.get("error", "Search failed"),
+                    "results": []
+                }
+                
+        except Exception as e:
+            return {
+                "status": "error",
+                "error": str(e),
+                "query": query,
+                "results": []
+            }
+
+class GitHubSearchAPI(BaseAPIClient):
+    """GitHub Search API 클라이언트"""
+    
+    def __init__(self):
+        super().__init__(GITHUB_API_KEY, "https://api.github.com/search")
+        self.daily_limit = 5000  # With auth
+        self.used_today = 0
+        self._engine = None
+    
+    def set_engine(self, engine):
+        """엔진 참조 설정"""
+        self._engine = engine
+    
+    def update_credentials(self, api_key: str):
+        """API 자격 증명 업데이트"""
+        self.api_key = api_key
+        logger.info("GitHub API credentials updated")
+    
+    async def search(self, query: str, search_type: str = "repositories", num_results: int = 10, **kwargs) -> Dict[str, Any]:
+        """GitHub 검색 실행"""
+        
+        # GitHub API는 인증 없이도 사용 가능하지만 제한적
+        if self.used_today >= self.daily_limit:
+            return {
+                "status": "quota_exceeded",
+                "error": "Daily quota exceeded",
+                "results": []
+            }
+        
+        try:
+            if not self._engine:
+                raise RuntimeError("Engine not set for GitHubSearchAPI")
+            
+            ncm = await self._engine._get_native_command_manager()
+            
+            command_id = await ncm.send_command(
+                "search_github",
+                {
+                    "query": query,
+                    "api_key": self.api_key,  # Optional
+                    "search_type": search_type,  # repositories, code, commits, issues, users
+                    "per_page": min(num_results, 100),
+                    "sort": kwargs.get("sort", "best-match"),
+                    **kwargs
+                }
+            )
+            
+            result = await ncm.wait_for_response(command_id, timeout=30)
+            
+            if result.get("status") == "success":
+                self.used_today += 1
+                return result
+            else:
+                return {
+                    "status": "error",
+                    "error": result.get("error", "Search failed"),
+                    "results": []
+                }
+                
+        except Exception as e:
+            return {
+                "status": "error",
+                "error": str(e),
+                "query": query,
+                "results": []
+            }
+
+class DuckDuckGoAPI(BaseAPIClient):
+    """DuckDuckGo 스크래핑 클라이언트 (API 없음)"""
+    
+    def __init__(self):
+        super().__init__("", "https://duckduckgo.com")
+        self.daily_limit = -1  # 무제한 (스크래핑)
+        self.used_today = 0
+        self._engine = None
+    
+    def set_engine(self, engine):
+        """엔진 참조 설정"""
+        self._engine = engine
+    
+    def update_credentials(self):
+        """자격 증명 불필요"""
+        pass
+    
+    async def search(self, query: str, num_results: int = 10, **kwargs) -> Dict[str, Any]:
+        """DuckDuckGo 스크래핑 검색"""
+        
+        try:
+            if not self._engine:
+                raise RuntimeError("Engine not set for DuckDuckGoAPI")
+            
+            ncm = await self._engine._get_native_command_manager()
+            
+            command_id = await ncm.send_command(
+                "search_duckduckgo",
+                {
+                    "query": query,
+                    "max_results": min(num_results, 50),
+                    "region": kwargs.get("region", "us-en"),
+                    "safesearch": kwargs.get("safesearch", "moderate"),
+                    **kwargs
+                }
+            )
+            
+            result = await ncm.wait_for_response(command_id, timeout=30)
+            
+            if result.get("status") == "success":
+                self.used_today += 1
+                return result
+            else:
+                return {
+                    "status": "error",
+                    "error": result.get("error", "Search failed"),
+                    "results": []
+                }
+                
+        except Exception as e:
+            return {
+                "status": "error",
+                "error": str(e),
+                "query": query,
                 "results": []
             }
         
@@ -459,7 +943,15 @@ class WebCrawlerEngine:
             return {api_name: {"error": "API client not found"}}
         
         try:
-            result = await client.search(query, **options.get(f"{api_name}_params", {}))
+            # 번역 옵션 추가
+            api_params = options.get(f"{api_name}_params", {})
+            api_params.update({
+                "target_language": options.get("target_language", "ko"),
+                "translate_results": options.get("translate_results", False),
+                "translate_query": options.get("translate_query", True)
+            })
+            
+            result = await client.search(query, **api_params)
             
             # LLM으로 결과 분석
             if result.get("status") == "success":
@@ -475,8 +967,12 @@ class WebCrawlerEngine:
             logger.error(f"API search error ({api_name}): {e}")
             return {api_name: {"error": str(e)}}
     
-    async def _crawl_with_native(self, url: str, query: str) -> Dict[str, Any]:
+    async def _crawl_with_native(self, url: str, query: str, **kwargs) -> Dict[str, Any]:
         """Native Messaging을 사용한 크롤링"""
+        
+        # 번역 옵션
+        target_language = kwargs.get("target_language", "ko")
+        translate_content = kwargs.get("translate_content", False)
         
         try:
             # Native Command Manager 가져오기
@@ -508,6 +1004,38 @@ class WebCrawlerEngine:
             content = result.get("content", "")
             extracted_data = result.get("extracted_data", {})
             
+            # 언어 감지 및 번역
+            if translate_content and HAS_TRANSLATION and translation_service and content:
+                detected_lang = translation_service.detect_language(content)
+                
+                if detected_lang != target_language:
+                    # 콘텐츠가 너무 길면 요약 부분만 번역
+                    content_to_translate = content[:3000] if len(content) > 3000 else content
+                    
+                    translation = await translation_service.translate(
+                        content_to_translate, 
+                        target_language, 
+                        detected_lang
+                    )
+                    
+                    if translation.get("translated_text"):
+                        # 번역된 콘텐츠 추가
+                        extracted_data["translated_content"] = translation["translated_text"]
+                        extracted_data["original_language"] = detected_lang
+                        extracted_data["translation_provider"] = translation.get("provider")
+                        
+                        # 제목도 번역 (있는 경우)
+                        if extracted_data.get("title"):
+                            title_trans = await translation_service.translate(
+                                extracted_data["title"],
+                                target_language,
+                                detected_lang
+                            )
+                            if title_trans.get("translated_text"):
+                                extracted_data["translated_title"] = title_trans["translated_text"]
+                                extracted_data["original_title"] = extracted_data["title"]
+                                extracted_data["title"] = title_trans["translated_text"]
+            
             # LLM 분석
             analysis = await self._process_with_llm(
                 {
@@ -515,7 +1043,11 @@ class WebCrawlerEngine:
                     "content": content,
                     "extracted": extracted_data,
                     "query": query,
-                    "screenshot": result.get("screenshot_path")
+                    "screenshot": result.get("screenshot_path"),
+                    "language_info": {
+                        "detected": detected_lang if 'detected_lang' in locals() else None,
+                        "translated": translate_content and 'translation' in locals()
+                    }
                 },
                 "webpage_native",
                 url
@@ -527,7 +1059,12 @@ class WebCrawlerEngine:
                 "content": content,
                 "extracted_data": extracted_data,
                 "analysis": analysis,
-                "screenshot": result.get("screenshot_path")
+                "screenshot": result.get("screenshot_path"),
+                "language_info": {
+                    "detected": detected_lang if 'detected_lang' in locals() else None,
+                    "translated": translate_content and 'translation' in locals(),
+                    "target_language": target_language
+                }
             }
             
         except Exception as e:
@@ -619,9 +1156,13 @@ class WebCrawlerEngine:
         
         return "\n\n".join(result)
     
-    async def _focused_crawl(self, query: str, focused_sites: List[Dict[str, Any]]) -> Dict[str, Any]:
+    async def _focused_crawl(self, query: str, focused_sites: List[Dict[str, Any]], **kwargs) -> Dict[str, Any]:
         """특정 사이트 집중 크롤링"""
         focused_results = {}
+        
+        # 번역 옵션 추출
+        target_language = kwargs.get("target_language", "ko")
+        translate_content = kwargs.get("translate_content", False)
         
         for site_info in focused_sites:
             domain = site_info["domain"]
@@ -638,8 +1179,13 @@ class WebCrawlerEngine:
                     site_results[path] = cached
                     continue
                 
-                # Native 크롤링
-                result = await self._crawl_with_native(url, query)
+                # Native 크롤링 (번역 옵션 전달)
+                result = await self._crawl_with_native(
+                    url, 
+                    query,
+                    target_language=target_language,
+                    translate_content=translate_content
+                )
                 
                 # 캐시 저장
                 if result.get("status") == "success":
@@ -788,44 +1334,29 @@ Content: {str(content)[:3000]}
 
 Extract key information and return as structured JSON."""
     
-    async def download_file(self, url: str, filename: str = None) -> Optional[str]:
-        """파일 다운로드 - Native 사용"""
+    
+    async def search_web(self, query: str, sources: List[str], options: Dict[str, Any]) -> Dict[str, Any]:
+        """웹 검색 실행"""
+        results = {}
         
-        if not SecurityValidator.is_valid_url(url):
-            logger.error(f"Invalid URL for download: {url}")
-            return None
+        # API 검색
+        if "apis" in sources:
+            for api_name in options.get("apis", []):
+                api_results = await self._search_with_api(api_name, query, options)
+                results.update(api_results)
         
-        if not filename:
-            filename = SecurityValidator.sanitize_filename(
-                url.split('/')[-1] or f"download_{datetime.now().timestamp()}"
+        # 집중 크롤링
+        if "focused" in sources and options.get("focused_sites"):
+            # 번역 옵션 전달
+            focused_results = await self._focused_crawl(
+                query, 
+                options["focused_sites"],
+                target_language=options.get("target_language", "ko"),
+                translate_content=options.get("translate_content", False)
             )
+            results.update(focused_results)
         
-        try:
-            # Native Command Manager 가져오기
-            ncm = await get_native_command_manager()
-            
-            command_id = await ncm.send_command(
-                "download_file",
-                {
-                    "url": url,
-                    "filename": filename,
-                    "save_path": str(DOWNLOADS_PATH)
-                }
-            )
-            
-            result = await ncm.wait_for_response(command_id, timeout=60)
-            
-            if result.get("status") == "success":
-                file_path = result.get("file_path")
-                logger.info(f"Downloaded file: {file_path}")
-                return file_path
-            else:
-                logger.error(f"Download failed: {result.get('error')}")
-                return None
-                
-        except Exception as e:
-            logger.error(f"Download error: {e}")
-            return None
+        return results
     
     async def cleanup(self):
         """리소스 정리"""
@@ -1401,6 +1932,15 @@ Return as JSON:
             "focused_sites": [{"domain": s} for s in state.get("sites_to_focus", [])]
         }
         
+        # 번역 옵션 추가
+        translation_opts = state.get("context", {}).get("translation", {})
+        if translation_opts:
+            options.update({
+                "target_language": translation_opts.get("target_language", "ko"),
+                "translate_results": translation_opts.get("translate_results", False),
+                "translate_content": translation_opts.get("translate_content", False)
+            })
+        
         # 쿼리 변형 처리
         all_results = {}
         query_variations = state.get("search_strategy", {}).get("query_variations", [state["query"]])
@@ -1439,7 +1979,11 @@ Return as JSON:
             if isinstance(data, dict) and "url" in data:
                 await self.site_tracker.update_site_stats(
                     data["url"],
-                    {"success": "error" not in data, "relevance_score": 0.5}
+                    {
+                        "success": data.get("status") == "success", 
+                        "relevance_score": 0.5,
+                        "status": "success" if "error" not in data else "error"
+                    }
                 )
         
         # API 사용량 업데이트
@@ -1534,7 +2078,7 @@ Provide specific feedback for improvement if quality is low."""
         optimization_prompt = f"""Based on the search results and quality assessment for: "{state['query']}"
 
 Iterations completed: {state.get('iteration_count', 1)}
-Average quality score: {sum(state['quality_scores'].values()) / len(state['quality_scores']) if state['quality_scores'] else 0:.2f}
+Average quality score: {(sum(state['quality_scores'].values()) / len(state['quality_scores'])) if state.get('quality_scores') else 0:.2f}
 
 Provide:
 1. What worked well in this search
@@ -1554,7 +2098,8 @@ Provide:
             state["improvement_suggestions"] = [str(optimization)]
         
         # 개선된 쿼리 제안
-        avg_quality = sum(state["quality_scores"].values()) / max(len(state["quality_scores"]), 1)
+        quality_scores = state.get("quality_scores", {})
+        avg_quality = (sum(quality_scores.values()) / len(quality_scores)) if quality_scores else 0.0
         if avg_quality < 0.6:
             improved_query = await self.learning_system.suggest_improved_query(
                 state["query"],
@@ -1647,11 +2192,19 @@ Provide:
         
         return "\n\n".join(summary_parts)
     
-    async def execute_search(self, query: str, context: Dict[str, Any] = {}) -> Dict[str, Any]:
+    async def execute_search(self, query: str, context: Dict[str, Any] = {}, **kwargs) -> Dict[str, Any]:
         """외부에서 호출하는 검색 실행"""
         
         search_id = f"search_{uuid.uuid4()}"
         logger.info(f"Starting search {search_id}: {query}")
+        
+        # 번역 옵션을 context에 추가
+        if "target_language" in kwargs:
+            context["target_language"] = kwargs["target_language"]
+        if "translate_results" in kwargs:
+            context["translate_results"] = kwargs["translate_results"]
+        if "translate_content" in kwargs:
+            context["translate_content"] = kwargs["translate_content"]
         
         initial_state = WebCrawlerWorkflowState(
             query=query,
@@ -1688,7 +2241,7 @@ Provide:
             # 결과 정리
             quality_score = 0.0
             if final_state and final_state.get("quality_scores"):
-                quality_score = sum(final_state["quality_scores"].values()) / len(final_state["quality_scores"])
+                quality_score = (sum(final_state["quality_scores"].values()) / len(final_state["quality_scores"])) if final_state.get("quality_scores") else 0.0
             
             result = {
                 "search_id": search_id,
@@ -1773,7 +2326,7 @@ Provide:
 from fastapi import APIRouter, HTTPException, BackgroundTasks
 from pydantic import BaseModel, Field
 
-crawler_router = APIRouter(prefix="/api/crawler", tags=["web_crawler"])
+crawler_router = APIRouter(tags=["web_crawler"])
 
 # 전역 인스턴스
 web_crawler_system = WebCrawlerAgentSystem()
@@ -1789,6 +2342,9 @@ class WebSearchRequest(BaseModel):
     query: str = Field(..., min_length=1, max_length=500)
     context: Optional[Dict[str, Any]] = {}
     timeout: int = Field(default=300, ge=30, le=600)  # 5분 기본값
+    target_language: str = Field(default="ko", description="목표 언어 코드")
+    translate_results: bool = Field(default=True, description="검색 결과 번역 여부")
+    translate_content: bool = Field(default=True, description="웹 페이지 콘텐츠 번역 여부")
 
 class WebSearchResponse(BaseModel):
     search_id: str
@@ -1802,6 +2358,67 @@ class WebSearchResponse(BaseModel):
 class TrainingDataRequest(BaseModel):
     site_feedback: Optional[Dict[str, Dict[str, Any]]] = None
     search_patterns: Optional[List[Dict[str, Any]]] = None
+
+class SearchEngineConfig(BaseModel):
+    enabled: bool
+    api_key: Optional[str] = None
+    cse_id: Optional[str] = None  # For Google
+    client_id: Optional[str] = None  # For Naver
+    client_secret: Optional[str] = None  # For Naver
+
+class CrawlerSettingsUpdate(BaseModel):
+    search_engines: Optional[Dict[str, Dict[str, Any]]] = None
+    crawler_settings: Optional[Dict[str, Any]] = None
+    ai_search_settings: Optional[Dict[str, Any]] = None
+    translation_settings: Optional[Dict[str, Any]] = None
+
+# Settings management
+SETTINGS_FILE = Path(__file__).parent / "settings" / "crawler_settings.json"
+
+def load_crawler_settings():
+    """Load crawler settings from file with defaults"""
+    if SETTINGS_FILE.exists():
+        with open(SETTINGS_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    
+    # 기본 설정 반환
+    return {
+        "search_engines": {
+            "google": {"enabled": False, "api_key": "", "cse_id": ""},
+            "naver": {"enabled": False, "client_id": "", "client_secret": ""},
+            "duckduckgo": {"enabled": True},
+            "bing": {"enabled": False, "api_key": ""},
+            "serper": {"enabled": False, "api_key": ""},
+            "serpapi": {"enabled": False, "api_key": ""},
+            "github": {"enabled": False, "api_key": ""},
+            "huggingface": {"enabled": True},
+            "kaggle": {"enabled": False, "api_key": ""},
+            "arxiv": {"enabled": True},
+            "paperswithcode": {"enabled": True},
+            "dockerhub": {"enabled": True}
+        },
+        "crawler_settings": {
+            "max_concurrent_requests": 5,
+            "request_timeout": 30,
+            "cache_ttl": 86400
+        },
+        "ai_search_settings": {
+            "auto_search_enabled": True,
+            "quality_threshold": 0.7,
+            "max_iterations": 3
+        },
+        "translation_settings": {
+            "enabled": True,
+            "default_target_language": "ko",
+            "auto_translate": True
+        }
+    }
+
+def save_crawler_settings(settings):
+    """Save crawler settings to file"""
+    SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with open(SETTINGS_FILE, 'w', encoding='utf-8') as f:
+        json.dump(settings, f, indent=2, ensure_ascii=False)
 
 @crawler_router.on_event("startup")
 async def startup():
@@ -1820,10 +2437,32 @@ async def web_search(request: WebSearchRequest, background_tasks: BackgroundTask
     """웹 검색 API"""
     
     try:
+        # 번역 옵션을 context에 추가
+        context = request.context or {}
+        context["translation"] = {
+            "enabled": request.translate_results or request.translate_content,
+            "target_language": request.target_language,
+            "translate_results": request.translate_results,
+            "translate_content": request.translate_content
+        }
+        
         result = await web_crawler_system.execute_search(
             request.query,
-            request.context
+            context,
+            target_language=request.target_language,
+            translate_results=request.translate_results,
+            translate_content=request.translate_content
         )
+        
+        # 검색 통계 기록
+        await record_search({
+            "query": request.query,
+            "engine": "ai_multi",  # AI가 여러 엔진을 사용
+            "results_count": len(result.get("results", {})),
+            "quality_score": result.get("quality_score", 0),
+            "context": str(context),
+            "ai_reasoning": "WebCrawlerAgentSystem multi-engine search"
+        })
         
         return WebSearchResponse(**result)
         
@@ -1831,10 +2470,166 @@ async def web_search(request: WebSearchRequest, background_tasks: BackgroundTask
         logger.error(f"Web search error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
+@crawler_router.get("/settings")
+async def get_crawler_settings():
+    """Get current crawler settings with API key masking"""
+    settings = load_crawler_settings()
+    
+    # API 키 마스킹 (보안)
+    if "search_engines" in settings:
+        search_engines = settings["search_engines"].copy()
+        for engine, config in search_engines.items():
+            if "api_key" in config and config["api_key"]:
+                # API 키의 처음 4자와 마지막 4자만 표시
+                key = config["api_key"]
+                if len(key) > 8:
+                    config["api_key"] = f"{key[:4]}...{key[-4:]}"
+                else:
+                    config["api_key"] = "****"
+            if "client_secret" in config and config["client_secret"]:
+                secret = config["client_secret"]
+                if len(secret) > 8:
+                    config["client_secret"] = f"{secret[:4]}...{secret[-4:]}"
+                else:
+                    config["client_secret"] = "****"
+        settings["search_engines"] = search_engines
+    
+    return settings
+
+@crawler_router.put("/settings")
+async def update_crawler_settings(settings_update: CrawlerSettingsUpdate):
+    """Update crawler settings with API key preservation"""
+    try:
+        current_settings = load_crawler_settings()
+        
+        # API 키가 마스킹된 경우 기존 키 유지
+        if settings_update.search_engines is not None:
+            for engine, config in settings_update.search_engines.items():
+                if engine in current_settings.get("search_engines", {}):
+                    existing_config = current_settings["search_engines"][engine]
+                    # API 키가 마스킹되어 있으면 기존 키 사용
+                    if "api_key" in config and "..." in config.get("api_key", ""):
+                        config["api_key"] = existing_config.get("api_key", "")
+                    if "client_secret" in config and "..." in config.get("client_secret", ""):
+                        config["client_secret"] = existing_config.get("client_secret", "")
+                    if "cse_id" in config and "..." in config.get("cse_id", ""):
+                        config["cse_id"] = existing_config.get("cse_id", "")
+        
+        # Update only provided fields
+        if settings_update.search_engines is not None:
+            current_settings["search_engines"] = settings_update.search_engines
+        if settings_update.crawler_settings is not None:
+            current_settings["crawler_settings"] = settings_update.crawler_settings
+        if settings_update.ai_search_settings is not None:
+            current_settings["ai_search_settings"] = settings_update.ai_search_settings
+        if settings_update.translation_settings is not None:
+            current_settings["translation_settings"] = settings_update.translation_settings
+        
+        save_crawler_settings(current_settings)
+        
+        # Apply API keys from settings
+        global GOOGLE_API_KEY, GOOGLE_CSE_ID
+        if "search_engines" in current_settings:
+            google_config = current_settings["search_engines"].get("google", {})
+            if google_config.get("api_key"):
+                GOOGLE_API_KEY = google_config["api_key"]
+            if google_config.get("cse_id"):
+                GOOGLE_CSE_ID = google_config["cse_id"]
+        
+        # Update API client instances with new credentials
+        if web_crawler_system and web_crawler_system.crawler_engine:
+            api_clients = web_crawler_system.crawler_engine.api_clients
+            
+            # Update Google API client
+            if "google" in api_clients and "search_engines" in current_settings:
+                google_config = current_settings["search_engines"].get("google", {})
+                if google_config.get("api_key") and google_config.get("cse_id"):
+                    api_clients["google"].update_credentials(
+                        google_config["api_key"], 
+                        google_config["cse_id"]
+                    )
+            
+        
+        logger.info("Crawler settings updated successfully")
+        return {"status": "success", "settings": current_settings}
+    except Exception as e:
+        logger.error(f"Failed to update crawler settings: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@crawler_router.put("/settings/search-engine/{engine_id}")
+async def update_search_engine_config(engine_id: str, config: SearchEngineConfig):
+    """Update specific search engine configuration"""
+    try:
+        settings = load_crawler_settings()
+        
+        if "search_engines" not in settings:
+            settings["search_engines"] = {}
+        
+        if engine_id not in settings["search_engines"]:
+            return {"error": f"Unknown search engine: {engine_id}"}
+        
+        # Update the specific engine config
+        settings["search_engines"][engine_id].update(config.dict(exclude_none=True))
+        
+        save_crawler_settings(settings)
+        
+        # Apply changes if it's Google
+        if engine_id == "google":
+            global GOOGLE_API_KEY, GOOGLE_CSE_ID
+            if config.api_key:
+                GOOGLE_API_KEY = config.api_key
+            if config.cse_id:
+                GOOGLE_CSE_ID = config.cse_id
+        
+        return {"status": "success", "engine": engine_id, "config": settings["search_engines"][engine_id]}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @crawler_router.get("/quota")
 async def get_api_quota():
-    """API 할당량 조회"""
-    return await web_crawler_system.get_quota_status()
+    """API 할당량 조회 - includes all configured search engines"""
+    settings = load_crawler_settings()
+    stats = load_search_stats()
+    quota_status = {}
+    
+    # 오늘 사용량 가져오기
+    today_usage = stats.get("searches_today_by_engine", {})
+    
+    # Get quota for each enabled search engine
+    if "search_engines" in settings:
+        for engine_id, engine_config in settings["search_engines"].items():
+            if engine_config.get("enabled", False):
+                # 기본 한도 설정
+                daily_limits = {
+                    "google": 100,  # Google Custom Search API 무료 한도
+                    "newsapi": 500,  # News API 무료 한도
+                    "naver": 25000,  # Naver API 일일 한도
+                    "bing": 1000,  # Bing API 예상 한도
+                }
+                
+                limit = engine_config.get("daily_limit", daily_limits.get(engine_id, -1))
+                used = today_usage.get(engine_id, 0)
+                
+                quota_status[engine_id] = {
+                    "used": used,
+                    "limit": limit,
+                    "remaining": max(0, limit - used) if limit > 0 else -1,
+                    "percentage_used": (used / limit * 100) if limit > 0 else 0
+                }
+    
+    # WebCrawlerAgentSystem의 quota manager에서도 정보 가져오기
+    if web_crawler_system:
+        system_quota = await web_crawler_system.get_quota_status()
+        # 시스템 할당량 정보와 병합
+        for engine, status in system_quota.items():
+            if engine in quota_status:
+                # 더 높은 사용량 사용 (둘 중 정확한 것)
+                quota_status[engine]["used"] = max(
+                    quota_status[engine]["used"],
+                    status["used"]
+                )
+    
+    return quota_status
 
 @crawler_router.post("/train")
 async def train_crawler(training_data: TrainingDataRequest):
@@ -1895,36 +2690,141 @@ async def clear_cache():
         "message": "Cache cleared successfully"
     }
 
-# 파일 끝부분의 전역 인스턴스 생성 수정
-# ===== API 엔드포인트 =====
+# Search statistics tracking
+SEARCH_STATS_FILE = CRAWLER_DATA_PATH / "search_stats.json"
 
-from fastapi import APIRouter, HTTPException, BackgroundTasks
-from pydantic import BaseModel, Field
+def load_search_stats():
+    """Load search statistics from file"""
+    if SEARCH_STATS_FILE.exists():
+        with open(SEARCH_STATS_FILE, 'r', encoding='utf-8') as f:
+            stats = json.load(f)
+            
+        # 오늘 날짜 체크 및 초기화
+        today = datetime.now().date().isoformat()
+        if "last_reset_date" not in stats or stats["last_reset_date"] != today:
+            # 새로운 날이면 오늘 통계 초기화
+            stats["searches_today_by_engine"] = {}
+            stats["last_reset_date"] = today
+            save_search_stats(stats)
+        return stats
+    else:
+        return {
+            "total_searches": 0,
+            "searches_by_engine": {},
+            "searches_today_by_engine": {},
+            "recent_searches": [],
+            "last_reset_date": datetime.now().date().isoformat()
+        }
 
-crawler_router = APIRouter(prefix="/api/crawler", tags=["web_crawler"])
+def save_search_stats(stats):
+    """Save search statistics to file"""
+    SEARCH_STATS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with open(SEARCH_STATS_FILE, 'w', encoding='utf-8') as f:
+        json.dump(stats, f, indent=2, ensure_ascii=False)
 
-# 전역 인스턴스 (초기화는 startup에서)
-web_crawler_system = None
+@crawler_router.get("/stats")
+async def get_search_engine_stats():
+    """Get search engine usage statistics"""
+    try:
+        return load_search_stats()
+    except Exception as e:
+        logger.error(f"Failed to get search stats: {e}")
+        return {
+            "total_searches": 0,
+            "searches_by_engine": {},
+            "searches_today_by_engine": {},
+            "recent_searches": []
+        }
 
-# 설정 검증
-if not GOOGLE_API_KEY:
-    logger.warning("GOOGLE_API_KEY not set - Google search will not work")
-if not NEWS_API_KEY:
-    logger.warning("NEWS_API_KEY not set - News search will not work")
+@crawler_router.post("/stats/record")
+async def record_search(search_data: Dict[str, Any]):
+    """Record search statistics"""
+    try:
+        stats = load_search_stats()
+        
+        # 통계 업데이트
+        engine = search_data.get("engine")
+        if engine:
+            stats["total_searches"] += 1
+            stats["searches_by_engine"][engine] = stats["searches_by_engine"].get(engine, 0) + 1
+            stats["searches_today_by_engine"][engine] = stats["searches_today_by_engine"].get(engine, 0) + 1
+        
+        # 최근 검색에 추가 (최대 50개 유지)
+        stats["recent_searches"].insert(0, {
+            "id": str(uuid.uuid4()),
+            "timestamp": datetime.now().isoformat(),
+            "query": search_data.get("query", ""),
+            "engine": engine,
+            "results_count": search_data.get("results_count", 0),
+            "ai_reasoning": search_data.get("ai_reasoning", ""),
+            "context": search_data.get("context", ""),
+            "quality_score": search_data.get("quality_score", 0)
+        })
+        
+        # 최근 검색을 50개로 제한
+        stats["recent_searches"] = stats["recent_searches"][:50]
+        
+        save_search_stats(stats)
+        return {"success": True}
+        
+    except Exception as e:
+        logger.error(f"Failed to record search: {e}")
+        return {"success": False, "error": str(e)}
 
-@crawler_router.on_event("startup")
-async def startup():
-    """시작 시 초기화"""
-    global web_crawler_system
+@crawler_router.get("/ai/activities")
+async def get_ai_search_activities(limit: int = 50):
+    """Get recent AI search activities"""
+    try:
+        stats = load_search_stats()
+        activities = stats.get("recent_searches", [])
+        
+        # limit 적용
+        activities = activities[:limit]
+        
+        return {
+            "activities": activities,
+            "total": len(activities)
+        }
+    except Exception as e:
+        logger.error(f"Failed to get AI activities: {e}")
+        return {
+            "activities": [],
+            "total": 0
+        }
+
+@crawler_router.get("/ai/status")
+async def get_ai_search_status():
+    """Get current AI search status"""
+    settings = load_crawler_settings()
+    ai_settings = settings.get("ai_search_settings", {})
+    stats = load_search_stats()
     
-    # 시스템 생성 및 초기화
-    web_crawler_system = WebCrawlerAgentSystem()
-    await web_crawler_system.initialize()
-    logger.info("Web crawler system initialized")
+    # 오늘 검색 횟수 계산
+    searches_today = sum(stats.get("searches_today_by_engine", {}).values())
+    
+    # 마지막 검색 시간
+    last_search_time = None
+    if stats.get("recent_searches"):
+        last_search_time = stats["recent_searches"][0].get("timestamp")
+    
+    # 현재 활성 검색 확인
+    current_analysis = None
+    if web_crawler_system and web_crawler_system.active_searches:
+        # 가장 최근 활성 검색
+        active_search_ids = list(web_crawler_system.active_searches.keys())
+        if active_search_ids:
+            current_analysis = {
+                "search_id": active_search_ids[-1],
+                "status": "running"
+            }
+    
+    return {
+        "auto_search_enabled": ai_settings.get("auto_search_enabled", True),
+        "current_analysis": current_analysis,
+        "searches_today": searches_today,
+        "searches_this_session": stats.get("total_searches", 0),  # 전체 검색 수
+        "quality_threshold": ai_settings.get("quality_threshold", 0.7),
+        "last_search_time": last_search_time
+    }
 
-@crawler_router.on_event("shutdown")
-async def shutdown():
-    """종료 시 정리"""
-    if web_crawler_system:
-        await web_crawler_system.cleanup()
-    logger.info("Web crawler system shutdown")
+# 중복된 startup/shutdown 이벤트 핸들러 제거 (이미 위에 정의됨)
