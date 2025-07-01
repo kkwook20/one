@@ -1,0 +1,110 @@
+{
+  "timestamp": "2025-07-02T04:37:32.767841",
+  "total_tasks": 2,
+  "user_questions": [],
+  "tasks_by_status": {
+    "pending": [
+      {
+        "id": "discovery_20250702_043732",
+        "title": "pane oe cA an 7 CHD) heim tk - changed the native endpoints to use Request abies directly instead of",
+        "description": "Claude suggested: pane oe cA an 7 CHD) heim tk - changed the native endpoints to use Request abies directly instead of Body(",
+        "priority": 3,
+        "status": "pending",
+        "category": "discovery",
+        "created_at": "2025-07-02T04:37:32.754886",
+        "updated_at": "2025-07-02T04:37:32.754886",
+        "claude_conversations": 0,
+        "user_questions": [],
+        "implementation_attempts": 0,
+        "has_errors": false
+      },
+      {
+        "id": "implementation_20250702_043732",
+        "title": "Missing file: package.json",
+        "description": "Expected file package.json not found",
+        "priority": 2,
+        "status": "pending",
+        "category": "implementation",
+        "created_at": "2025-07-02T04:37:32.755889",
+        "updated_at": "2025-07-02T04:37:32.755889",
+        "claude_conversations": 0,
+        "user_questions": [],
+        "implementation_attempts": 0,
+        "has_errors": false
+      }
+    ],
+    "in_progress": [],
+    "waiting_user": [],
+    "waiting_claude": [],
+    "completed": [],
+    "failed": [],
+    "blocked": []
+  },
+  "tasks_by_priority": {
+    "1": [],
+    "2": [
+      {
+        "id": "implementation_20250702_043732",
+        "title": "Missing file: package.json",
+        "description": "Expected file package.json not found",
+        "priority": 2,
+        "status": "pending",
+        "category": "implementation",
+        "created_at": "2025-07-02T04:37:32.755889",
+        "updated_at": "2025-07-02T04:37:32.755889",
+        "claude_conversations": 0,
+        "user_questions": [],
+        "implementation_attempts": 0,
+        "has_errors": false
+      }
+    ],
+    "3": [
+      {
+        "id": "discovery_20250702_043732",
+        "title": "pane oe cA an 7 CHD) heim tk - changed the native endpoints to use Request abies directly instead of",
+        "description": "Claude suggested: pane oe cA an 7 CHD) heim tk - changed the native endpoints to use Request abies directly instead of Body(",
+        "priority": 3,
+        "status": "pending",
+        "category": "discovery",
+        "created_at": "2025-07-02T04:37:32.754886",
+        "updated_at": "2025-07-02T04:37:32.754886",
+        "claude_conversations": 0,
+        "user_questions": [],
+        "implementation_attempts": 0,
+        "has_errors": false
+      }
+    ],
+    "4": [],
+    "5": []
+  },
+  "recent_tasks": [
+    {
+      "id": "implementation_20250702_043732",
+      "title": "Missing file: package.json",
+      "description": "Expected file package.json not found",
+      "priority": 2,
+      "status": "pending",
+      "category": "implementation",
+      "created_at": "2025-07-02T04:37:32.755889",
+      "updated_at": "2025-07-02T04:37:32.755889",
+      "claude_conversations": 0,
+      "user_questions": [],
+      "implementation_attempts": 0,
+      "has_errors": false
+    },
+    {
+      "id": "discovery_20250702_043732",
+      "title": "pane oe cA an 7 CHD) heim tk - changed the native endpoints to use Request abies directly instead of",
+      "description": "Claude suggested: pane oe cA an 7 CHD) heim tk - changed the native endpoints to use Request abies directly instead of Body(",
+      "priority": 3,
+      "status": "pending",
+      "category": "discovery",
+      "created_at": "2025-07-02T04:37:32.754886",
+      "updated_at": "2025-07-02T04:37:32.754886",
+      "claude_conversations": 0,
+      "user_questions": [],
+      "implementation_attempts": 0,
+      "has_errors": false
+    }
+  ]
+}
