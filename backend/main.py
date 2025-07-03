@@ -34,10 +34,10 @@ logging.basicConfig(
     force=True  # uvicorn의 기본 설정을 덮어쓰기
 )
 
-# argosa 모듈 로깅 레벨 설정
-logging.getLogger('routers.argosa').setLevel(logging.DEBUG)
-logging.getLogger('routers.argosa.data_collection').setLevel(logging.DEBUG)
-logging.getLogger('routers.argosa.shared.firefox_manager').setLevel(logging.DEBUG)
+# DISABLED: argosa logging for ONE AI focus
+# logging.getLogger('routers.argosa').setLevel(logging.DEBUG)
+# logging.getLogger('routers.argosa.data_collection').setLevel(logging.DEBUG)
+# logging.getLogger('routers.argosa.shared.firefox_manager').setLevel(logging.DEBUG)
 
 # uvicorn과 FastAPI 로깅 활성화
 logging.getLogger('uvicorn').setLevel(logging.DEBUG)
@@ -49,12 +49,11 @@ logging.getLogger('fastapi').setLevel(logging.DEBUG)
 from storage import ensure_directories
 
 # Router imports
-from routers import oneai, neuronet, projects
-from routers.argosa import router as argosa_router
-# search_settings_simple removed - functionality integrated into web_crawler_agent
-
-# argosa의 initialize와 shutdown 함수는 __init__.py에서 export되었으므로 같이 import
-from routers.argosa import initialize as argosa_initialize, shutdown as argosa_shutdown
+from routers import oneai, projects
+# DISABLED: neuronet and argosa for ONE AI focus
+# from routers import neuronet
+# from routers.argosa import router as argosa_router
+# from routers.argosa import initialize as argosa_initialize, shutdown as argosa_shutdown
 
 # 전역 변수
 shutdown_event = asyncio.Event()
@@ -112,9 +111,9 @@ async def log_requests(request: Request, call_next):
     logger = logging.getLogger("http_requests")
     logger.info(f"🔥 HTTP {request.method} {request.url.path} - Headers: {dict(request.headers)}")
     
-    # argosa API 호출에 대해서는 더 자세한 로깅
-    if "/api/argosa/" in str(request.url.path):
-        logger.info(f"🎯 ARGOSA API CALL: {request.method} {request.url.path}")
+    # ONE AI API 호출에 대해서는 더 자세한 로깅
+    if "/api/oneai/" in str(request.url.path):
+        logger.info(f"🎯 ONE AI API CALL: {request.method} {request.url.path}")
         if request.method in ["POST", "PUT", "PATCH"]:
             # 요청 body도 로깅 (너무 크지 않은 경우)
             try:
@@ -166,13 +165,12 @@ async def general_exception_handler(request: Request, exc: Exception):
 
 # Removed override - will fix in the actual endpoint
 
-# Include routers
+# Include routers - ONE AI focus
 app.include_router(oneai.router, prefix="/api/oneai", tags=["One AI"])
-app.include_router(argosa_router)  # prefix와 tags는 argosa_router 내부에서 이미 설정됨
-app.include_router(neuronet.router, prefix="/api/neuronet", tags=["NeuroNet"])
 app.include_router(projects.router, prefix="/projects", tags=["Projects"])
-# Search settings are now handled by web_crawler_agent in argosa router
-print(f"[DEBUG] Argosa router paths: {[r.path for r in argosa_router.routes]}", flush=True)
+# DISABLED: argosa and neuronet routers
+# app.include_router(argosa_router)
+# app.include_router(neuronet.router, prefix="/api/neuronet", tags=["NeuroNet"])
 
 # Debug endpoint to list all routes
 @app.get("/debug/routes")
@@ -192,13 +190,14 @@ async def list_routes():
 async def root():
     print("[API] Root endpoint called", flush=True)
     return {
-        "message": "3D Animation Automation System API",
+        "message": "ONE AI System API",
         "systems": {
-            "oneai": "AI Production Pipeline",
-            "argosa": "Information Analysis & Prediction",
-            "neuronet": "AI Training Automation"
+            "oneai": "AI Production Pipeline (Active)",
+            "argosa": "Information Analysis & Prediction (Disabled)",
+            "neuronet": "AI Training Automation (Disabled)"
         },
-        "version": "1.0.0"
+        "version": "1.0.0",
+        "focus": "ONE AI Development Mode"
     }
 
 # Health check endpoint
@@ -209,95 +208,18 @@ async def health_check():
         "status": "healthy",
         "systems": {
             "oneai": "operational",
-            "argosa": "operational",
-            "neuronet": "development"
-        }
+            "argosa": "disabled",
+            "neuronet": "disabled"
+        },
+        "mode": "ONE AI Focus"
     }
 
-# Search engine settings endpoints are now handled by web_crawler_agent
-# Available at:
-# GET  /api/argosa/data/settings
-# PUT  /api/argosa/data/settings
-# GET  /api/argosa/data/stats
-# POST /api/argosa/data/stats/record
+# DISABLED: Search engine settings endpoints (part of Argosa system)
+# To re-enable, uncomment argosa router imports
 
-# ======================== LLM Query Settings - Direct Implementation ========================
-
-@app.get("/api/argosa/data/llm/query/settings")
-async def get_llm_query_settings_direct():
-    """LLM Query 설정 가져오기 - 직접 구현"""
-    import json
-    from pathlib import Path
-    try:
-        backend_path = Path(__file__).parent
-        settings_path = backend_path / "routers" / "argosa" / "collection" / "settings" / "llm_query_settings.json"
-        
-        if settings_path.exists():
-            with open(settings_path, 'r', encoding='utf-8') as f:
-                settings = json.load(f)
-            return settings
-        else:
-            # 기본 설정 반환
-            default_settings = {
-                "auto_query_enabled": True,
-                "max_queries_per_analysis": 5,
-                "allowed_providers": ["chatgpt", "claude", "gemini"],
-                "query_timeout": 30,
-                "firefox_visible": True
-            }
-            return default_settings
-    except Exception as e:
-        print(f"❌ Failed to get LLM query settings: {e}", flush=True)
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.put("/api/argosa/data/llm/query/settings")
-async def update_llm_query_settings_direct(settings: dict):
-    """LLM Query 설정 업데이트 - 직접 구현"""
-    import json
-    from pathlib import Path
-    try:
-        backend_path = Path(__file__).parent
-        settings_path = backend_path / "routers" / "argosa" / "collection" / "settings" / "llm_query_settings.json"
-        
-        # 디렉토리 생성
-        settings_path.parent.mkdir(parents=True, exist_ok=True)
-        
-        # 저장
-        with open(settings_path, 'w', encoding='utf-8') as f:
-            json.dump(settings, f, indent=2, ensure_ascii=False)
-            
-        print(f"✅ LLM query settings updated: {settings}", flush=True)
-        return settings
-        
-    except Exception as e:
-        print(f"❌ Failed to update LLM query settings: {e}", flush=True)
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/api/argosa/data/llm/query/activities")
-async def get_llm_query_activities_direct():
-    """LLM Query 활동 내역 가져오기 - 직접 구현"""
-    return {"activities": []}
-
-@app.get("/api/argosa/data/llm/query/analysis/status")
-async def get_llm_analysis_status_direct():
-    """LLM 분석 상태 가져오기 - 직접 구현"""
-    return {
-        "current_analysis": None,
-        "queries_sent": 0,
-        "queries_completed": 0,
-        "last_query_time": None,
-        "analysis_progress": 0
-    }
-
-@app.get("/api/argosa/data/llm/query/stats")
-async def get_llm_query_stats_direct():
-    """LLM Query 통계 가져오기 - 직접 구현"""
-    return {}
-
-@app.delete("/api/argosa/data/llm/query/activities/clear")
-async def clear_llm_query_activities_direct():
-    """완료된 LLM Query 활동 내역 삭제 - 직접 구현"""
-    return {"success": True}
+# DISABLED: LLM Query endpoints for Argosa
+# These endpoints are disabled in ONE AI focus mode
+# To re-enable, uncomment this section and the argosa router imports
 
 @app.websocket("/ws/{client_id}")
 async def websocket_endpoint(websocket: WebSocket, client_id: str):
@@ -394,70 +316,11 @@ async def startup_event():
             print(f"[Startup] Traceback: {traceback.format_exc()}", flush=True)
             # One AI는 선택적이므로 계속 진행
         
-        # Initialize Argosa system
-        print("[Startup] Initializing Argosa system...", flush=True)
-        try:
-            await argosa_initialize()
-            print("[Startup] Argosa initialized successfully", flush=True)
-            
-            # Argosa 초기화 후 LLM tracker와 conversation_saver 연결
-            try:
-                from routers.argosa.shared.llm_tracker import llm_tracker
-                from routers.argosa.shared.conversation_saver import conversation_saver
-                
-                conversation_saver.set_llm_tracker(llm_tracker)
-                print("[Startup] LLM tracker registered with conversation_saver", flush=True)
-                
-                # LLM tracker 통계 출력
-                stats = await llm_tracker.get_stats()
-                print(f"[Startup] LLM tracker stats: {stats['total_tracked']} tracked conversations", flush=True)
-                
-            except ImportError as e:
-                print(f"[Startup] Warning: Could not setup LLM tracker integration: {e}", flush=True)
-                # LLM tracker는 선택적이므로 계속 진행
-            except Exception as e:
-                print(f"[Startup] Error setting up LLM tracker: {e}", flush=True)
-                print(f"[Startup] Traceback: {traceback.format_exc()}", flush=True)
-            
-            # Firefox Manager 초기화
-            try:
-                from routers.argosa.shared.firefox_manager import get_firefox_manager
-                
-                firefox_manager = get_firefox_manager()
-                if await firefox_manager.initialize():
-                    print("[Startup] Firefox Manager initialized successfully", flush=True)
-                    
-                    # Firefox 상태 확인
-                    info = await firefox_manager.get_info()
-                    print(f"[Startup] Firefox Manager status: {info.get('status')}", flush=True)
-                    print(f"[Startup] Firefox running: {info.get('is_running')}", flush=True)
-                    if info.get('pid'):
-                        print(f"[Startup] Firefox PID: {info.get('pid')}", flush=True)
-                else:
-                    print("[Startup] Firefox Manager initialization failed", flush=True)
-                    
-            except ImportError as e:
-                print(f"[Startup] Warning: Could not setup Firefox Manager: {e}", flush=True)
-                # Firefox Manager는 선택적이므로 계속 진행
-            except Exception as e:
-                print(f"[Startup] Error setting up Firefox Manager: {e}", flush=True)
-                print(f"[Startup] Traceback: {traceback.format_exc()}", flush=True)
-            
-        except Exception as e:
-            print(f"[Startup] Argosa initialization error: {e}", flush=True)
-            print(f"[Startup] Traceback: {traceback.format_exc()}", flush=True)
-            # Argosa는 필수이므로 실패 시 종료
-            raise
+        # DISABLED: Argosa system initialization
+        # print("[Startup] Argosa system disabled in ONE AI focus mode")
         
-        # Initialize NeuroNet system
-        print("[Startup] Initializing NeuroNet system...", flush=True)
-        try:
-            await neuronet.initialize()
-            print("[Startup] NeuroNet initialized successfully", flush=True)
-        except Exception as e:
-            print(f"[Startup] NeuroNet initialization error: {e}", flush=True)
-            print(f"[Startup] Traceback: {traceback.format_exc()}", flush=True)
-            # NeuroNet은 개발 중이므로 계속 진행
+        # DISABLED: NeuroNet system initialization
+        # print("[Startup] NeuroNet system disabled in ONE AI focus mode")
         
         print("[Startup] All systems initialization completed", flush=True)
         
@@ -525,50 +388,14 @@ async def shutdown_handler():
             except Exception as e:
                 print(f"[Shutdown] OneAI error: {e}", flush=True)
         
-        # Argosa shutdown with LLM tracker and Firefox cleanup
-        async def quick_argosa_shutdown():
-            try:
-                print("[Shutdown] Shutting down Argosa...", flush=True)
-                
-                # Firefox Manager cleanup
-                try:
-                    from routers.argosa.shared.firefox_manager import get_firefox_manager
-                    firefox_manager = get_firefox_manager()
-                    await firefox_manager.cleanup()
-                    print("[Shutdown] Firefox Manager cleaned up", flush=True)
-                except Exception as e:
-                    print(f"[Shutdown] Firefox cleanup error: {e}", flush=True)
-                
-                # LLM tracker 상태 저장 (옵션)
-                try:
-                    from routers.argosa.shared.llm_tracker import llm_tracker
-                    await llm_tracker._save_state()
-                    print("[Shutdown] LLM tracker state saved", flush=True)
-                except:
-                    pass  # 실패해도 계속 진행
-                
-                await asyncio.wait_for(argosa_shutdown(), timeout=1.0)
-                print("[Shutdown] Argosa shutdown completed", flush=True)
-            except asyncio.TimeoutError:
-                print("[Shutdown] Argosa shutdown timeout", flush=True)
-            except Exception as e:
-                print(f"[Shutdown] Argosa error: {e}", flush=True)
+        # DISABLED: Argosa and NeuroNet shutdown
+        # These systems are disabled in ONE AI focus mode
         
-        # NeuroNet shutdown
-        async def quick_neuronet_shutdown():
-            try:
-                print("[Shutdown] Shutting down NeuroNet...", flush=True)
-                await asyncio.wait_for(neuronet.shutdown(), timeout=1.0)
-                print("[Shutdown] NeuroNet shutdown completed", flush=True)
-            except asyncio.TimeoutError:
-                print("[Shutdown] NeuroNet shutdown timeout", flush=True)
-            except Exception as e:
-                print(f"[Shutdown] NeuroNet error: {e}", flush=True)
-        
-        # 각 시스템 shutdown task 생성
+        # 각 시스템 shutdown task 생성 - ONE AI only
         shutdown_tasks.append(asyncio.create_task(quick_oneai_shutdown()))
-        shutdown_tasks.append(asyncio.create_task(quick_argosa_shutdown()))
-        shutdown_tasks.append(asyncio.create_task(quick_neuronet_shutdown()))
+        # DISABLED: Argosa and NeuroNet shutdown tasks
+        # shutdown_tasks.append(asyncio.create_task(quick_argosa_shutdown()))
+        # shutdown_tasks.append(asyncio.create_task(quick_neuronet_shutdown()))
         
         # 모든 shutdown 동시 실행 (최대 3초 대기)
         await asyncio.wait_for(
@@ -604,21 +431,11 @@ async def debug_routes():
 
 # Removed duplicate endpoint
 
-@app.get("/debug/llm-tracker")
-async def debug_llm_tracker():
-    """LLM tracker 상태 확인"""
-    try:
-        from routers.argosa.shared.llm_tracker import llm_tracker
-        stats = await llm_tracker.get_stats()
-        return {
-            "status": "operational",
-            "stats": stats
-        }
-    except Exception as e:
-        return {
-            "status": "error",
-            "error": str(e)
-        }
+# DISABLED: Debug endpoints for Argosa
+# @app.get("/debug/llm-tracker")
+# async def debug_llm_tracker():
+#     """LLM tracker 상태 확인"""
+#     return {"status": "disabled", "message": "Argosa system disabled in ONE AI focus mode"}
 
 if __name__ == "__main__":
     import uvicorn

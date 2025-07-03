@@ -6,437 +6,302 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **YOU ARE RUNNING IN WSL (Windows Subsystem for Linux) ENVIRONMENT!**
 
-### 🔄 AUTO-CHECK ENVIRONMENT ON STARTUP
-
-**IMPORTANT**: When you start working on this project, ALWAYS run the environment check first:
-```bash
-./check_env.sh
-```
-This will show you the current environment status and server connectivity.
-
 ### 📍 Environment Details:
 
-- **Current Directory**: `/mnt/f/ONE_AI` (This is Windows F: drive mounted in WSL)
-- **Environment**: Ubuntu on WSL2 (NOT native Windows, NOT native Linux)
+- **Current Directory**: `/mnt/f/ONE_AI` (Windows F: drive mounted in WSL)
+- **Environment**: Ubuntu on WSL2
 - **Python Path**: `/usr/bin/python3` (symlinked to `python`)
-- **Important Paths**:
-  - Windows Path: `F:\ONE_AI`
-  - WSL Path: `/mnt/f/ONE_AI`
-  - Backend Server: Runs in **Windows** (NOT WSL) via `One.bat`
-  - Frontend: Runs in **Windows** (NOT WSL)
+- **Backend Server**: Runs in **Windows** via `One.bat` on port 8000
+- **Frontend**: Runs in **Windows** on port 3000
+- **Node.js**: Required for frontend development
 
-### ⚠️ CRITICAL RULES FOR WSL ENVIRONMENT:
+### ⚠️ CRITICAL WSL RULES:
 
-1. **DO NOT start servers in WSL** - They are already running in Windows!
-2. **DO NOT use Windows paths** (like `F:\` or `C:\`) - Use `/mnt/f/` or `/mnt/c/`
-3. **File operations use Linux commands** (ls, cat, grep, etc.)
-4. **Network requests to localhost:8000** work because WSL shares network with Windows
-5. **Use `python` or `python3`** for Python commands (both work now)
-6. **ALWAYS run `./check_env.sh` when starting a new session**
-7. **ALWAYS check backend logs** - Detailed logs are available at `./logs/backend_detailed.log`
+1. **DO NOT start servers in WSL** - They run in Windows via One.bat
+2. **Use WSL paths** (`/mnt/f/`) not Windows paths (`F:\`)
+3. **Check logs at**: `/mnt/f/ONE_AI/backend/logs/backend_detailed.log`
+4. **WSL2 network**: Use Windows host IP for API calls (get via `cat /etc/resolv.conf | grep nameserver`)
 
-### 🌐 WSL Network Configuration:
+## Project Overview: ONE AI System
 
-**IMPORTANT**: WSL2 uses a dynamic IP address for the Windows host. When accessing services running on Windows from WSL:
+**ONE AI** is an AI-powered 3D animation production pipeline system that automates and manages the entire animation workflow through visual node-based programming.
 
-- **Backend API (port 8000)**: Use the Windows host IP instead of localhost
-- **Frontend (port 3000)**: Use the Windows host IP instead of localhost
-- **To get the Windows host IP**: 
-  ```bash
-  # Method 1: From /etc/resolv.conf
-  cat /etc/resolv.conf | grep nameserver | awk '{print $2}'
-  
-  # Method 2: From IP route
-  ip route | grep default | awk '{print $3}'
-  ```
+### Current Focus Mode
 
-- **Example API calls from WSL**:
-  ```bash
-  # Replace 172.31.64.1 with your actual Windows host IP
-  curl http://172.31.64.1:8000/api/argosa/data/system/state
-  curl http://172.31.64.1:3000  # Frontend
-  ```
+⚠️ **IMPORTANT**: The codebase is currently in **ONE AI Focus Mode**:
+- ✅ **ONE AI System**: Active development
+- ❌ **Argosa System**: Disabled (data analysis & collection features)
+- ❌ **NeuroNet System**: Disabled (neural network operations)
 
-- **The environment check script (`./check_env.sh`) automatically detects and uses the correct IP**
+To re-enable disabled systems, uncomment the relevant imports and router inclusions in `/backend/main.py`.
 
-## Current Focus: Argosa Data Analysis Module
+## ONE AI Architecture
 
-**Priority**: Working on `/backend/routers/argosa/data_analysis.py` - the AI agent and data analysis system.
+### Core Concept
 
-### Module Overview
+ONE AI uses a **visual node-based workflow** where users can:
+1. Drag and drop nodes to create production pipelines
+2. Connect nodes to define data flow
+3. Execute workflows with AI assistance
+4. Monitor progress in real-time
 
-The data_analysis.py module is the core of Argosa's AI-powered analysis system, featuring:
-- **AI Agent System**: Multiple specialized agents for different analysis tasks
-- **Workflow Management**: State-based workflow execution with LangGraph
-- **Real-time Analytics**: Live data processing and visualization
-- **Distributed AI**: Agent coordination and communication
-- **RAG Integration**: Context-aware analysis using vector database
+### Node Types
 
-### Key Components in data_analysis.py
+1. **Input Node** - Entry point for project data
+2. **Worker Node** - Executes AI-powered tasks with custom Python code
+3. **Supervisor Node** - Monitors and manages worker nodes
+4. **Planner Node** - Coordinates workflow execution
+5. **Output Node** - Collects and saves final results
 
-1. **Agent Types** (from analysis/configs.py):
-   - Data Analyst Agent
-   - Web Research Agent
-   - Code Generator Agent
-   - Report Writer Agent
-   - Trend Predictor Agent
-   - System Monitor Agent
+### Production Groups
 
-2. **Main Classes & Functions**:
-   - `DataAnalysisRouter` - Main router class with WebSocket support
-   - `AgentState` - State management for agent workflows
-   - `WorkflowState` - Workflow execution state
-   - Agent execution methods (analyze, research, generate, etc.)
-   - Real-time dashboard updates via WebSocket
+The system organizes animation production into three main groups:
 
-3. **Dependencies**:
-   - LangGraph for workflow orchestration
-   - Plotly for visualizations
-   - Pandas/NumPy for data processing
-   - httpx for external API calls
-   - RAG service for context retrieval
+1. **Pre-production**
+   - Script writing
+   - Character design
+   - Storyboarding
+   - Setting/environment planning
 
-### Development Commands
+2. **Post-production**
+   - 3D Modeling
+   - Rigging
+   - Texturing
+   - Animation
+   - VFX (Visual Effects)
+   - Lighting & Rendering
+   - Sound Design
+   - Compositing
 
-**⚠️ IMPORTANT: DO NOT start the Python server in WSL for testing!**
-The application is already running in a Windows environment. Starting another server instance in WSL will cause conflicts and errors.
+3. **Director**
+   - Overall direction
+   - Review and approval
 
+## Tech Stack
+
+### Backend
+- **FastAPI** (0.104.1) - Async web framework
+- **Uvicorn** (0.24.0) - ASGI server
+- **WebSockets** - Real-time communication
+- **Pydantic** - Data validation
+- **aiofiles** - Async file operations
+
+### Frontend
+- **React** (18.2.0) with TypeScript
+- **React Flow** - Node-based visual editor
+- **Tailwind CSS** - Styling
+- **shadcn/ui** - UI components (Radix UI based)
+- **Monaco Editor** - Code editor for worker nodes
+- **Framer Motion** - Animations
+- **Axios** - HTTP client
+
+### AI Integration
+- **LM Studio** - Local AI model hosting
+- Custom prompt engineering for each production stage
+- Streaming responses via WebSocket
+
+## Development Commands
+
+### Starting the Application
 ```bash
-# These commands are for reference only - DO NOT RUN in WSL:
-# cd backend
-# python -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload --no-access-log
+# Primary method (Windows Command Prompt/PowerShell):
+One.bat  # Starts both backend and frontend
 
-# To start the application properly, use One.bat in Windows Command Prompt/PowerShell
+# Backend reference (DO NOT RUN in WSL):
+cd backend
+python -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+
+# Frontend (if needed separately):
+cd frontend
+npm start
 ```
 
-### 📋 Backend Logging and Debugging
-
-**CRITICAL**: ALWAYS check backend logs when debugging issues!
-
-#### Log File Location:
+### Installing Dependencies
 ```bash
-# Detailed backend logs (recommended for debugging)
-tail -f ./logs/backend_detailed.log
+# After cloning or when dependencies are missing:
+install_all_dependencies.bat  # Run in Windows
 
-# View recent logs
-tail -100 ./logs/backend_detailed.log
+# Or manually:
+# Backend
+pip install -r requirements.txt
 
-# Search for specific errors
-grep -i "error\|exception\|failed" ./logs/backend_detailed.log | tail -20
-
-# Search for Firefox manager logs
-grep -i "firefox" ./logs/backend_detailed.log | tail -20
-
-# Search for extension connection logs
-grep -i "extension\|native" ./logs/backend_detailed.log | tail -20
+# Frontend
+cd frontend
+npm install --legacy-peer-deps
 ```
 
-#### Log Content Includes:
-- Firefox manager initialization and status
-- Native messaging communication
-- Extension connection events
-- API endpoint calls with detailed parameters
-- Error stack traces with file and line numbers
-- State management updates
+### Debugging
+```bash
+# View real-time logs:
+tail -f /mnt/f/ONE_AI/backend/logs/backend_detailed.log
 
-**When debugging Firefox extension issues, ALWAYS check the logs first!**
+# Search for errors:
+grep -i "error\|exception\|failed" /mnt/f/ONE_AI/backend/logs/backend_detailed.log | tail -20
 
-### Current Architecture
-
-```
-data_analysis.py
-├── Imports from analysis/ submodules
-│   ├── configs.py (AGENT_CONFIGS, WORKFLOW_PHASES)
-│   ├── prompts.py (AGENT_PROMPTS)
-│   ├── helpers.py (utility functions)
-│   └── distributed_ai.py (agent coordination)
-├── DataAnalysisRouter class
-│   ├── WebSocket endpoints (/ws/agent/{agent_id})
-│   ├── REST endpoints for agent management
-│   └── Workflow execution methods
-└── Integration with RAG service
+# ONE AI specific logs:
+grep -i "oneai\|lmstudio\|execute" /mnt/f/ONE_AI/backend/logs/backend_detailed.log | tail -20
 ```
 
-### Key API Endpoints
+## Key API Endpoints
 
-- `POST /api/argosa/data-analysis/agents` - Create new agent
-- `GET /api/argosa/data-analysis/agents` - List all agents
-- `POST /api/argosa/data-analysis/agents/{agent_id}/execute` - Execute agent task
-- `POST /api/argosa/data-analysis/workflows` - Create workflow
-- `GET /api/argosa/data-analysis/dashboard` - Get dashboard data
-- `WS /api/argosa/data-analysis/ws/agent/{agent_id}` - WebSocket connection
+### ONE AI Core
+- `GET /api/oneai/sections` - Get all workflow sections
+- `PUT /api/oneai/sections/{section_id}` - Update section (nodes, connections)
+- `POST /api/oneai/save` - Manual save workflow
+- `POST /api/oneai/sections/{section_id}/clear` - Clear section
 
-### Working with the Module
+### Execution
+- `POST /api/oneai/execute` - Execute single node
+- `POST /api/oneai/execute-flow` - Execute entire workflow
+- `GET /api/oneai/nodes` - Get all available node types
 
-1. **Adding New Agent Types**:
-   - Define in `analysis/configs.py` under `EnhancedAgentType`
-   - Add prompts in `analysis/prompts.py`
-   - Implement execution logic in data_analysis.py
+### LM Studio Integration
+- `POST /api/oneai/lmstudio/connect` - Connect to LM Studio
+- `GET /api/oneai/lmstudio/status` - Check connection status
+- `GET /api/oneai/lmstudio/models` - List available models
 
-2. **Modifying Workflows**:
-   - Update `WORKFLOW_PHASES` in configs.py
-   - Adjust state transitions in workflow methods
-   - Update validation in helpers.py
+### Project Management
+- `GET /api/oneai/projects` - List all projects
+- `POST /api/oneai/projects` - Create new project
+- `GET /api/oneai/projects/{project_id}/files` - Browse project files
+- `POST /api/oneai/upload` - Upload files to project
 
-3. **Testing Agents**:
-   ```python
-   # Test agent execution
-   curl -X POST http://localhost:8000/api/argosa/data-analysis/agents \
-     -H "Content-Type: application/json" \
-     -d '{"name": "Test Agent", "type": "data_analyst"}'
-   ```
+### WebSocket
+- `WS /api/oneai/ws/{client_id}` - Real-time updates for execution
 
-### Important Patterns
+## Data Storage
 
-1. **State Management**: All agents use StateGraph from LangGraph
-2. **Error Handling**: Comprehensive try-catch with specific error messages
-3. **Async Operations**: All I/O operations are async
-4. **WebSocket Updates**: Real-time updates for connected clients
-5. **RAG Integration**: Context retrieval for informed analysis
+### Workflow Data
+- Location: `/backend/data/oneai_sections_data.json`
+- Auto-saved every 10 minutes
+- Contains all nodes, connections, and metadata
 
-### Current Issues to Focus On
+### Project Structure
+```
+/projects/{project_name}/
+├── preproduction/
+│   ├── script/
+│   ├── character/
+│   ├── setting/
+│   └── plot/
+├── postproduction/
+│   ├── modeling/
+│   ├── rigging/
+│   ├── texture/
+│   ├── animation/
+│   ├── vfx/
+│   ├── lighting/
+│   ├── sound/
+│   └── compositing/
+├── direction/
+│   ├── reviews/
+│   └── approvals/
+├── outputs/
+├── temp/
+└── references/
+```
 
-1. Large file size (26k+ tokens) - consider splitting into smaller modules
-2. WebSocket connection management and cleanup
-3. Agent performance optimization
-4. Workflow state persistence
-5. Better error recovery mechanisms
+## Worker Node Code Environment
 
-### File Locations
+Worker nodes execute Python code with access to:
 
-- Main module: `/backend/routers/argosa/data_analysis.py`
-- Configs: `/backend/routers/argosa/analysis/configs.py`
-- Prompts: `/backend/routers/argosa/analysis/prompts.py`
-- Helpers: `/backend/routers/argosa/analysis/helpers.py`
-- Settings: `/backend/routers/argosa/analysis/settings/analysis_settings.json`
-
-### Testing
-
-**🚀 AUTOMATED TEST SYSTEM WITH FULL E2E BROWSER AUTOMATION**
-
-The test system now automatically:
-- ✅ Starts backend server in background (One.bat)
-- ✅ Starts frontend React app (npm start)
-- ✅ Runs browser automation tests with Selenium
-- ✅ Tests user scenarios (project creation, AI features, etc.)
-
+### Available Functions
 ```python
-# Primary testing interface for Claude Code - Simple one-line commands
-from test import run_test, test_now, check_status, test_everything
+# AI model interaction
+result = call_ai_model(prompt, format="text|json|list")
 
-# Full automated test (servers + browser E2E)
-test_everything()  # Starts servers automatically and runs all tests
+# File operations
+save_to_project(content, filename, subfolder="outputs")
+content = read_from_project(filename, subfolder="outputs")
+list_project_files(subfolder="outputs")
 
-# Run test with output (normal mode)
-run_test()
+# Progress tracking
+update_progress(percentage, message)
 
-# Run test silently in background (no windows)
-test_now()
+# Logging
+log_info(message)
+log_error(message)
+log_warning(message)
 
-# Check server and system status
-check_status()
-
-# Start servers only (backend + frontend)
-from test import start_servers
-start_servers()  # Starts both servers in background
-
-# Browser E2E tests
-from test import test_browser_only, test_browser_visible
-test_browser_only()     # Headless browser tests
-test_browser_visible()  # Shows browser window during test
-
-# Test specific components
-from test import test_llm_only, test_crawler_only, test_youtube_only
-test_llm_only()     # Test LLM conversation collection
-test_crawler_only() # Test web crawler
-test_youtube_only() # Test YouTube analysis
+# Access to connected node outputs
+connected_data = inputs.get('node_id')
 ```
 
-**🤖 NEW: Automatic Fix Commands**:
-```python
-# Test with automatic error fixing (recommended for Claude Code)
-from test import test_with_auto_fix
-test_with_auto_fix()  # Automatically retries with fixes when tests fail
+### Execution Context
+- Each node runs in isolation
+- Access to project directory
+- Connected to LM Studio for AI calls
+- Real-time output streaming
+- Error handling and logging
 
-# Get detailed error report with fix recommendations
-from test import get_error_report
-print(get_error_report())
+## Frontend Structure
 
-# View fix statistics and success rates
-from test import get_fix_statistics
-stats = get_fix_statistics()
-print(f"Success rate: {stats['success_rate']}%")
+### Main Components
+- `/frontend/src/components/TheOnePipeline.tsx` - Main visual editor
+- `/frontend/src/components/flow/CustomNode.tsx` - Node component
+- `/frontend/src/components/flow/CustomEdge.tsx` - Connection component
+- `/frontend/src/components/ui/` - Reusable UI components
 
-# Analyze error patterns
-from test import analyze_error_patterns
-patterns = analyze_error_patterns()
+### State Management
+- React Context for global state
+- Local state for node configurations
+- WebSocket for real-time updates
 
-# Self-check the test system
-from test import verify_test_system
-verify_test_system()  # Checks test system health
-```
+## Important Patterns
 
-**Advanced Testing Commands**:
-```python
-# Primary testing interface for error analysis
-from test.claude_code_tester import test_and_fix, verify_my_fix
+1. **Async Everything**: All I/O operations use async/await
+2. **WebSocket Updates**: Real-time progress and status
+3. **Auto-save**: Every 10 minutes + manual save option
+4. **Error Recovery**: Graceful handling with user feedback
+5. **Modular Nodes**: Each node type has specific responsibilities
 
-# After modifying code, run comprehensive test
-result = await test_and_fix(["backend/routers/argosa/data_analysis.py"])
-print(result)
+## Current Development Focus
 
-# After fixing issues, verify the solution
-result = await verify_my_fix(["fixed_file.py"])
-print(result)
+1. **Enhanced AI Integration**
+   - Better prompt templates for each production stage
+   - Support for multiple AI models
+   - Improved response parsing
 
-# Environment health check
-from test.claude_helper import environment_health
-await environment_health()
+2. **Workflow Features**
+   - Version control system (currently placeholder)
+   - Collaboration features
+   - Template library
 
-# Emergency test
-from test.claude_code_tester import emergency_test
-await emergency_test()
+3. **Performance**
+   - Optimize large workflow execution
+   - Better caching strategies
+   - Parallel node execution
 
-# Full system verification
-from test.claude_code_tester import comprehensive_check
-await comprehensive_check()
-```
+## Troubleshooting
 
-**Test System Features**:
-- ✅ Automatic Windows environment setup (One.bat management)
-- ✅ Real API testing with actual HTTP calls
-- ✅ WSL ↔ Windows bridge for authentic testing
-- ✅ Intelligent error analysis with specific fix suggestions
-- ✅ Data collection workflow testing (LLM, search, YouTube, etc.)
-- ✅ Local AI integration testing (Qwen2.5 VL 72B)
-- ✅ Firefox extension functionality testing
-- ✅ Headless browser testing (no GUI)
-- ✅ Background test execution with error collection
-- ✅ Test tool error tracking and analysis
-- 🆕 **Automatic Fix System**: Learns from failures and applies fixes automatically
-- 🆕 **Self-Learning**: Successful fixes are saved and reused
-- 🆕 **Detailed Logging**: Every error includes environment info and fix attempts
+### Common Issues
 
-**Error Collection System**:
-The test system automatically collects and analyzes errors:
-- Test execution errors are logged to `/test/logs/`
-- Error patterns are analyzed in `/test/results/`
-- Test tool errors are tracked separately
-- Manual fix suggestions are provided for complex issues
+1. **LM Studio Connection Failed**
+   - Ensure LM Studio is running on `http://localhost:1234`
+   - Check if a model is loaded in LM Studio
+   - Verify no firewall blocking
 
-**Background Testing**:
-For continuous integration or unattended testing:
-```python
-# Run tests completely in background (hidden processes)
-from test import test_now
-test_now()  # No terminal output, no windows
+2. **WebSocket Disconnections**
+   - Check backend logs for errors
+   - Ensure stable network connection
+   - Frontend auto-reconnects after 3 seconds
 
-# Check test results later
-from test import get_latest_results
-results = get_latest_results()
-print(results)
-```
+3. **Node Execution Errors**
+   - Check worker node code syntax
+   - Verify AI model is responding
+   - Review execution logs panel
 
-## Data Collection Workflow Testing
+### Emergency Recovery
 
-**🎯 CURRENT PRIORITY: Data Collection → AI Analysis Pipeline**
-
-The system includes comprehensive data collection capabilities:
-
-### Data Collection Modules
-
-1. **LLM Conversation Collection** (`/backend/routers/argosa/collection/llm_conversation_collector.py`)
-   - Collects conversations from ChatGPT, Claude, Gemini, etc.
-   - Firefox extension integration for automatic capture
-   - Structured JSON storage with metadata
-
-2. **Web Search Integration** (`/backend/routers/argosa/collection/web_crawler_agent.py`)
-   - Google Search API integration
-   - Naver Search support
-   - Real-time web content extraction
-   - Search result caching and management
-
-3. **LLM Query Service** (`/backend/routers/argosa/collection/llm_query_service.py`)
-   - Direct LLM API integration
-   - Multiple provider support (OpenAI, Anthropic, etc.)
-   - Query batching and response management
-
-4. **YouTube Analysis** (YouTube folder in data/)
-   - Video download and transcription
-   - Audio-to-text conversion
-   - Content analysis and summarization
-
-### Testing Data Collection Workflow
-
-```python
-# Test complete data collection pipeline
-from test.data_collection_tester import test_full_workflow
-
-# Test individual collection modules
-result = await test_full_workflow([
-    "llm_conversations",  # Firefox extension + conversation capture
-    "web_search",        # Google/Naver search integration  
-    "llm_queries",       # Direct LLM API calls
-    "youtube_analysis"   # Video download + transcription
-])
-print(result)
-
-# Test Local AI integration (Qwen2.5 VL 72B)
-from test.local_ai_tester import test_qwen_integration
-result = await test_qwen_integration()
-print(result)
-```
-
-### Required API Keys & Configuration
-
-The following API keys may be required for full functionality:
-- **Google Search API**: For web search functionality
-- **YouTube Data API**: For video metadata and download
-- **OpenAI API Key**: For LLM queries (optional)
-- **Anthropic API Key**: For Claude integration (optional)
-- **Naver Search API**: For Korean search results (optional)
-
-### File Structure for Data Storage
-
-```
-/backend/routers/argosa/data/
-├── llm-conversations/
-│   ├── chatgpt/
-│   ├── claude/
-│   ├── gemini/
-│   └── [other_llms]/
-├── web_crawler/
-│   ├── cache/
-│   └── downloads/
-├── youtube/
-│   ├── downloads/
-│   ├── transcripts/
-│   └── temp/
-└── translation_cache/
-```
-
-### Local AI Integration
-
-**Target**: Qwen2.5 VL 72B Instruct on WPC2
-- Model path verification
-- VRAM usage optimization  
-- Context window management for large documents
-- File size optimization for AI processing
-
-### Testing Checklist
-
-- [ ] Firefox extension loads and captures conversations
-- [ ] Web search returns valid results and saves to JSON
-- [ ] LLM queries execute and responses are stored
-- [ ] YouTube videos download and transcribe successfully
-- [ ] Files are properly chunked for AI processing
-- [ ] Local AI (Qwen2.5 VL 72B) processes collected data
-- [ ] JSON files are structured correctly for workflow
-- [ ] File sizes are optimized for local AI context limits
+If the system becomes unresponsive:
+1. Check logs: `tail -f /mnt/f/ONE_AI/backend/logs/backend_detailed.log`
+2. Restart via Windows: Close terminals and run `One.bat` again
+3. Clear browser cache and reload
+4. Check `data/oneai_sections_data.json` for corruption
 
 ## Notes
 
-- The module uses Korean comments (데이터 분석 = data analysis)
-- Heavy integration with RAG service for context-aware analysis
-- Designed for real-time, distributed AI agent coordination
-- Focus on modularity - uses separated config/prompt/helper files
+- The system is designed for Windows but developed in WSL
+- Frontend uses extensive animations (Framer Motion)
+- All node communications are type-safe with TypeScript
+- Project aims to democratize 3D animation production with AI
